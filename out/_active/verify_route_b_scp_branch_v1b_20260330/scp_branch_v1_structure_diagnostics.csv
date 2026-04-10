@@ -1,0 +1,3 @@
+dataset,seed,stage,mode,within_prototype_compactness,between_prototype_separation,nearest_prototype_margin,temporal_assignment_stability,prototype_family_dispersion
+selfregulationscp1,1,before,prototype_memory,0.8314574258202932,1.0785648288097307,0.006380796159907236,0.9886758675243031,1.2144978596212381
+selfregulationscp1,1,after,prototype_memory,0.8314348960623533,1.0786534606651474,0.0063889940711510124,0.9886828063309672,1.214588077527399

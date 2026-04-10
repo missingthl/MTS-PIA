@@ -1,0 +1,10 @@
+dataset,base_pia_config,gamma_main,second_axis_scale,pullback_alpha,axis_count,config_id
+natops,g100_k2_pb100,0.1,0.7,0.9,2,g100_k2_pb100__axis2s070_pb090
+natops,g100_k2_pb100,0.1,0.7,0.95,2,g100_k2_pb100__axis2s070_pb095
+natops,g100_k2_pb100,0.1,0.7,1.0,2,g100_k2_pb100__axis2s070_pb100
+natops,g100_k2_pb100,0.1,0.75,0.9,2,g100_k2_pb100__axis2s075_pb090
+natops,g100_k2_pb100,0.1,0.75,0.95,2,g100_k2_pb100__axis2s075_pb095
+natops,g100_k2_pb100,0.1,0.75,1.0,2,g100_k2_pb100__axis2s075_pb100
+natops,g100_k2_pb100,0.1,0.8,0.9,2,g100_k2_pb100__axis2s080_pb090
+natops,g100_k2_pb100,0.1,0.8,0.95,2,g100_k2_pb100__axis2s080_pb095
+natops,g100_k2_pb100,0.1,0.8,1.0,2,g100_k2_pb100__axis2s080_pb100

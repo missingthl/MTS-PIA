@@ -1,0 +1,9 @@
+dataset,seed,class_id,prototype_id,prototype_member_count,prototype_source,prototype_vector_norm
+selfregulationscp1,1,0,0,22778,kmeans_centroid,0.4160289372926417
+selfregulationscp1,1,0,1,14839,kmeans_centroid,1.2105496103825504
+selfregulationscp1,1,0,2,16841,kmeans_centroid,1.0794697443754402
+selfregulationscp1,1,0,3,18060,kmeans_centroid,0.5694390423329518
+selfregulationscp1,1,1,0,20081,kmeans_centroid,0.5296979162093547
+selfregulationscp1,1,1,1,14374,kmeans_centroid,1.201490419802629
+selfregulationscp1,1,1,2,15575,kmeans_centroid,1.1501336265282953
+selfregulationscp1,1,1,3,21770,kmeans_centroid,0.49318965998194636

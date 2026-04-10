@@ -1,0 +1,2 @@
+dataset,seed,window_len,hop_len,z_dim,prototype_count,anchors_per_prototype,anchor_selection_mode,same_dist_quantile,beta,epsilon_scale,minirocket_n_kernels,minirocket_n_jobs,same_backbone_baseline
+selfregulationscp1,1,179,1,21,4,8,tight_margin,50.0,0.5,0.1,10000,1,dense_dynamic_minirocket_no_shaping

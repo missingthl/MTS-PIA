@@ -1,0 +1,7 @@
+dataset,seed,variant,channels,max_length,z_dim,num_classes,spatial_proj_channels,spatial_proj_bins,manifold_hidden_dim,manifold_feature_dim,fusion_hidden_dim,dropout,dual_aux_weight,epochs,batch_size,lr,weight_decay,patience
+natops,1,spatial_only,24,51,300,6,16,8,128,64,128,0.3,0.3,3,16,0.001,0.0001,3
+natops,1,manifold_only,24,51,300,6,16,8,128,64,128,0.3,0.3,3,16,0.001,0.0001,3
+natops,1,dual_stream,24,51,300,6,16,8,128,64,128,0.3,0.3,3,16,0.001,0.0001,3
+selfregulationscp1,1,spatial_only,6,896,21,2,16,8,128,64,128,0.3,0.3,3,16,0.001,0.0001,3
+selfregulationscp1,1,manifold_only,6,896,21,2,16,8,128,64,128,0.3,0.3,3,16,0.001,0.0001,3
+selfregulationscp1,1,dual_stream,6,896,21,2,16,8,128,64,128,0.3,0.3,3,16,0.001,0.0001,3

@@ -1,0 +1,9 @@
+dataset,seed,mode,gamma_main,smooth_lambda,axis_count,window_len,hop_len,epochs,batch_size
+natops,1,baseline,0.05,0.5,1,28,5,3,32
+natops,1,t2a_default,0.05,0.5,1,28,5,3,32
+natops,1,t3_shared_rebasis,0.05,0.5,1,28,5,3,32
+natops,1,t4a_class_conditioned_rebasis,0.05,0.5,1,28,5,3,32
+selfregulationscp1,1,baseline,0.05,0.5,1,179,90,3,32
+selfregulationscp1,1,t2a_default,0.05,0.5,1,179,90,3,32
+selfregulationscp1,1,t3_shared_rebasis,0.05,0.5,1,179,90,3,32
+selfregulationscp1,1,t4a_class_conditioned_rebasis,0.05,0.5,1,179,90,3,32

@@ -1,0 +1,6 @@
+dataset,baseline_macro_f1_mean,baseline_macro_f1_std,t2a_default_macro_f1_mean,t2a_default_macro_f1_std,t3_shared_rebasis_macro_f1_mean,t3_shared_rebasis_macro_f1_std,t4b_window_radial_gate_macro_f1_mean,t4b_window_radial_gate_macro_f1_std,t7a_class_conditioned_rebasis_macro_f1_mean,t7a_class_conditioned_rebasis_macro_f1_std,best_mode
+basicmotions,0.7109226755218216,0.0,0.7395711500974659,0.0,0.7395711500974659,0.0,0.8382913806254767,0.0,0.7611673414304994,0.0,t4b_window_radial_gate
+handmovementdirection,0.20421308273058442,0.0,0.2540851567899887,0.0,0.2540851567899887,0.0,0.26590678824721375,0.0,0.2540851567899887,0.0,t4b_window_radial_gate
+uwavegesturelibrary,0.2808597659837164,0.0,0.34838092095231377,0.0,0.35293865277008496,0.0,0.38806171729712297,0.0,0.34633686043244355,0.0,t4b_window_radial_gate
+epilepsy,0.6104066729066728,0.0,0.7223725909414851,0.0,0.7223725909414851,0.0,0.5553302718679531,0.0,0.7266620168599788,0.0,t7a_class_conditioned_rebasis
+natops,0.6856807630081206,0.0,0.7335235639182134,0.0,0.7335235639182134,0.0,0.7336832486909369,0.0,0.7335235639182134,0.0,t4b_window_radial_gate

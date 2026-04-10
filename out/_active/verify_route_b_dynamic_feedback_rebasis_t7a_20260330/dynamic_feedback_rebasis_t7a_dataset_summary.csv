@@ -1,0 +1,3 @@
+dataset,baseline_macro_f1_mean,baseline_macro_f1_std,t2a_default_macro_f1_mean,t2a_default_macro_f1_std,t3_shared_rebasis_macro_f1_mean,t3_shared_rebasis_macro_f1_std,t4b_window_radial_gate_macro_f1_mean,t4b_window_radial_gate_macro_f1_std,t7a_class_conditioned_rebasis_macro_f1_mean,t7a_class_conditioned_rebasis_macro_f1_std,best_mode
+selfregulationscp1,0.5144024276377217,0.0,0.5619607058352658,0.0,0.5619607058352658,0.0,0.5800286669851887,0.0,0.5657114624505929,0.0,t4b_window_radial_gate
+natops,0.6856807630081206,0.0,0.7335235639182134,0.0,0.7335235639182134,0.0,0.7336832486909369,0.0,0.7335235639182134,0.0,t4b_window_radial_gate

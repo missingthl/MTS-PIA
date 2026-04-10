@@ -1,0 +1,5 @@
+dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1
+epilepsy,1,f1_fast_mainline,dynamic_minirocket,1.0,0.94375,0.9787212787212787
+epilepsy,1,r0_post_fast_refit_no_rebuild,dynamic_minirocket,1.0,0.94375,0.9929353233830845
+epilepsy,1,p0b_lite_delayed_refresh,dynamic_minirocket,1.0,0.94375,0.9787212787212787
+epilepsy,1,baseline_0,dynamic_minirocket,1.0,0.94375,0.9858452950558214

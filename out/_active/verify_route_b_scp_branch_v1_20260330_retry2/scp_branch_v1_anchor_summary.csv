@@ -1,0 +1,9 @@
+dataset,seed,class_id,prototype_id,prototype_member_count,admitted_anchor_count,anchor_coverage_ratio
+selfregulationscp1,1,0,0,22778,16,0.0007024321713934498
+selfregulationscp1,1,0,1,14839,16,0.0010782397735696475
+selfregulationscp1,1,0,2,16841,16,0.0009500623478415772
+selfregulationscp1,1,0,3,18060,16,0.0008859357696566999
+selfregulationscp1,1,1,0,20081,16,0.0007967730690702654
+selfregulationscp1,1,1,1,14374,16,0.0011131209127591484
+selfregulationscp1,1,1,2,15575,16,0.0010272873194221508
+selfregulationscp1,1,1,3,21770,16,0.0007349563619660083

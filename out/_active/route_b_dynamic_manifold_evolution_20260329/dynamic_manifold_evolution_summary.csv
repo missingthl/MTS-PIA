@@ -1,0 +1,5 @@
+dataset,seed,method,plot_png,accepted_feedback_count,accept_rate,center_shift_norm,basis_cosine_to_old
+natops,1,umap,/home/THL/project/MTS-PIA/out/_active/route_b_dynamic_manifold_evolution_20260329/VIS/natops_seed1/natops_seed1_evolution_umap.png,85,0.6296296296296297,0.14611980022981305,0.15566116573155028
+natops,1,pca,/home/THL/project/MTS-PIA/out/_active/route_b_dynamic_manifold_evolution_20260329/VIS/natops_seed1/natops_seed1_evolution_pca.png,85,0.6296296296296297,0.14611980022981305,0.15566116573155028
+selfregulationscp1,1,umap,/home/THL/project/MTS-PIA/out/_active/route_b_dynamic_manifold_evolution_20260329/VIS/selfregulationscp1_seed1/selfregulationscp1_seed1_evolution_umap.png,107,0.5323383084577115,0.01910494670520323,0.998757490978982
+selfregulationscp1,1,pca,/home/THL/project/MTS-PIA/out/_active/route_b_dynamic_manifold_evolution_20260329/VIS/selfregulationscp1_seed1/selfregulationscp1_seed1_evolution_pca.png,107,0.5323383084577115,0.01910494670520323,0.998757490978982

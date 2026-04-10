@@ -1,0 +1,58 @@
+# T7a Window-level Constructive Pool + Class-Conditioned Rebasis Conclusion
+
+## Key Findings
+- `basicmotions`
+  - baseline: 0.7109 +/- 0.0000
+  - t2a_default: 0.7396 +/- 0.0000
+  - t3_shared_rebasis: 0.7396 +/- 0.0000
+  - t4b_window_radial_gate: 0.8383 +/- 0.0000
+  - t7a_class_conditioned_rebasis: 0.7612 +/- 0.0000
+  - best_mode: `t4b_window_radial_gate`
+  - inter_basis_cosine_mean: 0.4658
+  - inter_basis_cosine_min: 0.0715
+  - inter_basis_cosine_max: 0.8689
+- `handmovementdirection`
+  - baseline: 0.2042 +/- 0.0000
+  - t2a_default: 0.2541 +/- 0.0000
+  - t3_shared_rebasis: 0.2541 +/- 0.0000
+  - t4b_window_radial_gate: 0.2659 +/- 0.0000
+  - t7a_class_conditioned_rebasis: 0.2541 +/- 0.0000
+  - best_mode: `t4b_window_radial_gate`
+  - inter_basis_cosine_mean: 0.3290
+  - inter_basis_cosine_min: 0.0937
+  - inter_basis_cosine_max: 0.4677
+- `uwavegesturelibrary`
+  - baseline: 0.2809 +/- 0.0000
+  - t2a_default: 0.3484 +/- 0.0000
+  - t3_shared_rebasis: 0.3529 +/- 0.0000
+  - t4b_window_radial_gate: 0.3881 +/- 0.0000
+  - t7a_class_conditioned_rebasis: 0.3463 +/- 0.0000
+  - best_mode: `t4b_window_radial_gate`
+  - inter_basis_cosine_mean: 0.4292
+  - inter_basis_cosine_min: 0.0008
+  - inter_basis_cosine_max: 0.8826
+- `epilepsy`
+  - baseline: 0.6104 +/- 0.0000
+  - t2a_default: 0.7224 +/- 0.0000
+  - t3_shared_rebasis: 0.7224 +/- 0.0000
+  - t4b_window_radial_gate: 0.5553 +/- 0.0000
+  - t7a_class_conditioned_rebasis: 0.7267 +/- 0.0000
+  - best_mode: `t7a_class_conditioned_rebasis`
+  - inter_basis_cosine_mean: 0.3267
+  - inter_basis_cosine_min: 0.0070
+  - inter_basis_cosine_max: 0.7696
+- `natops`
+  - baseline: 0.6857 +/- 0.0000
+  - t2a_default: 0.7335 +/- 0.0000
+  - t3_shared_rebasis: 0.7335 +/- 0.0000
+  - t4b_window_radial_gate: 0.7337 +/- 0.0000
+  - t7a_class_conditioned_rebasis: 0.7335 +/- 0.0000
+  - best_mode: `t4b_window_radial_gate`
+  - inter_basis_cosine_mean: 0.2015
+  - inter_basis_cosine_min: 0.0016
+  - inter_basis_cosine_max: 0.8584
+
+## Reading Notes
+- T7a routes class-conditioned containers only during training-time augmentation generation.
+- Validation/test always consume original trajectories only; there is no class-conditioned test-time routing.
+- Each class-conditioned axis uses train-only one-vs-rest fitting so the container remains discriminative rather than collapsing into class-only unsupervised PCA-like axes.

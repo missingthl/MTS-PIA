@@ -1,0 +1,3 @@
+dataset,seed,sparse_hop_len,dense_hop_len,sparse_len_mean,dense_len_mean,sparse_len_min,dense_len_min,sparse_len_max,dense_len_max,dense_gru_minus_sparse_gru,dense_minirocket_minus_sparse_minirocket,dense_minirocket_minus_raw_minirocket
+natops,1,5,1,5.0,24.0,5.0,24.0,5.0,24.0,-0.009730815894804734,0.052339505231655536,-0.023066051267124243
+selfregulationscp1,1,90,1,8.0,718.0,8.0,718.0,8.0,718.0,-0.0341970121381886,0.05915874630842255,-0.04439260577668791

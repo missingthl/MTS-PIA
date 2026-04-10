@@ -1,0 +1,3 @@
+dataset,seed,candidate_window_count,safe_window_count,accepted_window_count,accept_rate,source_trial_coverage,class_balance_proxy,pool_type,informative_gate
+selfregulationscp1,1,1608,854,854,0.5310945273631841,0.9950248756218906,0.9234234234234234,window_conditioned_feedback_pool,safety_only
+natops,1,675,503,503,0.7451851851851852,0.9851851851851852,0.9534883720930233,window_conditioned_feedback_pool,safety_only

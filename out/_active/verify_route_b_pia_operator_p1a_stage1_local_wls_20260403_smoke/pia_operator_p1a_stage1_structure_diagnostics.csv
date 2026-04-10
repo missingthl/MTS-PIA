@@ -1,0 +1,4 @@
+dataset,seed,stage,mode,within_prototype_compactness,between_prototype_separation,nearest_prototype_margin,temporal_assignment_stability,prototype_family_dispersion
+fingermovements,1,before_fast,prototype_memory,7.814515932951579,4.530003098864807,0.13509121056001153,0.8982653539615566,4.849994607844528
+fingermovements,1,after_f1_global,prototype_memory,7.8199033259355355,4.594117690876976,0.13491828880130488,0.8973277074542899,4.929301374381881
+fingermovements,1,after_p1a_local,prototype_memory,7.849537687859737,4.538325987625669,0.13675486834907838,0.8989685888420067,4.861761341474826

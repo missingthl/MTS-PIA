@@ -1,0 +1,3 @@
+dataset,dataset_role,baseline_macro_f1_mean,baseline_macro_f1_std,t2a_default_macro_f1_mean,t2a_default_macro_f1_std,t3_shared_rebasis_macro_f1_mean,t3_shared_rebasis_macro_f1_std,t4b_window_radial_gate_macro_f1_mean,t4b_window_radial_gate_macro_f1_std,t4b_window_margin_gate_macro_f1_mean,t4b_window_margin_gate_macro_f1_std,t5_dual_role_policy_macro_f1_mean,t5_dual_role_policy_macro_f1_std,best_mode
+selfregulationscp1,main,0.5144024276377217,0.0,0.5619607058352658,0.0,0.5619607058352658,0.0,0.5619607058352658,0.0,0.5619607058352658,0.0,0.5665327042926205,0.0,t5_dual_role_policy
+natops,anchor,,,,,0.7335235639182134,0.0,0.7388968705217005,0.0,0.7401774493529842,0.0,0.725300889393843,0.0,t4b_window_margin_gate

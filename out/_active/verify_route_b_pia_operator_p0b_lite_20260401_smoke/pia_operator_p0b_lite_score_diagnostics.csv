@@ -1,0 +1,5 @@
+dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1
+natops,1,f1_fast_mainline,dynamic_gru,1.0,0.9790849673202615,0.8233096409695645
+natops,1,r0_post_fast_refit_no_rebuild,dynamic_gru,1.0,0.9568627450980393,0.8342066500764799
+natops,1,p0b_lite_delayed_refresh,dynamic_gru,1.0,0.9344421101774043,0.8068106134752102
+natops,1,baseline_0,dynamic_gru,1.0,0.9790849673202615,0.8286955114786415

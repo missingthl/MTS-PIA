@@ -1,0 +1,3 @@
+dataset,seed,static_linear_test_macro_f1,sparse_dynamic_gru_test_macro_f1,dense_dynamic_gru_test_macro_f1,sparse_dynamic_minirocket_test_macro_f1,dense_dynamic_minirocket_test_macro_f1,raw_minirocket_test_macro_f1
+natops,1,0.47974661243426375,0.6856807630081206,0.6759499471133159,0.6416572475323808,0.6939967527640364,0.7170628040311606
+selfregulationscp1,1,0.4648276508055451,0.5144024276377217,0.4802054154995331,0.5756797159674858,0.6348384622759083,0.6792310680525963

@@ -1,0 +1,9 @@
+dataset,dataset_role,seed,mode,center_shift_norm,basis_cosine_to_old,basis_angle_proxy,pooled_window_count_orig,pooled_window_count_feedback,pooled_window_count_total,rebasis_mode,shared_basis_mode
+selfregulationscp1,main,1,t3_shared_rebasis,0.01910494670520323,0.998757490978982,0.04985511831465623,1608.0,856.0,2464.0,constrained_shared_basis_refit,global_single_axis
+selfregulationscp1,main,1,t4b_window_radial_gate,0.021544241700414427,0.9617496311598961,0.27747697408451516,1608.0,427.0,2035.0,constrained_shared_basis_refit,global_single_axis
+selfregulationscp1,main,1,t4b_window_margin_gate,0.010279587830941994,0.9993203511142194,0.03687074414324018,1608.0,427.0,2035.0,constrained_shared_basis_refit,global_single_axis
+selfregulationscp1,main,1,t6a1_local_knn_margin_unified,0.01933004009273631,0.9975738778321691,0.06967214385203659,1608.0,427.0,2035.0,constrained_shared_basis_refit,global_single_axis
+natops,anchor,1,t3_shared_rebasis,0.14611980022981305,0.15566116573155028,1.4144995842389652,675.0,425.0,1100.0,constrained_shared_basis_refit,global_single_axis
+natops,anchor,1,t4b_window_radial_gate,0.22649195252403972,0.3229933376911858,1.2419056762160634,675.0,252.0,927.0,constrained_shared_basis_refit,global_single_axis
+natops,anchor,1,t4b_window_margin_gate,0.11213498930489216,0.46622757109745394,1.0857746106168447,675.0,252.0,927.0,constrained_shared_basis_refit,global_single_axis
+natops,anchor,1,t6a1_local_knn_margin_unified,0.11410691268627511,0.07572440353764912,1.4949993662491563,675.0,252.0,927.0,constrained_shared_basis_refit,global_single_axis

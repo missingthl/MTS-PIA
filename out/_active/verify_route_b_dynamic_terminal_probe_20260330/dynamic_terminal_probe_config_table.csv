@@ -1,0 +1,7 @@
+dataset,seed,variant,window_len,hop_len,z_dim,num_classes,gru_hidden_dim,dropout,epochs,batch_size,lr,weight_decay,patience,padding_mode,target_len_mode,minirocket_n_kernels,minirocket_n_jobs
+natops,1,static_linear,28,5,300,6,128.0,0.3,3.0,32.0,0.001,0.0001,8.0,,,,
+natops,1,dynamic_gru,28,5,300,6,128.0,0.3,3.0,32.0,0.001,0.0001,8.0,,,,
+natops,1,dynamic_minirocket,28,5,300,6,,,,,,,,edge,train_max_len,10000.0,1.0
+selfregulationscp1,1,static_linear,179,90,21,2,128.0,0.3,3.0,32.0,0.001,0.0001,8.0,,,,
+selfregulationscp1,1,dynamic_gru,179,90,21,2,128.0,0.3,3.0,32.0,0.001,0.0001,8.0,,,,
+selfregulationscp1,1,dynamic_minirocket,179,90,21,2,,,,,,,,edge,train_max_len,10000.0,1.0

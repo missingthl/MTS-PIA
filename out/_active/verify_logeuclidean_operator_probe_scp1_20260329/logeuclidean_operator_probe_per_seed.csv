@@ -1,0 +1,2 @@
+dataset,config_id,seed,raw_test_macro_f1,vector_test_macro_f1,logeuclidean_test_macro_f1,vector_delta_vs_raw,logeuclidean_delta_vs_raw,logeuclidean_delta_vs_vector,selected_axis_ids,gamma_vector,ranked_axis_ids
+selfregulationscp1,g100_k2_pb100__axis2s080_pb090__scheme_a_probe,1,0.733412653975364,0.7195845004668534,0.7162475934892947,-0.013828153508510632,-0.01716506048606936,-0.003336906977558729,"[0, 2]","[0.1, 0.08000000000000002]","[0, 2, 1]"

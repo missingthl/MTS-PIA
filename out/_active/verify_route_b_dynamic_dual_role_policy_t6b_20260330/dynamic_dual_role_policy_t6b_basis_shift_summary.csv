@@ -1,0 +1,5 @@
+dataset,dataset_role,seed,mode,center_shift_norm,basis_cosine_to_old,basis_angle_proxy,pooled_window_count_orig,pooled_window_count_feedback,pooled_window_count_total,rebasis_mode,shared_basis_mode
+selfregulationscp1,main,1,t3_shared_rebasis,0.01910494670520323,0.998757490978982,0.04985511831465623,1608.0,856.0,2464.0,constrained_shared_basis_refit,global_single_axis
+selfregulationscp1,main,1,t6b_dual_role_policy,0.019159421134044417,0.9979322017022202,0.0643196909605266,1608.0,854.0,2462.0,constrained_shared_basis_refit,global_single_axis
+natops,anchor,1,t3_shared_rebasis,0.14611980022981305,0.15566116573155028,1.4144995842389652,675.0,425.0,1100.0,constrained_shared_basis_refit,global_single_axis
+natops,anchor,1,t6b_dual_role_policy,0.06830377896177141,0.3829918358057711,1.1777634085298359,675.0,503.0,1178.0,constrained_shared_basis_refit,global_single_axis

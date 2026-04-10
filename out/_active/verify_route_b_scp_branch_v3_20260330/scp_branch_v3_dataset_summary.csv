@@ -1,0 +1,2 @@
+dataset,delta_v3_vs_v1b_between_mean,delta_v3_vs_v1b_margin_mean,delta_v3_vs_v1b_within_mean,delta_v3_vs_v1b_stability_mean,update_time_seconds_mean,retrain_reference_seconds_mean,update_to_retrain_ratio_mean
+selfregulationscp1,0.06454366899506914,-0.023303761243205844,0.048131667978357884,0.0,7.2211544930469245,9.021425715996884,0.8004449319182776

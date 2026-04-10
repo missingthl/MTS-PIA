@@ -1,0 +1,2 @@
+dataset,reference_config_label,gamma_main,second_axis_scale,pullback_alpha,axis_count,operator_mode,config_id
+selfregulationscp1,g100_k2_pb100__axis2s080_pb090,0.1,0.8,0.9,2,vector_vs_logeuclidean,g100_k2_pb100__axis2s080_pb090__scheme_a_probe

@@ -1,0 +1,2 @@
+dataset,protocol_type,raw_test_acc,raw_test_macro_f1,pia_core_test_acc,pia_core_test_macro_f1,delta_vs_raw_mean,label,note
+natops,fixed_split_official,0.7222 +/- 0.0000,0.7171 +/- 0.0000,0.7278 +/- 0.0000,0.7226 +/- 0.0000,0.005548334377226127,positive,"single_main_template_affine_gamma=[0.1,0,...]"

@@ -1,0 +1,4 @@
+dataset,seed,stage,mode,within_prototype_compactness,between_prototype_separation,nearest_prototype_margin,temporal_assignment_stability,prototype_family_dispersion
+selfregulationscp1,1,before,prototype_memory,0.8314574258202932,1.0785648288097307,0.006380796159907236,0.9886758675243031,1.2144978596212381
+selfregulationscp1,1,after_mean_centered,prototype_memory,0.8314690065290321,1.0767622086963662,0.006299700571895969,0.9885717854243429,1.212825277713936
+selfregulationscp1,1,after_single_template_pia,prototype_memory,0.8322006863153867,1.0785234710482303,0.0063156864050979275,0.9885856630376707,1.2146911071661735

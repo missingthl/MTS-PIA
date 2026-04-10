@@ -1,0 +1,3 @@
+dataset,static_linear_mean,static_linear_std,static_linear,dense_dynamic_gru_mean,dense_dynamic_gru_std,dense_dynamic_gru,dense_dynamic_minirocket_mean,dense_dynamic_minirocket_std,dense_dynamic_minirocket,raw_minirocket_mean,raw_minirocket_std,raw_minirocket
+natops,0.47974661243426375,0.0,0.4797 +/- 0.0000,0.6759499471133159,0.0,0.6759 +/- 0.0000,0.6939967527640364,0.0,0.6940 +/- 0.0000,0.7170628040311606,0.0,0.7171 +/- 0.0000
+selfregulationscp1,0.4648276508055451,0.0,0.4648 +/- 0.0000,0.4802054154995331,0.0,0.4802 +/- 0.0000,0.6348384622759083,0.0,0.6348 +/- 0.0000,0.6792310680525963,0.0,0.6792 +/- 0.0000

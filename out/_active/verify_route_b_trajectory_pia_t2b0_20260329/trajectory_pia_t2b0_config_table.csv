@@ -1,0 +1,9 @@
+dataset,seed,operator_mode,axis_count,gamma_base,smooth_lambda,window_len,hop_len,gru_hidden_dim,dropout,epochs,batch_size
+natops,1,baseline,1,0.05,0.5,28,5,128,0.3,3,32
+natops,1,t2a_default,1,0.05,0.5,28,5,128,0.3,3,32
+natops,1,t2b_saliency,1,0.05,0.5,28,5,128,0.3,3,32
+natops,1,t2b_randomized,1,0.05,0.5,28,5,128,0.3,3,32
+selfregulationscp1,1,baseline,1,0.05,0.5,179,90,128,0.3,3,32
+selfregulationscp1,1,t2a_default,1,0.05,0.5,179,90,128,0.3,3,32
+selfregulationscp1,1,t2b_saliency,1,0.05,0.5,179,90,128,0.3,3,32
+selfregulationscp1,1,t2b_randomized,1,0.05,0.5,179,90,128,0.3,3,32

@@ -1,0 +1,2 @@
+dataset,seed,window_len,hop_len,z_dim,prototype_count,anchors_per_prototype,anchor_selection_mode,same_dist_quantile,center_epsilon_scale,pia_epsilon_scale,operator_smooth_lambda,terminal,pia_activation,pia_n_iters,pia_c_repr,pia_bias_lr,pia_bias_update_mode,epochs,batch_size,lr,weight_decay,patience,gru_hidden_dim,dropout,fit_window_count,fit_trial_count,template_mean_direction_cosine
+natops,1,28,1,300,4,8,tight_margin,50.0,0.1,0.1,0.5,dynamic_gru,sigmoid,3,1.0,0.25,residual,30,32,0.001,0.0001,8,128,0.3,192,58,0.05800556572502142

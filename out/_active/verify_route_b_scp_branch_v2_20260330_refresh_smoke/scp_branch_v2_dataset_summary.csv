@@ -1,0 +1,2 @@
+dataset,delta_v3_vs_v1b_between_mean,delta_v3_vs_v1b_margin_mean,delta_v3_vs_v1b_within_mean,delta_v3_vs_v1b_stability_mean,update_time_seconds_mean,retrain_reference_seconds_mean,update_to_retrain_ratio_mean,accept_between_rate_mean,accept_margin_rate_mean,accept_within_rate_mean,final_accept_rate_mean,direction_cosine_to_old_mean,direction_change_angle_proxy_mean
+selfregulationscp1,0.0,0.0,0.0,0.0,10.08830950409174,9.048826519981958,1.1148748936466355,0.125,0.0,0.0,0.0,1.0,7.450580596923828e-09
