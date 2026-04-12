@@ -71,6 +71,43 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _subject_cache_path(cache_root: str, *, subject: int) -> str:
+    return os.path.join(str(cache_root), f"bcic_holdout_tensor_subject{int(subject):02d}.npz")
+
+
+def _load_subject_arrays(
+    subject: int,
+    *,
+    cache_root: str,
+    disable_subject_cache: bool,
+):
+    cache_path = _subject_cache_path(cache_root, subject=int(subject))
+    if not bool(disable_subject_cache) and os.path.exists(cache_path):
+        cached = np.load(cache_path)
+        return (
+            cached["train_x"],
+            cached["test_x"],
+            cached["train_y"],
+            cached["test_y"],
+        )
+
+    with _reference_repo_cwd():
+        dataset = load_BCIC(subject, alg_name="Tensor_CSPNet", scenario="Holdout")
+        train_x, test_x, train_y, test_y = dataset.generate_training_valid_test_set_Holdout()
+
+    if not bool(disable_subject_cache):
+        _ensure_dir(str(cache_root))
+        np.savez(
+            cache_path,
+            train_x=train_x,
+            test_x=test_x,
+            train_y=train_y,
+            test_y=test_y,
+        )
+
+    return train_x, test_x, train_y, test_y
+
+
 def _adjust_learning_rate(optimizer, *, initial_lr: float, decay: float, epoch: int) -> None:
     optimizer.lr = float(initial_lr) * (float(decay) ** (int(epoch) // 100))
 
@@ -228,6 +265,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--mlp", action="store_true", default=False)
     p.add_argument("--no-cuda", action="store_true", default=False)
+    p.add_argument(
+        "--cache-root",
+        type=str,
+        default=os.path.join(ROOT, "cache", "tensor_cspnet_bcic_holdout"),
+    )
+    p.add_argument("--disable-subject-cache", action="store_true", default=False)
     p.add_argument("--out-root", type=str, default=os.path.join(ROOT, "out", "_active", "verify_tensor_cspnet_local_closed_form_holdout_20260412"))
     p.add_argument("--run-tag", type=str, default="")
     p.add_argument("--init-beta", type=float, default=0.1)
@@ -263,6 +306,8 @@ def main() -> None:
         "mlp": bool(args.mlp),
         "use_cuda": bool(use_cuda),
         "device": str(device),
+        "cache_root": str(args.cache_root),
+        "disable_subject_cache": bool(args.disable_subject_cache),
         "init_beta": float(args.init_beta),
         "prototypes_per_class": int(args.prototypes_per_class),
         "routing_temperature": float(args.routing_temperature),
@@ -273,9 +318,11 @@ def main() -> None:
     rows: List[Dict[str, object]] = []
     for subject in range(int(args.start_no), int(args.end_no) + 1):
         print(f"[{args.arm}] subject={subject} load_start", flush=True)
-        with _reference_repo_cwd():
-            dataset = load_BCIC(subject, alg_name="Tensor_CSPNet", scenario="Holdout")
-            train_x, test_x, train_y, test_y = dataset.generate_training_valid_test_set_Holdout()
+        train_x, test_x, train_y, test_y = _load_subject_arrays(
+            int(subject),
+            cache_root=str(args.cache_root),
+            disable_subject_cache=bool(args.disable_subject_cache),
+        )
         train_loader, test_loader = _make_loaders(
             train_x,
             test_x,

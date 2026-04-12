@@ -37,10 +37,10 @@ class TensorCSPNetResidualLinear(nn.Module):
         self.residual_head = nn.Linear(
             self.adapter.feature_dim,
             self.adapter.num_classes,
-        ).double()
+        ).float()
         nn.init.zeros_(self.residual_head.weight)
         nn.init.zeros_(self.residual_head.bias)
-        self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.double))
+        self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.float32))
 
     def forward(self, x: torch.Tensor, *, return_features: bool = False):
         base: TensorCSPNetForwardOutputs = self.adapter(x, return_features=True)

@@ -30,7 +30,7 @@ class LocalClosedFormResidualHead(nn.Module):
                 self.num_classes,
                 self.prototypes_per_class,
                 self.feature_dim,
-                dtype=torch.double,
+                dtype=torch.float32,
             )
             * float(prototype_init_scale)
         )
@@ -110,7 +110,7 @@ class TensorCSPNetLocalClosedFormResidual(nn.Module):
             routing_temperature=float(routing_temperature),
             ridge=float(ridge),
         )
-        self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.double))
+        self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.float32))
 
     def forward(self, x: torch.Tensor, *, return_features: bool = False):
         base: TensorCSPNetForwardOutputs = self.adapter(x, return_features=True)

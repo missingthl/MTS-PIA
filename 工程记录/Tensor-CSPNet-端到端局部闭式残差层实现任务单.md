@@ -55,6 +55,39 @@
 - 不做 oracle same/opp 路由
 - 不做大量超参矩阵
 
+### 0.4 当前加速阶段进展
+
+`2026-04-12` 起，二阶段在不改变方法定义的前提下，新增一层“实现级加速”任务。
+
+这层加速的目标是：
+
+- 不改 `E0 / E1 / E2` 的方法学定义
+- 不先动 `epochs / seeds / protocol`
+- 先把 Tensor-CSPNet 宿主实现从“可跑”推进到“高效可迭代”
+
+当前已落地的第一波改动包括：
+
+1. `modeig_forward -> batched eigh`
+2. `BatchDiag -> diag_embed`
+3. `BiMap / Graph_BiMap` 通道循环向量化
+4. 结构化混合精度：
+   - SPD 路径保持 `float64`
+   - `Temporal_Block / Classifier / residual heads / beta / prototypes` 改为 `float32`
+5. `BCIC holdout Tensor-CSPNet` subject 级缓存
+
+当前第一条已完成的等价性验证：
+
+- [acceleration_pass1_summary_20260412.md](/home/THL/project/MTS-PIA/out/_active/verify_tensor_cspnet_local_closed_form_holdout_20260412/notes/acceleration_pass1_summary_20260412.md)
+- `subject 5`
+  - 旧实现：`acc=0.6076`, `loss=1.090845`, `wallclock=6188.9s`
+  - 新实现：`acc=0.6007`, `loss=1.097744`, `wallclock=486.3s`
+
+当前读法：
+
+- 第一波实现级加速已经基本成立
+- 下一步是补 `subject 1` 等价性点
+- 然后进入 `batch 29 / 58 / 87` 的吞吐-精度联合验证
+
 ## 1. 本阶段架构冻结
 
 ### 1.1 宿主 backbone

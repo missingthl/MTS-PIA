@@ -58,6 +58,10 @@ class TensorCSPNetAdapter(nn.Module):
             mlp=bool(mlp),
             dataset=str(dataset),
         )
+        # Keep the SPD pipeline in float64, but move the downstream temporal/readout
+        # path to float32 so RTX-class GPUs do not spend unnecessary time on FP64 conv/MLP.
+        self.base_model.Temporal_Block = self.base_model.Temporal_Block.float()
+        self.base_model.Classifier = self.base_model.Classifier.float()
         self.feature_dim = int(getattr(self.base_model, "tcn_channels"))
         self.num_classes = int(self._infer_num_classes())
 
@@ -80,7 +84,7 @@ class TensorCSPNetAdapter(nn.Module):
         x_flat = x.reshape(batch_size, window_num * band_num, x.shape[3], x.shape[4])
         x_csp = self.base_model.BiMap_Block(x_flat)
         x_log = self.base_model.LogEig(x_csp)
-        x_vec = x_log.view(batch_size, 1, window_num, -1)
+        x_vec = x_log.float().reshape(batch_size, 1, window_num, -1)
         latent = self.base_model.Temporal_Block(x_vec).reshape(batch_size, -1)
         base_logit = self.base_model.Classifier(latent)
         return TensorCSPNetForwardOutputs(
