@@ -6,12 +6,13 @@
 
 ## 当前默认入口
 
-如果只想知道当前分类工程真实在做什么，请先看这 4 份：
+如果只想知道当前分类工程真实在做什么，请先看这 5 份：
 
-1. [分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类二阶段现状.md)
-2. [Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
-3. [分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类调试记录.md)
-4. [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类工程现状.md)
+1. [分类文档导航总表.md](/home/THL/project/MTS-PIA/工程记录/分类文档导航总表.md)
+2. [分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类二阶段现状.md)
+3. [Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
+4. [阶段一结构证据总览.md](/home/THL/project/MTS-PIA/工程记录/阶段一结构证据总览.md)
+5. [分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类调试记录.md)
 
 当前最重要的读法是：
 
@@ -21,6 +22,8 @@
 - **一阶段**
   - 当前结构证据层
   - 用于解释二阶段方法为什么这样设计
+
+也就是说，当前单阶段 promote 文档默认不再作为起手入口。
 
 ## 阶段分层
 
@@ -50,6 +53,7 @@
 
 当前最重要文档：
 
+- [阶段一结构证据总览.md](/home/THL/project/MTS-PIA/工程记录/阶段一结构证据总览.md)
 - [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-当前主线总览.md)
 - [PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md)
 - [PIA-Operator-R0-多数据集稳定性阶段小结.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-R0-多数据集稳定性阶段小结.md)
@@ -96,6 +100,8 @@
 - [PIA-Operator-P0a.1-Stage-C-next-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0a.1-Stage-C-next-promote.md)
   - 阶段性失败归因
 - 旧 `Route B / unified shell` 相关文档
+- 多数单阶段 promote 文档
+  - 当前应先通过 [分类文档导航总表.md](/home/THL/project/MTS-PIA/工程记录/分类文档导航总表.md) 分层后再读
 
 ## 非分类文档提醒
 
@@ -109,7 +115,9 @@
 
 - 不删除阶段一原文档
 - 默认入口先落到二阶段
+- 默认入口先落到“导航总表 + 二阶段现状 + 阶段一结构总览”
 - 阶段一统一降到“结构证据层”
 - 当前新增的阶段二结果与实现，优先写进：
   - [分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类二阶段现状.md)
+  - [阶段一结构证据总览.md](/home/THL/project/MTS-PIA/工程记录/阶段一结构证据总览.md)
   - [分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类调试记录.md)
