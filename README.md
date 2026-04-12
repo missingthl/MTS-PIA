@@ -161,22 +161,20 @@
 
 ## 2. 先看哪里
 
-如果现在要接手工程，先看这 5 个入口：
+如果现在要接手工程，请先按**二阶段 -> 一阶段 -> 索引**的顺序阅读：
 
-- [docs/CURRENT_ENGINEERING_MAP.md](docs/CURRENT_ENGINEERING_MAP.md)
+- [工程记录/分类二阶段现状.md](工程记录/分类二阶段现状.md)
+- [工程记录/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](工程记录/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
 - [工程记录/分类工程现状.md](工程记录/分类工程现状.md)
 - [工程记录/分类调试记录.md](工程记录/分类调试记录.md)
+- [docs/CURRENT_ENGINEERING_MAP.md](docs/CURRENT_ENGINEERING_MAP.md)
 - [scripts/README.md](scripts/README.md)
 - [docs/PROJECT_INDEX.md](docs/PROJECT_INDEX.md)
 
-当前最重要的正式结果入口：
+当前最重要的读法变化是：
 
-- [pia_core_minimal_chain_summary.csv](out/route_b_pia_core_minimal_chain_20260327_formal/pia_core_minimal_chain_summary.csv)
-- [admission_conclusion.md](out/route_b_pia_core_admission_control_20260327_formal/admission_conclusion.md)
-- [axis_refine_conclusion.md](out/route_b_pia_core_axis_refine_20260327_formal/axis_refine_conclusion.md)
-- [axis_pullback_refine_conclusion.md](out/route_b_pia_core_axis_pullback_refine_20260328_formal/axis_pullback_refine_conclusion.md)
-- [risk_aware_axis2_conclusion.md](out/route_b_pia_core_risk_aware_axis2_20260328_formal/risk_aware_axis2_conclusion.md)
-- [zspace_regression_conclusion.md](out/regression/route_b_zspace_regression_baseline_20260328/zspace_regression_conclusion.md)
+- 当前活跃实验已切到**外部宿主 baseline 的二阶段**
+- 一阶段 `PIA-Operator` 当前主要保留为几何与算子证据层
 
 ## 3. 根目录怎么理解
 
