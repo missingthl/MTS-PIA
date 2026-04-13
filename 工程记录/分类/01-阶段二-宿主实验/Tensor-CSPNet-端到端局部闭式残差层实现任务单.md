@@ -8,6 +8,15 @@
   - [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
 - 这份文件不负责回顾全部一阶段历史，而只负责当前二阶段实现与实验推进。
 
+口径约定：
+
+- `E0 / E1 / E2` 统一称为**框架**
+- `NATOPS / FingerMovements / SelfRegulationSCP1 / ...` 统一称为**数据集**
+- 后续“框架对比”默认指：
+  - `E0`: backbone + global linear head
+  - `E1`: backbone + residual linear head
+  - `E2`: backbone + DLCR
+
 ## 0. 阶段定位与阶段目标
 
 ### 0.1 本次任务在总蓝图中的阶段定位

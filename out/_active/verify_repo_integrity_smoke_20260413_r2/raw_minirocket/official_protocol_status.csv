@@ -1,0 +1,2 @@
+dataset,status,seed,protocol,train_trial_count,test_trial_count,n_channels,seq_len,window_len_samples,test_acc,test_macro_f1,window_acc,window_macro_f1,trial_acc,trial_macro_f1,peak_rss_gb,note
+natops,success,1,dataset_provided_train_test_full_sequence,180,180,24,51,,0.9333333333333333,0.9330357142857143,,,,,,strict official fixed-split MiniROCKET runner

@@ -5,8 +5,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from models.tensor_cspnet_adapter import TensorCSPNetAdapter, TensorCSPNetForwardOutputs
-
 
 class LocalClosedFormResidualHead(nn.Module):
     def __init__(
@@ -162,6 +160,8 @@ class TensorCSPNetLocalClosedFormResidual(nn.Module):
         spd_dtype: torch.dtype = torch.double,
     ) -> None:
         super().__init__()
+        from models.tensor_cspnet_adapter import TensorCSPNetAdapter
+
         self.adapter = TensorCSPNetAdapter(
             channel_num=int(channel_num),
             mlp=bool(mlp),
@@ -193,7 +193,7 @@ class TensorCSPNetLocalClosedFormResidual(nn.Module):
         fusion_alpha: float = 1.0,
         return_features: bool = False,
     ):
-        base: TensorCSPNetForwardOutputs = self.adapter(x, return_features=True)
+        base = self.adapter(x, return_features=True)
         local_input = base.latent.detach() if self.detach_local_input else base.latent
         local_closed_form_logit = self.local_head(local_input)
         alpha = torch.tensor(float(fusion_alpha), dtype=base.base_logit.dtype, device=base.base_logit.device)
