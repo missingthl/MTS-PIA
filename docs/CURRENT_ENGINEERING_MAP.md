@@ -22,7 +22,9 @@
 
 - [工程记录/分类/README.md](../工程记录/分类/README.md)
 - [工程记录/分类/00-入口/分类二阶段现状.md](../工程记录/分类/00-入口/分类二阶段现状.md)
-- [工程记录/分类/01-阶段二-Tensor-CSPNet/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](../工程记录/分类/01-阶段二-Tensor-CSPNet/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
+- [工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](../工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
+- [scripts/README.md](../scripts/README.md)
+- [models/README.md](../models/README.md)
 
 ## 当前活跃实验是什么
 
@@ -39,7 +41,7 @@
 - [models/tensor_cspnet_adapter.py](../models/tensor_cspnet_adapter.py)
 - [models/tensor_cspnet_residual_linear.py](../models/tensor_cspnet_residual_linear.py)
 - [models/local_closed_form_residual_head.py](../models/local_closed_form_residual_head.py)
-- [scripts/run_tensor_cspnet_local_closed_form_holdout.py](../scripts/run_tensor_cspnet_local_closed_form_holdout.py)
+- [scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py](../scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py)
 
 ## 一阶段现在是什么
 
@@ -70,6 +72,7 @@
 
 - `models/`
 - `scripts/`
+  已拆成 `hosts / route_b / raw_baselines / support / analysis / data_prep / probes / forecast / manifold / seed_suites / devtools / legacy_phase`
 - `route_b_unified/`
 - `工程记录/`
 - `docs/`

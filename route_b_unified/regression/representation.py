@@ -6,7 +6,7 @@ from typing import Dict, List
 import numpy as np
 
 from datasets.trial_dataset_factory import DEFAULT_IEEEPPG_ROOT, load_trials_for_dataset
-from scripts.run_phase14r_step6b1_rev2 import logm_spd, vec_utri
+from route_b_unified.spd_features import logm_spd, vec_utri
 
 
 @dataclass(frozen=True)

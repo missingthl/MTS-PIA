@@ -284,7 +284,7 @@
 ## 七、建议新增模块
 
 - `route_b_unified/trajectory_dual_role_policy_t6b.py`
-- `scripts/run_route_b_dynamic_dual_role_policy_t6b.py`
+- `scripts/route_b/run_route_b_dynamic_dual_role_policy_t6b.py`
 
 若实现上最小改动，也允许直接复用现有 dual-role builder，但 runner 与输出命名必须独立，不要把 `T5` 与 `T6b` 混成同一入口。
 

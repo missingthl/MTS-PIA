@@ -6,9 +6,9 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 from route_b_unified.representation import RepresentationConfig, build_representation
+from route_b_unified.spd_features import logm_spd, vec_utri
+from route_b_unified.trial_records import _covariance_from_trial
 from route_b_unified.types import RepresentationState
-from scripts.run_phase14r_step6b1_rev2 import logm_spd, vec_utri
-from scripts.run_raw_bridge_probe import _covariance_from_trial
 
 
 @dataclass(frozen=True)

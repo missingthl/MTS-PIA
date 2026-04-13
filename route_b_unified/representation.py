@@ -12,13 +12,9 @@ from datasets.trial_dataset_factory import (
     DEFAULT_SELFREGULATIONSCP1_ROOT,
     load_trials_for_dataset,
 )
+from route_b_unified.trial_records import TrialRecord, _apply_mean_log, _build_trial_records
 from route_b_unified.types import RepresentationState
-from scripts.run_raw_bridge_probe import (
-    TrialRecord,
-    _apply_mean_log,
-    _build_trial_records,
-)
-from scripts.protocol_split_utils import resolve_inner_train_val_split, resolve_protocol_split
+from scripts.support.protocol_split_utils import resolve_inner_train_val_split, resolve_protocol_split
 
 
 @dataclass(frozen=True)

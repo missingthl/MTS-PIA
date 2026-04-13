@@ -267,7 +267,7 @@
 - `route_b_unified/trajectory_feedback_pool_windows.py`
   - 继续扩展，新增 `local_knn_margin`
 - `route_b_unified/trajectory_unified_window_policy.py`
-- `scripts/run_route_b_dynamic_local_knn_margin_t6a1.py`
+- `scripts/route_b/run_route_b_dynamic_local_knn_margin_t6a1.py`
 
 ---
 

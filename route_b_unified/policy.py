@@ -6,11 +6,10 @@ from typing import Dict, Tuple
 
 import numpy as np
 
+from route_b_unified.curriculum_utils import _build_direction_bank_d1, _update_direction_budget
 from route_b_unified.types import EvaluatorPosterior, PolicyAction, PolicyState, PolicyUpdateSummary
-from scripts.fisher_pia_utils import FisherPIAConfig
-from scripts.lraes_utils import LRAESConfig, build_lraes_direction_bank
-from scripts.run_phase15_multiround_curriculum_probe import _update_direction_budget
-from scripts.run_phase15_step1b_multidir_matrix import _build_direction_bank_d1
+from scripts.support.fisher_pia_utils import FisherPIAConfig
+from scripts.support.lraes_utils import LRAESConfig, build_lraes_direction_bank
 
 
 @dataclass(frozen=True)

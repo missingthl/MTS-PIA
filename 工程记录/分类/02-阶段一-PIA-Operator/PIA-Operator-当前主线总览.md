@@ -55,7 +55,7 @@
 对应代码入口主要在：
 
 - [pia_operator_value_probe.py](/home/THL/project/MTS-PIA/route_b_unified/pia_operator_value_probe.py)
-- [run_route_b_pia_operator_p0a1_b3.py](/home/THL/project/MTS-PIA/scripts/run_route_b_pia_operator_p0a1_b3.py)
+- [run_route_b_pia_operator_p0a1_b3.py](/home/THL/project/MTS-PIA/scripts/route_b/run_route_b_pia_operator_p0a1_b3.py)
 
 ### 1. 冻结 backbone
 

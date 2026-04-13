@@ -79,7 +79,7 @@
 
 统一 runner：
 
-- [run_route_b_unified_probe.py](/home/THL/project/MTS-PIA/scripts/run_route_b_unified_probe.py)
+- [run_route_b_unified_probe.py](/home/THL/project/MTS-PIA/scripts/route_b/run_route_b_unified_probe.py)
 
 当前第一批主判断集固定为：
 

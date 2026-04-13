@@ -281,7 +281,7 @@ z_t^{aug} = z_t + \tilde{\delta}_t
 
 - `route_b_unified/trajectory_pia_operator.py`
 - `route_b_unified/trajectory_pia_evaluator.py`
-- `scripts/run_route_b_trajectory_pia_t2a.py`
+- `scripts/route_b/run_route_b_trajectory_pia_t2a.py`
 
 ### 1. `trajectory_pia_operator.py`
 

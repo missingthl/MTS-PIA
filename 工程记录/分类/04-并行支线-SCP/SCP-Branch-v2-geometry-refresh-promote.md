@@ -281,7 +281,7 @@ fast local mapping 需要一个更可信的局部几何参考；
 - `route_b_unified/scp_closed_form_update.py`
 
 建议 runner：
-- `scripts/run_route_b_scp_branch_v3.py`
+- `scripts/route_b/run_route_b_scp_branch_v3.py`
 
 但从语义上，应将其升级解释为：
 - **新 `v2 geometry refresh` runner**

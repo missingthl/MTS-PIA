@@ -252,7 +252,7 @@ z_t^{aug} = z_t + \tilde{\delta}_t
 建议新增：
 
 - `route_b_unified/trajectory_pia_operator_t2b.py`
-- `scripts/run_route_b_trajectory_pia_t2b0.py`
+- `scripts/route_b/run_route_b_trajectory_pia_t2b0.py`
 
 ### 1. `trajectory_pia_operator_t2b.py`
 

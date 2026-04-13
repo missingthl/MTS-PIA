@@ -174,7 +174,7 @@
 - `route_b_unified/trajectory_dataset.py`
 - `route_b_unified/trajectory_classifier.py`
 - `route_b_unified/trajectory_evaluator.py`
-- `scripts/run_route_b_dynamic_manifold_classification.py`
+- `scripts/route_b/run_route_b_dynamic_manifold_classification.py`
 
 职责：
 

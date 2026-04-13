@@ -267,7 +267,7 @@ feedback windows 只用于：
 ## 八、建议新增模块
 
 - `route_b_unified/trajectory_feedback_pool_windows.py`
-- `scripts/run_route_b_dynamic_feedback_rebasis_t4b.py`
+- `scripts/route_b/run_route_b_dynamic_feedback_rebasis_t4b.py`
 
 ---
 

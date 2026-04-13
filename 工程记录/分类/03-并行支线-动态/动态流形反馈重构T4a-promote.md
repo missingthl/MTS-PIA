@@ -165,7 +165,7 @@
 建议新增：
 
 - `route_b_unified/trajectory_feedback_rebasis_t4.py`
-- `scripts/run_route_b_dynamic_feedback_rebasis_t4a.py`
+- `scripts/route_b/run_route_b_dynamic_feedback_rebasis_t4a.py`
 
 其中：
 

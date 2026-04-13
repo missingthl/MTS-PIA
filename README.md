@@ -14,9 +14,11 @@
 
 1. [工程记录/分类/README.md](/home/THL/project/MTS-PIA/工程记录/分类/README.md)
 2. [工程记录/分类/00-入口/分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类二阶段现状.md)
-3. [工程记录/分类/01-阶段二-Tensor-CSPNet/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-Tensor-CSPNet/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
+3. [工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
 4. [工程记录/分类/00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
 5. [docs/CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
+6. [scripts/README.md](/home/THL/project/MTS-PIA/scripts/README.md)
+7. [models/README.md](/home/THL/project/MTS-PIA/models/README.md)
 
 ## 当前工程怎么理解
 
@@ -25,6 +27,10 @@
 当前默认主线是：
 
 `Tensor-CSPNet backbone -> Temporal_Block latent -> residual head`
+
+同时已经开始并行准备通用一维宿主：
+
+- `ResNet1D + E0/E1/E2`
 
 当前实验矩阵是：
 
@@ -71,7 +77,7 @@
 - `models/`
   二阶段当前实现
 - `scripts/`
-  训练与验证入口
+  已按 `hosts / route_b / raw_baselines / support / analysis / data_prep / probes / forecast / manifold / seed_suites / devtools / legacy_phase` 分层
 - `route_b_unified/`
   一阶段算子与几何核心实现
 - `工程记录/`
@@ -88,7 +94,7 @@
 - [models/tensor_cspnet_adapter.py](/home/THL/project/MTS-PIA/models/tensor_cspnet_adapter.py)
 - [models/tensor_cspnet_residual_linear.py](/home/THL/project/MTS-PIA/models/tensor_cspnet_residual_linear.py)
 - [models/local_closed_form_residual_head.py](/home/THL/project/MTS-PIA/models/local_closed_form_residual_head.py)
-- [scripts/run_tensor_cspnet_local_closed_form_holdout.py](/home/THL/project/MTS-PIA/scripts/run_tensor_cspnet_local_closed_form_holdout.py)
+- [scripts/run_tensor_cspnet_local_closed_form_holdout.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py)
 
 一阶段：
 

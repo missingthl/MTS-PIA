@@ -290,7 +290,7 @@
 
 - `route_b_unified/trajectory_feedback_pool.py`
 - `route_b_unified/trajectory_feedback_rebasis.py`
-- `scripts/run_route_b_dynamic_feedback_rebasis_t3.py`
+- `scripts/route_b/run_route_b_dynamic_feedback_rebasis_t3.py`
 
 职责建议：
 

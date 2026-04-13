@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from route_b_unified.types import BridgeResult, EvaluatorPosterior, TargetRoundState
-from scripts.run_bridge_curriculum_pilot import _fit_raw_minirocket
+from scripts.raw_baselines.run_bridge_curriculum_pilot import _fit_raw_minirocket
 
 
 @dataclass(frozen=True)

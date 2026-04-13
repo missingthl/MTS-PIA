@@ -5,7 +5,7 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
-from scripts.run_raw_bridge_probe import TrialRecord
+from route_b_unified.trial_records import TrialRecord
 
 
 @dataclass

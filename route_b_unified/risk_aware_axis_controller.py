@@ -5,7 +5,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from scripts.fisher_pia_utils import FisherPIAConfig, compute_fisher_pia_terms
+from scripts.support.fisher_pia_utils import FisherPIAConfig, compute_fisher_pia_terms
 
 
 @dataclass(frozen=True)

@@ -1,207 +1,141 @@
 # Scripts Index
 
-更新时间：2026-03-29
+更新时间：2026-04-13
 
-这份索引只保留“现在值得直接看”的脚本。
+这次整理后，`scripts/` 不再把所有年代、所有角色的脚本平铺在同一层。
 
-## 0. 统一运行方式
+现在默认把脚本分成十层：
 
-当前工程默认统一走 `pia` 环境。
+- [hosts](/home/THL/project/MTS-PIA/scripts/hosts)
+  二阶段宿主实验入口
+- [route_b](/home/THL/project/MTS-PIA/scripts/route_b)
+  一阶段与并行支线的结构证据 runner
+- [raw_baselines](/home/THL/project/MTS-PIA/scripts/raw_baselines)
+  raw / bridge / MiniROCKET 基线与宿主脚本
+- [support](/home/THL/project/MTS-PIA/scripts/support)
+  仍在被现役代码复用的共享工具
+- [analysis](/home/THL/project/MTS-PIA/scripts/analysis)
+  结果聚合、报表重建、分析型 probe
+- [data_prep](/home/THL/project/MTS-PIA/scripts/data_prep)
+  数据准备与资产体检
+- [probes](/home/THL/project/MTS-PIA/scripts/probes)
+  轻量排障与小探针
+- [forecast](/home/THL/project/MTS-PIA/scripts/forecast)
+  时间序列预测副线
+- [manifold](/home/THL/project/MTS-PIA/scripts/manifold)
+  原始流形数据检查
+- [seed_suites](/home/THL/project/MTS-PIA/scripts/seed_suites)
+  `SEED/SEED-V` 批处理套件
+- [devtools](/home/THL/project/MTS-PIA/scripts/devtools)
+  工程维护与环境自检
+- [legacy_phase](/home/THL/project/MTS-PIA/scripts/legacy_phase)
+  `phase9-16` 历史沉积层
 
-- 统一入口：[run_in_pia.sh](/home/THL/project/MTS-PIA/scripts/run_in_pia.sh)
-- 主线自检：[verify_current_stack_in_pia.sh](/home/THL/project/MTS-PIA/scripts/verify_current_stack_in_pia.sh)
+## 当前最该看的入口
 
-推荐用法：
+如果你现在只关心当前分类主线，请按这个顺序：
 
-```bash
-scripts/run_in_pia.sh scripts/run_route_b_pia_core_minimal_chain.py --help
-scripts/run_in_pia.sh bash scripts/verify_current_stack_in_pia.sh
-```
+1. [hosts/README.md](/home/THL/project/MTS-PIA/scripts/hosts/README.md)
+2. [hosts/run_tensor_cspnet_local_closed_form_holdout.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py)
+3. [hosts/run_resnet1d_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py)
+4. [run_in_pia.sh](/home/THL/project/MTS-PIA/scripts/run_in_pia.sh)
+5. 其余目录按角色再进入，不要再从根目录平扫脚本文件名
 
-## 1. 当前活跃主线
+## 目录说明
 
-### PIA Core current line
+### `hosts`
 
-- [run_route_b_pia_core_minimal_chain.py](/home/THL/project/MTS-PIA/scripts/run_route_b_pia_core_minimal_chain.py)
-  - Package 0：最小主链贯通
-- [run_route_b_pia_core_admission_control.py](/home/THL/project/MTS-PIA/scripts/run_route_b_pia_core_admission_control.py)
-  - Package 1：admission / composition
-- [run_route_b_pia_core_axis_refine.py](/home/THL/project/MTS-PIA/scripts/run_route_b_pia_core_axis_refine.py)
-  - Package 2：第二轴最小细化控制
-- [run_route_b_pia_core_axis_pullback_refine.py](/home/THL/project/MTS-PIA/scripts/run_route_b_pia_core_axis_pullback_refine.py)
-  - Package 2B：`axis-2 × pullback` 收口轮
-- [run_route_b_pia_core_risk_aware_axis2.py](/home/THL/project/MTS-PIA/scripts/run_route_b_pia_core_risk_aware_axis2.py)
-  - Path A：`risk-aware` 第二轴离散选挡
+当前二阶段宿主层。
 
-### 协议与外部基线
+- `Tensor-CSPNet + E0/E1/E2`
+- `ResNet1D + E0/E1/E2`
 
-- [protocol_split_utils.py](/home/THL/project/MTS-PIA/scripts/protocol_split_utils.py)
-  - official protocol / split 统一入口
-- [run_raw_minirocket_official_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/run_raw_minirocket_official_fixedsplit.py)
-  - fixed-split 官方口径 MiniROCKET
-- [run_raw_minirocket_official_seed_family.py](/home/THL/project/MTS-PIA/scripts/run_raw_minirocket_official_seed_family.py)
-  - SEED family 官方口径 MiniROCKET
+### `route_b`
 
-### 回归探针分支
+阶段一 `PIA-Operator`、`PIA-Core`，以及动态 / SCP 支线。
 
-- [run_route_b_zspace_regression_baseline.py](/home/THL/project/MTS-PIA/scripts/regression/run_route_b_zspace_regression_baseline.py)
-  - 并行回归 probe
-  - 当前只跑 `IEEEPPG`
-  - 不属于当前分类主线 Package 0/1/2
+这些脚本现在的角色是：
 
-### 并行 no-bridge 双流分类 probe
+- 结构证据
+- 历史主线复盘
+- 并行支线继续实验
 
-- [run_route_b_dual_stream_no_bridge.py](/home/THL/project/MTS-PIA/scripts/run_route_b_dual_stream_no_bridge.py)
-  - `raw DCNet stream + z-space manifold stream`
-  - 不经过 `bridge`
-  - 不做 `PIA augmentation`
-  - 第一轮只比较：
-    - `spatial_only`
-    - `manifold_only`
-    - `dual_stream`
+它们不再和当前二阶段宿主实验混在根目录里。
 
-### 新表示路径 T0：dynamic manifold classification
+### `raw_baselines`
 
-- [run_route_b_dynamic_manifold_classification.py](/home/THL/project/MTS-PIA/scripts/run_route_b_dynamic_manifold_classification.py)
-  - 静态 SPD 单点主线阶段冻结后的新表示路径 T0
-  - `raw trial -> sliding windows -> z_seq -> minimal trajectory classifier`
-  - 第一轮只比较：
-    - `static_linear`
-    - `dynamic_meanpool`
-    - `dynamic_gru`
-  - `raw + MiniROCKET` 只作外部参考
+原始 raw/bridge/MiniROCKET 宿主与基线层。
 
-### 轨迹感知增强算子 T2a
+这里保留：
 
-- [run_route_b_trajectory_pia_t2a.py](/home/THL/project/MTS-PIA/scripts/run_route_b_trajectory_pia_t2a.py)
-  - `T2a: Global Trajectory Operator`
-  - 在 pooled train windows 上学习单轴共享 basis
-  - 只比较：
-    - `baseline`
-    - `operator_unsmoothed`
-    - `operator_smoothed`
-  - 终端固定：
-    - `dynamic_gru`
-  - 当前正式结果：
-    - `NATOPS` 上 operator 明确成立，且平滑版最佳
-    - `SCP1` 上仅边际优于 baseline，平滑当前未显示必要性
+- `run_raw_bridge_probe.py`
+- `run_bridge_curriculum_pilot.py`
+- `run_raw_minirocket_baseline.py`
+- 相关 fixed-split / seed-family 版本
 
-### 轨迹感知增强算子 T2a 收口轮
+### `support`
 
-- [run_route_b_trajectory_pia_t2a_closure.py](/home/THL/project/MTS-PIA/scripts/run_route_b_trajectory_pia_t2a_closure.py)
-  - 固定 `T2a` 其余一切
-  - 只扫：
-    - `gamma_main`
-    - `smooth_lambda`
-  - `SCP1` 为主矩阵
-  - `NATOPS` 只做锚点
-  - 当前正式结果：
-    - `SCP1` 最稳收口点：
-      - `gamma_main = 0.05`
-      - `smooth_lambda = 0.50`
-    - `NATOPS` 锚点未被打坏
-    - 当前不需要急着进入 `T2b`
+共享工具层。
 
-### 轨迹感知增强算子 T2b-0
+已经从根目录抽出去的典型工具有：
 
-- [run_route_b_trajectory_pia_t2b0.py](/home/THL/project/MTS-PIA/scripts/run_route_b_trajectory_pia_t2b0.py)
-  - `T2b-0: fixed-rule local saliency probe`
-  - 冻结 `T2a default = gamma 0.05 / smooth 0.50`
-  - 主比较只看：
-    - `baseline`
-    - `t2a_default`
-    - `t2b_saliency`
-    - `t2b_randomized`
-  - 不做参数网格
-  - 当前正式结果：
-    - `NATOPS` 上：
-      - `t2b_saliency` 已优于 `t2a_default`
-      - 也优于 `t2b_randomized`
-    - `SCP1` 上：
-      - `t2b_saliency` 与 `t2a_default` 持平
-      - 仅略高于 `t2b_randomized`
-  - 当前口径：
-    - 这是值得继续推进的局部时间感知 probe
-    - 还不是完整局部动力学框架
+- `fisher_pia_utils.py`
+- `lraes_utils.py`
+- `protocol_split_utils.py`
+- `resource_probe_utils.py`
+- `local_knn_gate.py`
 
-### 动态反馈重构 T3
+这层的目的就是避免“拿 runner 当库函数”。
 
-- [run_route_b_dynamic_feedback_rebasis_t3.py](/home/THL/project/MTS-PIA/scripts/run_route_b_dynamic_feedback_rebasis_t3.py)
-  - `T3: dynamic manifold feedback re-basis probe`
-  - 冻结：
-    - `trajectory representation`
-    - 当前窗口策略
-    - `dynamic_gru`
-    - `T2a default = gamma 0.05 / smooth 0.50`
-  - 主比较只看：
-    - `baseline`
-    - `t2a_default`
-    - `t3_rebasis`
-  - 核心步骤：
-    - `feedback pool`
-    - `re-center`
-    - `re-basis`
-    - 再在原始 trajectory 上重新增强和评估
-  - 当前正式结果：
-    - `NATOPS` 上：
-      - `t3_rebasis` 已优于冻结后的 `t2a_default`
-      - 且 shared basis 发生了明显非平凡旋转
-    - `SCP1` 上：
-      - `t3_rebasis` 仍未优于 `t2a_default`
-      - feedback pool 虽稳定存在，但 basis 基本不动
-  - 当前口径：
-    - `T3` 已经开始回答“增强能否反过来改骨架”
-    - 这条线值得继续推进
+### `legacy_phase`
 
-### 当前阅读建议
+`phase9-16` 历史脚本整体下沉后的存放层。
 
-如果只是为了推进当前主线，优先只看：
+这里仍然保留全部历史脚本，但默认不建议从这里起读。  
+需要阶段一历史细节时，再进入这一层。
 
-1. `run_route_b_pia_core_minimal_chain.py`
-2. `run_route_b_pia_core_admission_control.py`
-3. `run_route_b_pia_core_axis_refine.py`
-4. `run_route_b_pia_core_axis_pullback_refine.py`
-5. `run_route_b_pia_core_risk_aware_axis2.py`
-6. `protocol_split_utils.py`
+### `analysis / probes`
 
-如果看并行无桥双流验证，再单独看：
+这两层解决“实验太多但没有读法”的问题：
 
-7. `run_route_b_dual_stream_no_bridge.py`
+- `analysis` 负责聚合与解释
+- `probes` 负责快速排障与小验证
 
-如果看新表示路径 T0，再单独看：
+它们都不应该和正式 runner 混作一个层级理解。
 
-8. `run_route_b_dynamic_manifold_classification.py`
+### `data_prep / seed_suites / devtools`
 
-如果看 T2a，再单独看：
+这三层把之前最影响可读性的杂项脚本整体下沉：
 
-9. `run_route_b_trajectory_pia_t2a.py`
+- `data_prep`：数据与资产准备
+- `seed_suites`：批量 shell / worker
+- `devtools`：环境与工程维护
 
-## 2. 当前仍有参考价值的旧线
+### `forecast / manifold`
 
-- [run_bridge_curriculum_pilot.py](/home/THL/project/MTS-PIA/scripts/run_bridge_curriculum_pilot.py)
-  - 旧 Route B bridge 参考线
-- [run_phase15_multiround_curriculum_probe.py](/home/THL/project/MTS-PIA/scripts/run_phase15_multiround_curriculum_probe.py)
-  - 旧 multiround target 升级线
-- [run_phase15_lraes_curriculum_probe.py](/home/THL/project/MTS-PIA/scripts/run_phase15_lraes_curriculum_probe.py)
-  - LRAES 上游方向线
-- [run_route_b_unified_probe.py](/home/THL/project/MTS-PIA/scripts/run_route_b_unified_probe.py)
-  - unified shell 历史原型
+这些是并行副线或数据诊断层：
 
-## 3. 当前不建议作为入口的脚本
+- `forecast`：时间序列预测
+- `manifold`：原始流形检查
 
-下面这些脚本多数仍可运行，但不应再作为当前主线入口：
+## 当前阅读顺序
 
-- `run_phase15_step0*`
-- `run_phase15_step1*`
-- 各类 `_probe.py / _scan.py / _diag.py / _smoke.py`
-- 已被当前 `PIA Core current line` 覆盖的旧 batch 脚本
+1. [README.md](/home/THL/project/MTS-PIA/README.md)
+2. [docs/CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
+3. [工程记录/分类/README.md](/home/THL/project/MTS-PIA/工程记录/分类/README.md)
+4. [scripts/hosts/README.md](/home/THL/project/MTS-PIA/scripts/hosts/README.md)
+5. 再按需要进入 `route_b / raw_baselines / support`
+6. 最后才进入 `analysis / probes / legacy_phase`
 
-## 4. 当前正确的阅读顺序
+## 当前清理后的边界
 
-如果先看脚本，再理解工程，最容易迷路。
+这次已经完成了三件最关键的事：
 
-更稳的顺序是：
+1. `phase*` 历史沉积层已经物理下沉
+2. 现役代码对部分旧脚本公共函数的依赖，已经开始抽到稳定模块
+3. 根目录里的杂项脚本已经继续按功能分桶，不再平铺
 
-1. [CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
-2. [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
-3. 再回到这里找 runner
+所以现在的 `scripts/` 读法已经和以前不同：
+
+- 根目录：只保留统一入口与少量跨层脚本
+- 子目录：按角色、实验层级和用途分层阅读

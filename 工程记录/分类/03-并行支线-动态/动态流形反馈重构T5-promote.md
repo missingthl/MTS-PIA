@@ -223,7 +223,7 @@
 ## 七、建议新增模块
 
 - `route_b_unified/trajectory_dual_role_policy.py`
-- `scripts/run_route_b_dynamic_dual_role_policy_t5.py`
+- `scripts/route_b/run_route_b_dynamic_dual_role_policy_t5.py`
 
 ---
 

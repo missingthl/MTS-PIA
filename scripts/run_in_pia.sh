@@ -11,9 +11,9 @@ Usage:
   scripts/run_in_pia.sh <command> [args...]
 
 Examples:
-  scripts/run_in_pia.sh scripts/run_route_b_pia_core_minimal_chain.py --help
-  scripts/run_in_pia.sh python -m py_compile scripts/run_route_b_pia_core_minimal_chain.py
-  scripts/run_in_pia.sh bash scripts/verify_current_stack_in_pia.sh
+  scripts/run_in_pia.sh scripts/route_b/run_route_b_pia_core_minimal_chain.py --help
+  scripts/run_in_pia.sh python -m py_compile scripts/route_b/run_route_b_pia_core_minimal_chain.py
+  scripts/run_in_pia.sh bash scripts/devtools/verify_current_stack_in_pia.sh
 
 Notes:
   - Defaults to conda env: pia

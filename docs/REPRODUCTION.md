@@ -27,7 +27,7 @@ scripts/run_in_pia.sh python -c "import torch; import mne; import pyriemann; pri
 
 - 当前工程默认统一走 `pia` 环境
 - 推荐优先使用 [scripts/run_in_pia.sh](../scripts/run_in_pia.sh)
-- 主线自检入口是 [scripts/verify_current_stack_in_pia.sh](../scripts/verify_current_stack_in_pia.sh)
+- 主线自检入口是 [scripts/devtools/verify_current_stack_in_pia.sh](../scripts/devtools/verify_current_stack_in_pia.sh)
 
 ### 方式 B: pip
 
@@ -89,7 +89,7 @@ data/SEED_V/
 
 ```bash
 # 生成 SEED Raw EEG manifest
-scripts/run_in_pia.sh scripts/build_seed_raw_manifest_full.py
+scripts/run_in_pia.sh scripts/data_prep/build_seed_raw_manifest_full.py
 
 # 输出:
 # - logs/seed_raw_trial_manifest_full.json

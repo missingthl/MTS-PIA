@@ -7,8 +7,8 @@ from typing import Dict, List, Sequence
 import numpy as np
 import torch
 
+from route_b_unified.trial_records import TrialRecord
 from route_b_unified.types import BridgeResult, RepresentationState, TargetRoundState
-from scripts.run_raw_bridge_probe import TrialRecord
 from transforms.whiten_color_bridge import bridge_single, covariance_from_signal, logvec_to_spd
 
 
