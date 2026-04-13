@@ -11,7 +11,7 @@
 
 当前默认入口请先看：
 
-- [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-当前主线总览.md)
+- [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-当前主线总览.md)
 
 ## 任务名称
 `SCP-Branch P0a.1-C_next: Lambda Geometry Repair Probe`

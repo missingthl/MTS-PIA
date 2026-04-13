@@ -190,7 +190,7 @@ simple-set bridge 结果见：
 ## 5. 当前建议阅读顺序
 
 1. [docs/ROUTE_B_MAIN_BODY.md](/home/THL/project/MTS-PIA/docs/ROUTE_B_MAIN_BODY.md)
-2. [工程记录/分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类工程现状.md)
-3. [工程记录/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类调试记录.md)
+2. [工程记录/分类/00-入口/分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
+3. [工程记录/分类/00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
 4. [lraes_curriculum_performance_summary.csv](/home/THL/project/MTS-PIA/out/phase15_lraes_curriculum_core_20260322_rerun/lraes_curriculum_performance_summary.csv)
 5. [bridge_curriculum_all_simple_sets_compare.md](/home/THL/project/MTS-PIA/out/bridge_curriculum_fm_pilot_20260321/bridge_curriculum_all_simple_sets_compare.md)

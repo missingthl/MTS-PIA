@@ -9,7 +9,7 @@
 
 如果只想知道当前主线已经做到哪一步，请先看：
 
-- [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-当前主线总览.md)
+- [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-当前主线总览.md)
 
 ## 零、战略定位
 

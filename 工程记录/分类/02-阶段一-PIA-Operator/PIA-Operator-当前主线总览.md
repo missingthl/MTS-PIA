@@ -172,7 +172,7 @@ Force(z)=local\_step(z)\cdot a_{resp}(z)\cdot g_{geom}(z)\cdot u_{geom}(z)
 
 如果继续往前，当前最值得开的不是继续给全局静态算子补小超参，而是：
 
-- [PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md)
+- [PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md)
 
 它的定位不是替换现有 `C3/B3`，而是测试：
 
@@ -267,11 +267,11 @@ Force(z)=local\_step(z)\cdot a_{resp}(z)\cdot g_{geom}(z)\cdot u_{geom}(z)
 
 ## 当前推荐阅读顺序
 
-1. [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-当前主线总览.md)
-2. [PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md)
-3. [PIA-Operator-P0a.1-Computational-Repair-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0a.1-Computational-Repair-promote.md)
-4. [PIA-Operator-P0a.1-Stage-C-next-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0a.1-Stage-C-next-promote.md)
-5. [PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md)
+1. [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-当前主线总览.md)
+2. [PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md)
+3. [PIA-Operator-P0a.1-Computational-Repair-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P0a.1-Computational-Repair-promote.md)
+4. [PIA-Operator-P0a.1-Stage-C-next-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P0a.1-Stage-C-next-promote.md)
+5. [PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md)
 
 ## 当前阶段性结论
 
@@ -411,7 +411,7 @@ Force(z)=local\_step(z)\cdot a_{resp}(z)\cdot g_{geom}(z)\cdot u_{geom}(z)
 
 对应正式流程稿见：
 
-- [PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md)
+- [PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P0b-lite-Delayed-Refresh-Probe-promote.md)
 
 ### 第三步：把 `B3` 从“研究分支”转成“可比较读出策略”
 

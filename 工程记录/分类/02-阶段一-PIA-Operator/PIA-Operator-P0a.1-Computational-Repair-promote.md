@@ -6,11 +6,11 @@
 
 如果你现在只想知道“当前代码到底已经实现到哪一步”，请先看：
 
-- [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-当前主线总览.md)
+- [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-当前主线总览.md)
 
 如果你要看当前最接近现实现链的 promote，请优先看：
 
-- [PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md)
+- [PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P0a.1-C3-Discriminative-Closed-Form-Probe-promote.md)
 
 ## 任务名称
 `SCP-Branch P0a.1: Single-Template PIA Computational Repair Probe`

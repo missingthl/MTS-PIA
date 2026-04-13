@@ -203,5 +203,5 @@ scripts/run_in_pia.sh bash scripts/verify_current_stack_in_pia.sh
 更稳的顺序是：
 
 1. [CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
-2. [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类工程现状.md)
+2. [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
 3. 再回到这里找 runner

@@ -5,7 +5,7 @@
 阅读提示：
 
 - 如果你想先知道这个任务单在整个分类工程里的位置，请先看：
-  - [分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类二阶段现状.md)
+  - [分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类二阶段现状.md)
 - 这份文件不负责回顾全部一阶段历史，而只负责当前二阶段实现与实验推进。
 
 ## 0. 阶段定位与阶段目标
@@ -21,9 +21,9 @@
 它承接的是两类既有证据：
 
 - 内部结构证据：
-  - 当前主线仍停在 [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-当前主线总览.md) 所描述的 `P0a.1` 尾部
-  - [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类工程现状.md) 已明确当前主问题正在从 `axis -> force` 转向 `operator scope`
-  - [PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md) 与 [分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类调试记录.md) 已给出 “全局固定算子作用域不足” 的强信号
+  - 当前主线仍停在 [PIA-Operator-当前主线总览.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-当前主线总览.md) 所描述的 `P0a.1` 尾部
+  - [分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md) 已明确当前主问题正在从 `axis -> force` 转向 `operator scope`
+  - [PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md](/home/THL/project/MTS-PIA/工程记录/分类/02-阶段一-PIA-Operator/PIA-Operator-P1a-Zero-Prior-Structured-State-Mapper-Probe-promote.md) 与 [分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md) 已给出 “全局固定算子作用域不足” 的强信号
 - 外部宿主证据：
   - `Tensor-CSPNet` 已在本机完整复现到 `BCIC-IV-2a holdout = 0.7238`
   - 结果文件位于：
