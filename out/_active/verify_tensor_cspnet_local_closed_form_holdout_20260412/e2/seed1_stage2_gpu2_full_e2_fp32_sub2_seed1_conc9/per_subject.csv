@@ -1,0 +1,2 @@
+subject,test_macro_acc,test_loss,train_seconds,wallclock_seconds,arm,seed
+2,0.5868055555555556,1.6397049317343368,9698.577659606934,9766.315884113312,e2,1

@@ -27,12 +27,14 @@ class TensorCSPNetResidualLinear(nn.Module):
         mlp: bool = False,
         dataset: str = "BCIC",
         init_beta: float = 0.1,
+        spd_dtype: torch.dtype = torch.double,
     ) -> None:
         super().__init__()
         self.adapter = TensorCSPNetAdapter(
             channel_num=int(channel_num),
             mlp=bool(mlp),
             dataset=str(dataset),
+            spd_dtype=spd_dtype,
         )
         self.residual_head = nn.Linear(
             self.adapter.feature_dim,

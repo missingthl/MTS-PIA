@@ -49,17 +49,25 @@ class TensorCSPNetAdapter(nn.Module):
         mlp: bool = False,
         dataset: str = "BCIC",
         base_model: nn.Module | None = None,
+        spd_dtype: torch.dtype = torch.double,
     ) -> None:
         super().__init__()
         self.channel_num = int(channel_num)
         self.dataset = str(dataset)
+        self.spd_dtype = spd_dtype
         self.base_model = base_model or Tensor_CSPNet_Basic(
             channel_num=int(channel_num),
             mlp=bool(mlp),
             dataset=str(dataset),
         )
-        # Keep the SPD pipeline in float64, but move the downstream temporal/readout
-        # path to float32 so RTX-class GPUs do not spend unnecessary time on FP64 conv/MLP.
+        if self.spd_dtype == torch.float32:
+            self.base_model.BiMap_Block = self.base_model.BiMap_Block.float()
+        elif self.spd_dtype == torch.float64:
+            self.base_model.BiMap_Block = self.base_model.BiMap_Block.double()
+        else:
+            raise ValueError(f"unsupported SPD dtype: {self.spd_dtype}")
+        # Keep the downstream temporal/readout path in float32 so RTX-class GPUs
+        # do not spend unnecessary time on FP64 conv/MLP.
         self.base_model.Temporal_Block = self.base_model.Temporal_Block.float()
         self.base_model.Classifier = self.base_model.Classifier.float()
         self.feature_dim = int(getattr(self.base_model, "tcn_channels"))
@@ -76,7 +84,7 @@ class TensorCSPNetAdapter(nn.Module):
         raise TypeError("unable to infer class count from Tensor-CSPNet classifier")
 
     def forward_features(self, x: torch.Tensor) -> TensorCSPNetForwardOutputs:
-        x = x.double()
+        x = x.to(dtype=self.spd_dtype)
         batch_size = int(x.shape[0])
         window_num = int(x.shape[1])
         band_num = int(x.shape[2])

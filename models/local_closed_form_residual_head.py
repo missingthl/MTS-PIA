@@ -96,12 +96,14 @@ class TensorCSPNetLocalClosedFormResidual(nn.Module):
         routing_temperature: float = 1.0,
         ridge: float = 1e-2,
         init_beta: float = 0.1,
+        spd_dtype: torch.dtype = torch.double,
     ) -> None:
         super().__init__()
         self.adapter = TensorCSPNetAdapter(
             channel_num=int(channel_num),
             mlp=bool(mlp),
             dataset=str(dataset),
+            spd_dtype=spd_dtype,
         )
         self.local_head = LocalClosedFormResidualHead(
             feature_dim=self.adapter.feature_dim,

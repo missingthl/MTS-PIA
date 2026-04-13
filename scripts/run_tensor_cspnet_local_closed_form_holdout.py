@@ -112,12 +112,28 @@ def _adjust_learning_rate(optimizer, *, initial_lr: float, decay: float, epoch: 
     optimizer.lr = float(initial_lr) * (float(decay) ** (int(epoch) // 100))
 
 
-def _build_model(args: argparse.Namespace, *, channel_num: int, device: torch.device) -> torch.nn.Module:
+def _resolve_spd_dtype(spd_precision: str) -> torch.dtype:
+    value = str(spd_precision).strip().lower()
+    if value == "fp64":
+        return torch.float64
+    if value == "fp32":
+        return torch.float32
+    raise ValueError(f"unsupported spd precision: {spd_precision}")
+
+
+def _build_model(
+    args: argparse.Namespace,
+    *,
+    channel_num: int,
+    device: torch.device,
+    spd_dtype: torch.dtype,
+) -> torch.nn.Module:
     if args.arm == "e0":
         model = TensorCSPNetAdapter(
             channel_num=int(channel_num),
             mlp=bool(args.mlp),
             dataset="BCIC",
+            spd_dtype=spd_dtype,
         )
     elif args.arm == "e1":
         model = TensorCSPNetResidualLinear(
@@ -125,6 +141,7 @@ def _build_model(args: argparse.Namespace, *, channel_num: int, device: torch.de
             mlp=bool(args.mlp),
             dataset="BCIC",
             init_beta=float(args.init_beta),
+            spd_dtype=spd_dtype,
         )
     elif args.arm == "e2":
         model = TensorCSPNetLocalClosedFormResidual(
@@ -135,6 +152,7 @@ def _build_model(args: argparse.Namespace, *, channel_num: int, device: torch.de
             routing_temperature=float(args.routing_temperature),
             ridge=float(args.closed_form_ridge),
             init_beta=float(args.init_beta),
+            spd_dtype=spd_dtype,
         )
     else:
         raise ValueError(f"unknown arm: {args.arm}")
@@ -151,13 +169,14 @@ def _make_loaders(
     test_batch_size: int,
     num_workers: int,
     use_cuda: bool,
+    feature_dtype: torch.dtype,
 ):
     train_dataset = dataloader_in_main(
-        torch.from_numpy(train_x).double(),
+        torch.from_numpy(train_x).to(dtype=feature_dtype),
         torch.LongTensor(train_y),
     )
     test_dataset = dataloader_in_main(
-        torch.from_numpy(test_x).double(),
+        torch.from_numpy(test_x).to(dtype=feature_dtype),
         torch.LongTensor(test_y),
     )
 
@@ -265,6 +284,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--mlp", action="store_true", default=False)
     p.add_argument("--no-cuda", action="store_true", default=False)
+    p.add_argument("--spd-precision", type=str, default="fp64", choices=["fp64", "fp32"])
     p.add_argument(
         "--cache-root",
         type=str,
@@ -286,6 +306,7 @@ def main() -> None:
 
     use_cuda = not bool(args.no_cuda) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
+    spd_dtype = _resolve_spd_dtype(str(args.spd_precision))
 
     run_tag = str(args.run_tag).strip() or time.strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(str(args.out_root), str(args.arm), f"seed{int(args.seed)}_{run_tag}")
@@ -306,6 +327,7 @@ def main() -> None:
         "mlp": bool(args.mlp),
         "use_cuda": bool(use_cuda),
         "device": str(device),
+        "spd_precision": str(args.spd_precision),
         "cache_root": str(args.cache_root),
         "disable_subject_cache": bool(args.disable_subject_cache),
         "init_beta": float(args.init_beta),
@@ -332,9 +354,15 @@ def main() -> None:
             test_batch_size=int(args.test_batch_size),
             num_workers=int(args.num_workers),
             use_cuda=bool(use_cuda),
+            feature_dtype=spd_dtype,
         )
 
-        model = _build_model(args, channel_num=int(train_x.shape[1] * train_x.shape[2]), device=device)
+        model = _build_model(
+            args,
+            channel_num=int(train_x.shape[1] * train_x.shape[2]),
+            device=device,
+            spd_dtype=spd_dtype,
+        )
         optimizer = ref_geoopt.optim.RiemannianAdam(model.parameters(), lr=float(args.initial_lr))
 
         subject_start = time.time()

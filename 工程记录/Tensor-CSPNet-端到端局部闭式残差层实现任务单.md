@@ -1,6 +1,6 @@
 # Tensor-CSPNet 端到端局部闭式残差层实现任务单
 
-更新时间：2026-04-12
+更新时间：2026-04-13
 
 阅读提示：
 
@@ -87,6 +87,37 @@
 - 第一波实现级加速已经基本成立
 - 下一步是补 `subject 1` 等价性点
 - 然后进入 `batch 29 / 58 / 87` 的吞吐-精度联合验证
+
+### 0.5 当前最新实验结果
+
+当前已经有两组值得当阶段锚点的结果：
+
+1. `fp64 mainline`
+2. `GPU2 fp32`
+
+当前 `fp64 mainline` 单 seed 全量结果：
+
+- `E0 = 0.7103`
+- `E1 = 0.7083`
+- `E2 = 0.7018`
+
+当前 `GPU2 fp32` 聚合结果：
+
+- `E0 = 0.7118`
+- `E1 = 0.7114`
+- `E2 = 0.6983`
+
+权威汇总入口：
+
+- [stage2_mainline_fp64_and_gpu2_fp32_summary_20260413.md](/home/THL/project/MTS-PIA/out/_active/verify_tensor_cspnet_local_closed_form_holdout_20260412/notes/stage2_mainline_fp64_and_gpu2_fp32_summary_20260413.md)
+
+当前读法：
+
+- `SPD fp32` 已经被证明是一个可工作的候选数值策略
+- 但 `E2` 目前还没有稳定优于 `E0 / E1`
+- 本任务单后续的重点应进一步转向：
+  - `E2` 的方法改造
+  - 而不是继续无上限扩训练链路本身
 
 ## 1. 本阶段架构冻结
 

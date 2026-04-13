@@ -57,11 +57,11 @@ class SPDIncreaseDim(nn.Module):
 
     def forward(self, input):
 
-        eye    = self.eye.unsqueeze(0).unsqueeze(0).double()
+        eye    = self.eye.unsqueeze(0).unsqueeze(0).to(dtype=input.dtype, device=input.device)
 
         eye    = eye.expand(input.size(0), input.size(1), -1, -1)
 
-        add    = self.add.unsqueeze(0).unsqueeze(0).double()
+        add    = self.add.unsqueeze(0).unsqueeze(0).to(dtype=input.dtype, device=input.device)
 
         add    = add.expand(input.size(0), input.size(1), -1, -1)
 
@@ -193,4 +193,3 @@ class ReEig(nn.Module):
 class LogEig(nn.Module):
     def forward(self,P):
         return functional.LogEig.apply(P)
-

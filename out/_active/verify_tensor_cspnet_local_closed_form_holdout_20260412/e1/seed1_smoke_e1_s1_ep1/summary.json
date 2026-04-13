@@ -1,0 +1,7 @@
+{
+  "arm": "e1",
+  "dataset": "BCIC",
+  "seed": 1,
+  "subject_count": 1,
+  "mean_test_macro_acc": 0.2604166666666667
+}

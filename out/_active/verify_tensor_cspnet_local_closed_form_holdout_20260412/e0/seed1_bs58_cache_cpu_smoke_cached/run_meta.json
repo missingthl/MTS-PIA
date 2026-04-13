@@ -1,0 +1,22 @@
+{
+  "arm": "e0",
+  "dataset": "BCIC",
+  "seed": 1,
+  "start_no": 1,
+  "end_no": 1,
+  "epochs": 1,
+  "train_batch_size": 58,
+  "test_batch_size": 58,
+  "num_workers": 0,
+  "initial_lr": 0.001,
+  "decay": 1.0,
+  "mlp": false,
+  "use_cuda": false,
+  "device": "cpu",
+  "cache_root": "/home/THL/project/MTS-PIA/cache/tensor_cspnet_bcic_holdout",
+  "disable_subject_cache": false,
+  "init_beta": 0.1,
+  "prototypes_per_class": 4,
+  "routing_temperature": 1.0,
+  "closed_form_ridge": 0.01
+}

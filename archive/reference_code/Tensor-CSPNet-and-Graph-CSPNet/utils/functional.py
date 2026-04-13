@@ -349,7 +349,7 @@ class Re_op():
         return nn.Threshold(cls._threshold,cls._threshold)(S)
     @classmethod
     def fn_deriv(cls,S,param=None):
-        return (S>cls._threshold).double()
+        return (S>cls._threshold).to(dtype=S.dtype)
 
 class Sqm_op():
     """ Log function and its derivative """
