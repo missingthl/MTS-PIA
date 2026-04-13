@@ -15,13 +15,11 @@
 
 如果你只想知道当前分类工程在做什么，请按下面顺序：
 
-1. [分类/00-入口/分类文档导航总表.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类文档导航总表.md)
-2. [分类/00-入口/分类二阶段现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类二阶段现状.md)
-3. [分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
-4. [分类/00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
-5. [分类/00-入口/阶段一结构证据总览.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/阶段一结构证据总览.md)
-6. [分类/00-入口/ResNet1D-tsai-对齐与接入说明.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/ResNet1D-tsai-对齐与接入说明.md)
-7. [scripts/README.md](/home/THL/project/MTS-PIA/scripts/README.md)
+1. [分类/00-入口/分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
+2. [分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
+3. [分类/00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
+4. [分类/00-入口/阶段一结构证据总览.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/阶段一结构证据总览.md)
+5. [scripts/README.md](/home/THL/project/MTS-PIA/scripts/README.md)
 
 ## 分类目录说明
 
