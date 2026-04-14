@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+uwavegesturelibrary,e2,1,0.771875,0.7638434588171135,24.158073902130127

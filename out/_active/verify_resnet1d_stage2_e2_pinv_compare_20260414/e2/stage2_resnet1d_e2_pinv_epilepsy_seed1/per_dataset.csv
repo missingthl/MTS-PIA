@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+epilepsy,e2,1,0.9710144927536232,0.9712030249759528,46.68979859352112
