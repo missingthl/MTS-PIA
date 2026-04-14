@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+articularywordrecognition,e0,1,0.9766666666666667,0.976236215957955,4.888006687164307

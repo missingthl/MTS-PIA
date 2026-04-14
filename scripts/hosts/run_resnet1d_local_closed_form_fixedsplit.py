@@ -21,15 +21,26 @@ sys.path.insert(0, ROOT)
 
 from datasets.trial_dataset_factory import (  # noqa: E402
     DEFAULT_ATRIALFIBRILLATION_ROOT,
+    DEFAULT_ARTICULARYWORDRECOGNITION_ROOT,
     DEFAULT_BASICMOTIONS_ROOT,
+    DEFAULT_CRICKET_ROOT,
     DEFAULT_EPILEPSY_ROOT,
+    DEFAULT_ERING_ROOT,
+    DEFAULT_ETHANOLCONCENTRATION_ROOT,
     DEFAULT_FINGERMOVEMENTS_ROOT,
     DEFAULT_HAR_ROOT,
     DEFAULT_HANDMOVEMENTDIRECTION_ROOT,
+    DEFAULT_HANDWRITING_ROOT,
+    DEFAULT_HEARTBEAT_ROOT,
+    DEFAULT_JAPANESEVOWELS_ROOT,
+    DEFAULT_LIBRAS_ROOT,
     DEFAULT_MITBIH_NPZ,
+    DEFAULT_MOTORIMAGERY_ROOT,
     DEFAULT_NATOPS_ROOT,
     DEFAULT_PENDIGITS_ROOT,
+    DEFAULT_RACKETSPORTS_ROOT,
     DEFAULT_SELFREGULATIONSCP1_ROOT,
+    DEFAULT_SELFREGULATIONSCP2_ROOT,
     DEFAULT_UWAVEGESTURELIBRARY_ROOT,
     load_trials_for_dataset,
     normalize_dataset_name,
@@ -81,6 +92,17 @@ def _load_fixedsplit_arrays(args: argparse.Namespace):
         epilepsy_root=args.epilepsy_root,
         atrialfibrillation_root=args.atrialfibrillation_root,
         pendigits_root=args.pendigits_root,
+        racketsports_root=args.racketsports_root,
+        articularywordrecognition_root=args.articularywordrecognition_root,
+        heartbeat_root=args.heartbeat_root,
+        selfregulationscp2_root=args.selfregulationscp2_root,
+        libras_root=args.libras_root,
+        japanesevowels_root=args.japanesevowels_root,
+        cricket_root=args.cricket_root,
+        handwriting_root=args.handwriting_root,
+        ering_root=args.ering_root,
+        motorimagery_root=args.motorimagery_root,
+        ethanolconcentration_root=args.ethanolconcentration_root,
     )
     train_trials = [t for t in trials if str(t.get("split", "")).lower() == "train"]
     test_trials = [t for t in trials if str(t.get("split", "")).lower() == "test"]
@@ -114,6 +136,8 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             num_classes=int(num_classes),
             prototypes_per_class=int(args.prototypes_per_class),
             routing_temperature=float(args.routing_temperature),
+            class_prior_temperature=args.class_prior_temperature,
+            subproto_temperature=args.subproto_temperature,
             ridge=float(args.closed_form_ridge),
             ridge_mode=str(args.closed_form_ridge_mode),
             ridge_trace_eps=float(args.closed_form_ridge_trace_eps),
@@ -266,6 +290,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--init-beta", type=float, default=0.1)
     p.add_argument("--prototypes-per-class", type=int, default=4)
     p.add_argument("--routing-temperature", type=float, default=1.0)
+    p.add_argument("--class-prior-temperature", type=float, default=None,
+                   help="Temperature for class-center softmax routing. None = use routing-temperature.")
+    p.add_argument("--subproto-temperature", type=float, default=None,
+                   help="Temperature for sub-prototype softmax routing. None = use routing-temperature.")
     p.add_argument("--closed-form-ridge", type=float, default=1e-2)
     p.add_argument("--closed-form-ridge-mode", type=str, default="fixed", choices=["fixed", "trace_adaptive"])
     p.add_argument("--closed-form-ridge-trace-eps", type=float, default=1e-8)
@@ -282,7 +310,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--dataflow-probe", action="store_true", default=False)
     p.add_argument("--local-support-mode", type=str, default="same_only", choices=["same_opp_balanced", "same_only", "same_opp_asym"])
     p.add_argument("--prototype-aggregation", type=str, default="pooled", choices=["pooled", "committee_mean"])
-    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto"])
+    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto", "center_only"])
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
     p.add_argument("--detach-local-latent", action="store_true", default=False)
     p.add_argument("--fusion-warmup-hold-epochs", type=int, default=0)
@@ -299,6 +327,17 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--epilepsy-root", type=str, default=DEFAULT_EPILEPSY_ROOT)
     p.add_argument("--atrialfibrillation-root", type=str, default=DEFAULT_ATRIALFIBRILLATION_ROOT)
     p.add_argument("--pendigits-root", type=str, default=DEFAULT_PENDIGITS_ROOT)
+    p.add_argument("--racketsports-root", type=str, default=DEFAULT_RACKETSPORTS_ROOT)
+    p.add_argument("--articularywordrecognition-root", type=str, default=DEFAULT_ARTICULARYWORDRECOGNITION_ROOT)
+    p.add_argument("--heartbeat-root", type=str, default=DEFAULT_HEARTBEAT_ROOT)
+    p.add_argument("--selfregulationscp2-root", type=str, default=DEFAULT_SELFREGULATIONSCP2_ROOT)
+    p.add_argument("--libras-root", type=str, default=DEFAULT_LIBRAS_ROOT)
+    p.add_argument("--japanesevowels-root", type=str, default=DEFAULT_JAPANESEVOWELS_ROOT)
+    p.add_argument("--cricket-root", type=str, default=DEFAULT_CRICKET_ROOT)
+    p.add_argument("--handwriting-root", type=str, default=DEFAULT_HANDWRITING_ROOT)
+    p.add_argument("--ering-root", type=str, default=DEFAULT_ERING_ROOT)
+    p.add_argument("--motorimagery-root", type=str, default=DEFAULT_MOTORIMAGERY_ROOT)
+    p.add_argument("--ethanolconcentration-root", type=str, default=DEFAULT_ETHANOLCONCENTRATION_ROOT)
     return p
 
 

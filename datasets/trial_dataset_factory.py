@@ -26,6 +26,7 @@ DEFAULT_BANDS_UWAVEGESTURELIBRARY = "band1:0.5-1.5,band2:1.5-3,band3:3-5,band4:5
 DEFAULT_BANDS_EPILEPSY = "band1:0.2-0.8,band2:0.8-1.5,band3:1.5-3,band4:3-5,band5:5-7.5"
 DEFAULT_BANDS_ATRIALFIBRILLATION = DEFAULT_BANDS_MITBIH
 DEFAULT_BANDS_PENDIGITS = "band1:0.2-0.6,band2:0.6-1.2,band3:1.2-2.0,band4:2.0-3.0,band5:3.0-3.8"
+DEFAULT_BANDS_AEON_GENERIC = "band1:0.02-0.06,band2:0.06-0.12,band3:0.12-0.20,band4:0.20-0.30,band5:0.30-0.45"
 DEFAULT_HAR_ROOT = "data/HAR"
 DEFAULT_MITBIH_NPZ = "data/MITBIH/processed/mitbih_aami44_nsvf_beats.npz"
 DEFAULT_SEEDIV_ROOT = "data/SEED_IV"
@@ -39,6 +40,17 @@ DEFAULT_UWAVEGESTURELIBRARY_ROOT = "data/UWaveGestureLibrary"
 DEFAULT_EPILEPSY_ROOT = "data/Epilepsy"
 DEFAULT_ATRIALFIBRILLATION_ROOT = "data/AtrialFibrillation"
 DEFAULT_PENDIGITS_ROOT = "data/PenDigits"
+DEFAULT_RACKETSPORTS_ROOT = "data/RacketSports"
+DEFAULT_ARTICULARYWORDRECOGNITION_ROOT = "data/ArticularyWordRecognition"
+DEFAULT_HEARTBEAT_ROOT = "data/Heartbeat"
+DEFAULT_SELFREGULATIONSCP2_ROOT = "data/SelfRegulationSCP2"
+DEFAULT_LIBRAS_ROOT = "data/Libras"
+DEFAULT_JAPANESEVOWELS_ROOT = "data/JapaneseVowels"
+DEFAULT_CRICKET_ROOT = "data/Cricket"
+DEFAULT_HANDWRITING_ROOT = "data/Handwriting"
+DEFAULT_ERING_ROOT = "data/ERing"
+DEFAULT_MOTORIMAGERY_ROOT = "data/MotorImagery"
+DEFAULT_ETHANOLCONCENTRATION_ROOT = "data/EthanolConcentration"
 DEFAULT_IEEEPPG_ROOT = "data/regression/aeon"
 
 
@@ -72,6 +84,28 @@ def normalize_dataset_name(name: str) -> str:
         return "atrialfibrillation"
     if key in {"pendigits", "pen_digits", "pen-digits"}:
         return "pendigits"
+    if key in {"racketsports", "racket_sports", "racket-sports"}:
+        return "racketsports"
+    if key in {"articularywordrecognition", "articulary_word_recognition", "articulary-word-recognition", "awr"}:
+        return "articularywordrecognition"
+    if key in {"heartbeat", "heart_beat", "heart-beat"}:
+        return "heartbeat"
+    if key in {"selfregulationscp2", "self_regulation_scp2", "scp2"}:
+        return "selfregulationscp2"
+    if key in {"libras"}:
+        return "libras"
+    if key in {"japanesevowels", "japanese_vowels", "japanese-vowels"}:
+        return "japanesevowels"
+    if key in {"cricket"}:
+        return "cricket"
+    if key in {"handwriting", "hand_writing", "hand-writing"}:
+        return "handwriting"
+    if key in {"ering", "e_ring", "e-ring"}:
+        return "ering"
+    if key in {"motorimagery", "motor_imagery", "motor-imagery"}:
+        return "motorimagery"
+    if key in {"ethanolconcentration", "ethanol_concentration", "ethanol-concentration"}:
+        return "ethanolconcentration"
     if key in {"ieeeppg", "ieee_ppg"}:
         return "ieeeppg"
     raise ValueError(f"Unsupported dataset: {name}")
@@ -103,6 +137,20 @@ def resolve_band_spec(dataset: str, bands: str) -> str:
             return DEFAULT_BANDS_ATRIALFIBRILLATION
         if ds == "pendigits":
             return DEFAULT_BANDS_PENDIGITS
+        if ds in {
+            "racketsports",
+            "articularywordrecognition",
+            "heartbeat",
+            "selfregulationscp2",
+            "libras",
+            "japanesevowels",
+            "cricket",
+            "handwriting",
+            "ering",
+            "motorimagery",
+            "ethanolconcentration",
+        }:
+            return DEFAULT_BANDS_AEON_GENERIC
         return DEFAULT_BANDS_EEG
     if ds == "har" and raw == DEFAULT_BANDS_EEG:
         # If user keeps EEG default unchanged, auto-switch to HAR-safe bands.
@@ -131,6 +179,20 @@ def resolve_band_spec(dataset: str, bands: str) -> str:
         return DEFAULT_BANDS_ATRIALFIBRILLATION
     if ds == "pendigits" and raw == DEFAULT_BANDS_EEG:
         return DEFAULT_BANDS_PENDIGITS
+    if ds in {
+        "racketsports",
+        "articularywordrecognition",
+        "heartbeat",
+        "selfregulationscp2",
+        "libras",
+        "japanesevowels",
+        "cricket",
+        "handwriting",
+        "ering",
+        "motorimagery",
+        "ethanolconcentration",
+    } and raw == DEFAULT_BANDS_EEG:
+        return DEFAULT_BANDS_AEON_GENERIC
     return raw
 
 
@@ -152,6 +214,17 @@ def load_trials_for_dataset(
     epilepsy_root: Optional[str] = None,
     atrialfibrillation_root: Optional[str] = None,
     pendigits_root: Optional[str] = None,
+    racketsports_root: Optional[str] = None,
+    articularywordrecognition_root: Optional[str] = None,
+    heartbeat_root: Optional[str] = None,
+    selfregulationscp2_root: Optional[str] = None,
+    libras_root: Optional[str] = None,
+    japanesevowels_root: Optional[str] = None,
+    cricket_root: Optional[str] = None,
+    handwriting_root: Optional[str] = None,
+    ering_root: Optional[str] = None,
+    motorimagery_root: Optional[str] = None,
+    ethanolconcentration_root: Optional[str] = None,
     ieeeppg_root: Optional[str] = None,
 ) -> List[Dict]:
     ds = normalize_dataset_name(dataset)
@@ -220,6 +293,61 @@ def load_trials_for_dataset(
 
     if ds == "pendigits":
         root = pendigits_root or DEFAULT_PENDIGITS_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "racketsports":
+        root = racketsports_root or DEFAULT_RACKETSPORTS_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "articularywordrecognition":
+        root = articularywordrecognition_root or DEFAULT_ARTICULARYWORDRECOGNITION_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "heartbeat":
+        root = heartbeat_root or DEFAULT_HEARTBEAT_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "selfregulationscp2":
+        root = selfregulationscp2_root or DEFAULT_SELFREGULATIONSCP2_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "libras":
+        root = libras_root or DEFAULT_LIBRAS_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "japanesevowels":
+        root = japanesevowels_root or DEFAULT_JAPANESEVOWELS_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "cricket":
+        root = cricket_root or DEFAULT_CRICKET_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "handwriting":
+        root = handwriting_root or DEFAULT_HANDWRITING_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "ering":
+        root = ering_root or DEFAULT_ERING_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "motorimagery":
+        root = motorimagery_root or DEFAULT_MOTORIMAGERY_ROOT
+        it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
+        return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
+
+    if ds == "ethanolconcentration":
+        root = ethanolconcentration_root or DEFAULT_ETHANOLCONCENTRATION_ROOT
         it = AeonFixedSplitTrialDataset(root=root, dataset_key=ds, include_splits=("train", "test"))
         return sorted(list(it), key=lambda x: str(x["trial_id_str"]))
 

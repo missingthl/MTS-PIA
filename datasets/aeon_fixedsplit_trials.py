@@ -21,6 +21,17 @@ AEON_FIXED_SPLIT_SPECS: Dict[str, AeonFixedSplitSpec] = {
     "epilepsy": AeonFixedSplitSpec("epilepsy", "Epilepsy", 16.0),
     "atrialfibrillation": AeonFixedSplitSpec("atrialfibrillation", "AtrialFibrillation", 128.0),
     "pendigits": AeonFixedSplitSpec("pendigits", "PenDigits", 8.0),
+    "racketsports": AeonFixedSplitSpec("racketsports", "RacketSports", 1.0),
+    "articularywordrecognition": AeonFixedSplitSpec("articularywordrecognition", "ArticularyWordRecognition", 1.0),
+    "heartbeat": AeonFixedSplitSpec("heartbeat", "Heartbeat", 1.0),
+    "selfregulationscp2": AeonFixedSplitSpec("selfregulationscp2", "SelfRegulationSCP2", 1.0),
+    "libras": AeonFixedSplitSpec("libras", "Libras", 1.0),
+    "japanesevowels": AeonFixedSplitSpec("japanesevowels", "JapaneseVowels", 1.0),
+    "cricket": AeonFixedSplitSpec("cricket", "Cricket", 1.0),
+    "handwriting": AeonFixedSplitSpec("handwriting", "Handwriting", 1.0),
+    "ering": AeonFixedSplitSpec("ering", "ERing", 1.0),
+    "motorimagery": AeonFixedSplitSpec("motorimagery", "MotorImagery", 1.0),
+    "ethanolconcentration": AeonFixedSplitSpec("ethanolconcentration", "EthanolConcentration", 1.0),
 }
 
 
@@ -28,14 +39,28 @@ def _resolve_dataset_root(path: str | Path, dataset_name: str) -> Path:
     p = Path(path).expanduser().resolve()
     train_name = f"{dataset_name}_TRAIN.ts"
     test_name = f"{dataset_name}_TEST.ts"
+    npz_name = f"{dataset_name}_fixedsplit.npz"
+    if (p / npz_name).is_file():
+        return p
     if (p / train_name).is_file() and (p / test_name).is_file():
         return p
     nested = p / dataset_name
+    if (nested / npz_name).is_file():
+        return nested
     if (nested / train_name).is_file() and (nested / test_name).is_file():
         return nested
     raise FileNotFoundError(
-        f"{dataset_name} root not found. Expected {train_name} and {test_name}. Got: {p}"
+        f"{dataset_name} root not found. Expected {train_name}/{test_name} or {npz_name}. Got: {p}"
     )
+
+
+def _load_fixedsplit_npz(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    with np.load(path, allow_pickle=True) as data:
+        train_x = np.asarray(data["X_train"], dtype=np.float32)
+        train_y = np.asarray(data["y_train"], dtype=np.int64)
+        test_x = np.asarray(data["X_test"], dtype=np.float32)
+        test_y = np.asarray(data["y_test"], dtype=np.int64)
+    return train_x, train_y, test_x, test_y
 
 
 def _parse_ts_header(lines: List[str]) -> Dict[str, str]:
@@ -170,19 +195,27 @@ class AeonFixedSplitTrialDataset:
                 raise ValueError(f"Unsupported split: {s}")
         self.include_splits = tuple(splits)
 
-        train_x, train_y_raw, train_order = _load_ts_file(self.root / f"{spec.dataset_name}_TRAIN.ts")
-        test_x, test_y_raw, test_order = _load_ts_file(self.root / f"{spec.dataset_name}_TEST.ts")
+        npz_path = self.root / f"{spec.dataset_name}_fixedsplit.npz"
+        if npz_path.is_file():
+            train_x, train_y, test_x, test_y = _load_fixedsplit_npz(npz_path)
+            self._cache = {
+                "train": (train_x, train_y),
+                "test": (test_x, test_y),
+            }
+        else:
+            train_x, train_y_raw, train_order = _load_ts_file(self.root / f"{spec.dataset_name}_TRAIN.ts")
+            test_x, test_y_raw, test_order = _load_ts_file(self.root / f"{spec.dataset_name}_TEST.ts")
 
-        class_order = train_order or test_order or sorted(set(train_y_raw + test_y_raw))
-        label_map = {str(lbl): idx for idx, lbl in enumerate(class_order)}
-        missing = sorted((set(train_y_raw) | set(test_y_raw)) - set(label_map.keys()))
-        for m in missing:
-            label_map[m] = len(label_map)
+            class_order = train_order or test_order or sorted(set(train_y_raw + test_y_raw))
+            label_map = {str(lbl): idx for idx, lbl in enumerate(class_order)}
+            missing = sorted((set(train_y_raw) | set(test_y_raw)) - set(label_map.keys()))
+            for m in missing:
+                label_map[m] = len(label_map)
 
-        self._cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {
-            "train": (train_x, np.asarray([label_map[str(v)] for v in train_y_raw], dtype=np.int64)),
-            "test": (test_x, np.asarray([label_map[str(v)] for v in test_y_raw], dtype=np.int64)),
-        }
+            self._cache = {
+                "train": (train_x, np.asarray([label_map[str(v)] for v in train_y_raw], dtype=np.int64)),
+                "test": (test_x, np.asarray([label_map[str(v)] for v in test_y_raw], dtype=np.int64)),
+            }
 
     def __len__(self) -> int:
         n = 0

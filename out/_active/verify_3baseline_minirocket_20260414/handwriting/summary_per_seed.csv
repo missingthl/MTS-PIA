@@ -1,0 +1,2 @@
+dataset,seed,test_acc,test_macro_f1,train_trial_count,test_trial_count,n_channels,seq_len,seq_len_model_input,protocol
+handwriting,1,0.5211764705882352,0.4918320765517648,150,850,3,152,152,dataset_provided_train_test_full_sequence

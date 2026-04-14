@@ -1,0 +1,4 @@
+metric,mean,std
+test_acc,0.5211764705882352,0.0
+test_macro_f1,0.4918320765517648,0.0
+n_seeds,1.0,0.0

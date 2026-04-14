@@ -1,0 +1,2 @@
+dataset,seed,test_acc,test_macro_f1,train_trial_count,test_trial_count,n_channels,seq_len,seq_len_model_input,protocol
+epilepsy,1,1.0,1.0,137,138,3,206,206,dataset_provided_train_test_full_sequence

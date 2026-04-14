@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+natops,e2,1,0.9444444444444444,0.9432920056651145,87.65568947792053

@@ -1,0 +1,2 @@
+dataset,seed,test_acc,test_macro_f1,train_trial_count,test_trial_count,n_channels,seq_len,seq_len_model_input,protocol
+selfregulationscp2,1,0.5111111111111111,0.5111111111111111,200,180,7,1152,1152,dataset_provided_train_test_full_sequence

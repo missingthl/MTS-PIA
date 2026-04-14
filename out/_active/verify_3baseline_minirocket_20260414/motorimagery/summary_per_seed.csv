@@ -1,0 +1,2 @@
+dataset,seed,test_acc,test_macro_f1,train_trial_count,test_trial_count,n_channels,seq_len,seq_len_model_input,protocol
+motorimagery,1,0.48,0.3686255463817387,278,100,64,3000,3000,dataset_provided_train_test_full_sequence

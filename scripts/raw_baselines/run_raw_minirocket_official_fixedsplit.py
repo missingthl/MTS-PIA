@@ -53,6 +53,17 @@ OFFICIAL_FIXED_SPLIT_DATASETS = {
     "epilepsy",
     "atrialfibrillation",
     "pendigits",
+    "racketsports",
+    "articularywordrecognition",
+    "heartbeat",
+    "selfregulationscp2",
+    "libras",
+    "japanesevowels",
+    "cricket",
+    "handwriting",
+    "ering",
+    "motorimagery",
+    "ethanolconcentration",
 }
 
 

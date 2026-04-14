@@ -1,0 +1,2 @@
+dataset,seed,test_acc,test_macro_f1,train_trial_count,test_trial_count,n_channels,seq_len,seq_len_model_input,protocol
+japanesevowels,1,0.9783783783783784,0.977348815396972,270,370,12,25,25,dataset_provided_train_test_full_sequence

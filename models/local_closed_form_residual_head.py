@@ -16,6 +16,8 @@ class LocalClosedFormResidualHead(nn.Module):
         num_classes: int,
         prototypes_per_class: int,
         routing_temperature: float,
+        class_prior_temperature: float | None = None,
+        subproto_temperature: float | None = None,
         ridge: float,
         ridge_mode: str = "fixed",
         ridge_trace_eps: float = 1e-8,
@@ -34,6 +36,14 @@ class LocalClosedFormResidualHead(nn.Module):
         self.num_classes = int(num_classes)
         self.prototypes_per_class = int(prototypes_per_class)
         self.routing_temperature = max(float(routing_temperature), 1e-6)
+        self.class_prior_temperature = max(
+            float(self.routing_temperature if class_prior_temperature is None else class_prior_temperature),
+            1e-6,
+        )
+        self.subproto_temperature = max(
+            float(self.routing_temperature if subproto_temperature is None else subproto_temperature),
+            1e-6,
+        )
         self.ridge = float(ridge)
         self.ridge_mode = str(ridge_mode)
         self.ridge_trace_eps = max(float(ridge_trace_eps), 0.0)
@@ -51,10 +61,10 @@ class LocalClosedFormResidualHead(nn.Module):
             raise ValueError(f"unsupported solve mode: {self.solve_mode}")
         if self.input_norm_mode not in {"none", "l2_hypersphere"}:
             raise ValueError(f"unsupported input norm mode: {self.input_norm_mode}")
-        if self.prototype_geometry_mode not in {"flat", "center_subproto"}:
+        if self.prototype_geometry_mode not in {"flat", "center_subproto", "center_only"}:
             raise ValueError(f"unsupported prototype geometry mode: {self.prototype_geometry_mode}")
-        if self.prototype_geometry_mode == "center_subproto" and self.prototype_aggregation != "pooled":
-            raise ValueError("center_subproto geometry currently supports pooled aggregation only")
+        if self.prototype_geometry_mode in {"center_subproto", "center_only"} and self.prototype_aggregation != "pooled":
+            raise ValueError(f"{self.prototype_geometry_mode} geometry currently supports pooled aggregation only")
         if self.prototype_geometry_mode == "flat":
             self.register_parameter(
                 "prototypes",
@@ -69,6 +79,20 @@ class LocalClosedFormResidualHead(nn.Module):
                 ),
             )
             self.register_parameter("center_params", None)
+            self.register_parameter("sub_offsets", None)
+        elif self.prototype_geometry_mode == "center_only":
+            self.register_parameter("prototypes", None)
+            self.register_parameter(
+                "center_params",
+                nn.Parameter(
+                    torch.randn(
+                        self.num_classes,
+                        self.feature_dim,
+                        dtype=torch.float32,
+                    )
+                    * float(prototype_init_scale)
+                ),
+            )
             self.register_parameter("sub_offsets", None)
         else:
             self.register_parameter("prototypes", None)
@@ -86,19 +110,49 @@ class LocalClosedFormResidualHead(nn.Module):
             self.register_parameter(
                 "sub_offsets",
                 nn.Parameter(
-                    torch.randn(
+                    torch.empty(
                         self.num_classes,
                         self.prototypes_per_class,
                         self.feature_dim,
                         dtype=torch.float32,
                     )
-                    * float(prototype_init_scale)
                 ),
             )
+            self._initialize_center_subproto_offsets()
         self._probe_rows: List[Dict[str, float | int | str]] = []
         self._probe_split = "unset"
         self._probe_epoch = -1
         self._last_dataflow_summary: Dict[str, object] | None = None
+
+    def _initialize_center_subproto_offsets(self) -> None:
+        if self.prototype_geometry_mode != "center_subproto":
+            return
+        assert self.center_params is not None
+        assert self.sub_offsets is not None
+        if self.feature_dim < self.prototypes_per_class:
+            raise ValueError(
+                "center_subproto initialization requires feature_dim >= prototypes_per_class, "
+                f"got feature_dim={self.feature_dim}, prototypes_per_class={self.prototypes_per_class}"
+            )
+
+        with torch.no_grad():
+            centers = F.normalize(self.center_params.data, p=2, dim=-1, eps=self.input_norm_eps)
+            # Use a moderate tangent-space spread: directions start distinguishable,
+            # but still remain meaningfully anchored around the class center.
+            offset_scale = 0.75
+            for class_idx in range(self.num_classes):
+                center = centers[class_idx]
+                basis = torch.randn(
+                    self.feature_dim,
+                    self.prototypes_per_class,
+                    dtype=self.sub_offsets.dtype,
+                    device=self.sub_offsets.device,
+                )
+                # Remove the center direction so offsets start in the tangent space.
+                basis = basis - center.unsqueeze(1) * torch.matmul(center.unsqueeze(0), basis)
+                q, _ = torch.linalg.qr(basis, mode="reduced")
+                offsets = q.transpose(0, 1) * float(offset_scale)
+                self.sub_offsets.data[class_idx].copy_(offsets)
 
     def reset_probe(self) -> None:
         self._probe_rows = []
@@ -138,7 +192,7 @@ class LocalClosedFormResidualHead(nn.Module):
         return F.normalize(self.center_params, p=2, dim=-1, eps=self.input_norm_eps)
 
     def _get_sub_prototypes(self, class_centers: torch.Tensor) -> torch.Tensor:
-        if self.prototype_geometry_mode == "flat":
+        if self.prototype_geometry_mode in {"flat", "center_only"}:
             raise RuntimeError("sub prototypes only exist for center_subproto geometry")
         assert self.sub_offsets is not None
         return F.normalize(
@@ -147,6 +201,62 @@ class LocalClosedFormResidualHead(nn.Module):
             dim=-1,
             eps=self.input_norm_eps,
         )
+
+    def _summarize_subprototype_geometry(
+        self,
+        *,
+        class_center: torch.Tensor,
+        same_proto: torch.Tensor,
+        same_cosine: torch.Tensor,
+    ) -> Dict[str, float]:
+        with torch.no_grad():
+            metrics: Dict[str, float] = {}
+            center_to_subproto_cos = torch.sum(class_center.unsqueeze(0) * same_proto, dim=-1)
+            metrics["center_to_subproto_cos_mean"] = float(center_to_subproto_cos.mean().item())
+            metrics["center_to_subproto_cos_std"] = float(center_to_subproto_cos.std(unbiased=False).item())
+
+            if same_proto.shape[0] > 1:
+                pairwise = torch.matmul(same_proto, same_proto.transpose(0, 1))
+                mask = ~torch.eye(same_proto.shape[0], dtype=torch.bool, device=same_proto.device)
+                off_diag = pairwise[mask]
+                metrics["subproto_pairwise_cos_mean"] = float(off_diag.mean().item())
+                metrics["subproto_pairwise_cos_std"] = float(off_diag.std(unbiased=False).item())
+                pairwise_no_diag = pairwise.masked_fill(
+                    torch.eye(same_proto.shape[0], dtype=torch.bool, device=same_proto.device),
+                    float("-inf"),
+                )
+                metrics["subproto_nn_cos_mean"] = float(pairwise_no_diag.max(dim=-1).values.mean().item())
+
+                centered = same_proto - same_proto.mean(dim=0, keepdim=True)
+                cov = centered.transpose(0, 1) @ centered / float(max(1, same_proto.shape[0] - 1))
+                eigvals = torch.linalg.eigvalsh(cov).clamp_min(0.0)
+                metrics["subproto_cov_trace"] = float(eigvals.sum().item())
+                metrics["subproto_cov_top_eig"] = float(eigvals.max().item())
+                if float(eigvals.sum().item()) > 0.0:
+                    eig_probs = eigvals / eigvals.sum().clamp_min(1e-12)
+                    entropy = -(eig_probs * eig_probs.clamp_min(1e-12).log()).sum()
+                    metrics["subproto_cov_effective_rank"] = float(torch.exp(entropy).item())
+                else:
+                    metrics["subproto_cov_effective_rank"] = 0.0
+            else:
+                metrics["subproto_pairwise_cos_mean"] = 1.0
+                metrics["subproto_pairwise_cos_std"] = 0.0
+                metrics["subproto_nn_cos_mean"] = 1.0
+                metrics["subproto_cov_trace"] = 0.0
+                metrics["subproto_cov_top_eig"] = 0.0
+                metrics["subproto_cov_effective_rank"] = 0.0
+
+            if same_cosine.shape[-1] > 1:
+                top2 = torch.topk(same_cosine, k=2, dim=-1).values
+                metrics["subproto_cos_top1_top2_gap_mean"] = float((top2[:, 0] - top2[:, 1]).mean().item())
+            else:
+                metrics["subproto_cos_top1_top2_gap_mean"] = 0.0
+            metrics["subproto_cos_max_minus_mean_mean"] = float(
+                (same_cosine.max(dim=-1).values - same_cosine.mean(dim=-1)).mean().item()
+            )
+            metrics["subproto_cos_var_mean"] = float(same_cosine.var(dim=-1, unbiased=False).mean().item())
+            metrics["subproto_cos_top1_mean"] = float(same_cosine.max(dim=-1).values.mean().item())
+            return metrics
 
     def _record_probe_rows(
         self,
@@ -393,7 +503,7 @@ class LocalClosedFormResidualHead(nn.Module):
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
             sub_prototypes = self._get_sub_prototypes(class_centers).to(dtype=h.dtype, device=h.device)
             class_prior = torch.softmax(
-                self._cosine_similarity(h, class_centers) / self.routing_temperature,
+                self._cosine_similarity(h, class_centers) / self.class_prior_temperature,
                 dim=-1,
             )
             class_centers_shape = [int(v) for v in class_centers.shape]
@@ -402,10 +512,8 @@ class LocalClosedFormResidualHead(nn.Module):
             same_mass, opp_mass = self._resolve_support_masses()
             for class_idx in range(self.num_classes):
                 same_proto = sub_prototypes[class_idx]
-                same_routing = torch.softmax(
-                    self._cosine_similarity(h, same_proto) / self.routing_temperature,
-                    dim=-1,
-                )
+                same_cosine = self._cosine_similarity(h, same_proto)
+                same_routing = torch.softmax(same_cosine / self.subproto_temperature, dim=-1)
                 same_weights = same_routing * float(same_mass)
                 mask = torch.arange(self.num_classes, device=h.device) != class_idx
                 opp_proto = class_centers[mask]
@@ -416,9 +524,10 @@ class LocalClosedFormResidualHead(nn.Module):
                     ) * float(opp_mass)
                 else:
                     opp_weights = None
-                center_to_subproto_cos = torch.sum(
-                    class_centers[class_idx].unsqueeze(0) * same_proto,
-                    dim=-1,
+                subproto_geom_metrics = self._summarize_subprototype_geometry(
+                    class_center=class_centers[class_idx],
+                    same_proto=same_proto,
+                    same_cosine=same_cosine,
                 )
                 solved, diag = self._solve_direction(
                     h,
@@ -435,17 +544,74 @@ class LocalClosedFormResidualHead(nn.Module):
                         "sub_prototypes_shape": [int(v) for v in sub_prototypes.shape],
                         "class_prior_max_mean": float(class_prior.max(dim=-1).values.mean().item()),
                         "class_prior_entropy_mean": float(self._normalized_entropy(class_prior).mean().item()),
+                        "class_prior_temperature": float(self.class_prior_temperature),
+                        "subproto_temperature": float(self.subproto_temperature),
                         "subproto_weight_max_mean": float(same_routing.max(dim=-1).values.mean().item()),
                         "subproto_weight_entropy_mean": float(self._normalized_entropy(same_routing).mean().item()),
-                        "center_to_subproto_cos_mean": float(center_to_subproto_cos.mean().item()),
                         "same_support_norm_mean": float(torch.linalg.vector_norm(same_proto, dim=-1).mean().item()),
                         "opp_center_weight_entropy_mean": 0.0
                         if opp_weights is None
                         else float(self._normalized_entropy(opp_weights / float(max(opp_mass, 1e-12))).mean().item()),
+                        **subproto_geom_metrics,
                     },
                 )
                 class_logit = torch.sum(h * solved, dim=-1)
                 diag["aggregation_mode"] = "center_subproto_weighted_support"
+                class_summaries.append(diag)
+                class_logits.append(class_logit)
+        elif self.prototype_geometry_mode == "center_only":
+            class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
+            class_prior = torch.softmax(
+                self._cosine_similarity(h, class_centers) / self.class_prior_temperature,
+                dim=-1,
+            )
+            class_centers_shape = [int(v) for v in class_centers.shape]
+            class_prior_shape = [int(v) for v in class_prior.shape]
+            for class_idx in range(self.num_classes):
+                same_proto = class_centers[class_idx : class_idx + 1]
+                same_cosine = self._cosine_similarity(h, same_proto)
+                same_routing = torch.ones(
+                    (batch_size, 1),
+                    dtype=h.dtype,
+                    device=h.device,
+                )
+                solved, diag = self._solve_direction(
+                    h,
+                    same_proto=same_proto,
+                    opp_proto=class_centers[:0],
+                    eye=eye,
+                    class_idx=class_idx,
+                    same_weights_override=same_routing,
+                    opp_weights_override=None,
+                    extra_diag={
+                        "class_prior_shape": [int(v) for v in class_prior.shape],
+                        "subproto_routing_shape": [int(v) for v in same_routing.shape],
+                        "class_centers_shape": [int(v) for v in class_centers.shape],
+                        "sub_prototypes_shape": None,
+                        "class_prior_max_mean": float(class_prior.max(dim=-1).values.mean().item()),
+                        "class_prior_entropy_mean": float(self._normalized_entropy(class_prior).mean().item()),
+                        "class_prior_temperature": float(self.class_prior_temperature),
+                        "subproto_temperature": float(self.subproto_temperature),
+                        "subproto_weight_max_mean": 1.0,
+                        "subproto_weight_entropy_mean": 0.0,
+                        "same_support_norm_mean": float(torch.linalg.vector_norm(same_proto, dim=-1).mean().item()),
+                        "opp_center_weight_entropy_mean": 0.0,
+                        "center_to_subproto_cos_mean": 1.0,
+                        "center_to_subproto_cos_std": 0.0,
+                        "subproto_pairwise_cos_mean": 1.0,
+                        "subproto_pairwise_cos_std": 0.0,
+                        "subproto_nn_cos_mean": 1.0,
+                        "subproto_cov_trace": 0.0,
+                        "subproto_cov_top_eig": 0.0,
+                        "subproto_cov_effective_rank": 0.0,
+                        "subproto_cos_top1_top2_gap_mean": 0.0,
+                        "subproto_cos_max_minus_mean_mean": 0.0,
+                        "subproto_cos_var_mean": 0.0,
+                        "subproto_cos_top1_mean": float(same_cosine.max(dim=-1).values.mean().item()),
+                    },
+                )
+                class_logit = torch.sum(h * solved, dim=-1)
+                diag["aggregation_mode"] = "center_only_support"
                 class_summaries.append(diag)
                 class_logits.append(class_logit)
         else:
@@ -508,6 +674,9 @@ class LocalClosedFormResidualHead(nn.Module):
             "prototypes_per_class": int(self.prototypes_per_class),
             "support_mode": self.support_mode,
             "prototype_aggregation": self.prototype_aggregation,
+            "routing_temperature": float(self.routing_temperature),
+            "class_prior_temperature": float(self.class_prior_temperature),
+            "subproto_temperature": float(self.subproto_temperature),
             "solve_mode": self.solve_mode,
             "ridge_mode": self.ridge_mode,
             "input_norm_mode": self.input_norm_mode,
