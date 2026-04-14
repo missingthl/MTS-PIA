@@ -1,14 +1,14 @@
 # 分类工程记录
 
-更新时间：2026-04-13
+更新时间：2026-04-14
 
 这份目录现在只保留最少入口。
 
 ## 当前推荐阅读顺序
 
 1. [00-入口/分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
-2. [01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
-3. [00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
+2. [00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
+3. [01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
 4. [00-入口/阶段一结构证据总览.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/阶段一结构证据总览.md)
 5. [scripts/README.md](/home/THL/project/MTS-PIA/scripts/README.md)
 
@@ -25,6 +25,15 @@
 ### `01-阶段二-宿主实验`
 
 当前活跃宿主实验的任务单。
+
+当前读法补充：
+
+- `Tensor-CSPNet`
+  - 当前仍是重要宿主线
+  - 但更偏 EEG/SPD 外部宿主验证
+- `ResNet1D`
+  - 当前已经有更完整的多数据集结果沉淀
+  - 通用 MTS 结果应优先从 `分类工程现状` 与 `分类调试记录` 读取
 
 ### `02-阶段一-PIA-Operator`
 
