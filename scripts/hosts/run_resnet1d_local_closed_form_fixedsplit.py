@@ -126,6 +126,7 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             detach_local_input=bool(args.detach_local_latent),
             support_mode=str(args.local_support_mode),
             prototype_aggregation=str(args.prototype_aggregation),
+            prototype_geometry_mode=str(args.prototype_geometry_mode),
             readout_gate_mode=str(args.local_readout_gate),
         )
     raise ValueError(f"unknown arm: {args.arm}")
@@ -218,6 +219,19 @@ def _export_probe_artifacts(model: torch.nn.Module, *, run_dir: str) -> None:
     _write_json(os.path.join(run_dir, "closed_form_probe_summary.json"), summary)
 
 
+def _export_dataflow_probe_artifacts(
+    *,
+    run_dir: str,
+    first_batch_summary: Dict[str, object],
+    stage_rows: List[Dict[str, object]],
+    agreement_summary: Dict[str, object],
+) -> None:
+    _write_json(os.path.join(run_dir, "dataflow_summary.json"), first_batch_summary)
+    _write_json(os.path.join(run_dir, "dataflow_agreement_summary.json"), agreement_summary)
+    if stage_rows:
+        _write_csv(os.path.join(run_dir, "dataflow_test_stage_rows.csv"), stage_rows)
+
+
 def _forward_outputs(model: torch.nn.Module, batch_x: torch.Tensor, *, args: argparse.Namespace):
     if args.arm == "e2":
         return model(batch_x, fusion_alpha=1.0, return_features=True)
@@ -265,8 +279,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--closed-form-input-norm-mode", type=str, default="none", choices=["none", "l2_hypersphere"])
     p.add_argument("--closed-form-input-norm-eps", type=float, default=1e-8)
     p.add_argument("--closed-form-probe", action="store_true", default=False)
+    p.add_argument("--dataflow-probe", action="store_true", default=False)
     p.add_argument("--local-support-mode", type=str, default="same_only", choices=["same_opp_balanced", "same_only", "same_opp_asym"])
     p.add_argument("--prototype-aggregation", type=str, default="pooled", choices=["pooled", "committee_mean"])
+    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto"])
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
     p.add_argument("--detach-local-latent", action="store_true", default=False)
     p.add_argument("--fusion-warmup-hold-epochs", type=int, default=0)
@@ -332,8 +348,10 @@ def main() -> None:
         "closed_form_pinv_rcond": float(args.closed_form_pinv_rcond),
         "closed_form_input_norm_mode": str(args.closed_form_input_norm_mode),
         "closed_form_input_norm_eps": float(args.closed_form_input_norm_eps),
+        "dataflow_probe": bool(args.dataflow_probe),
         "local_support_mode": str(args.local_support_mode),
         "prototype_aggregation": str(args.prototype_aggregation),
+        "prototype_geometry_mode": str(args.prototype_geometry_mode),
         "local_readout_gate": str(args.local_readout_gate),
         "run_dir": run_dir,
     }
@@ -376,14 +394,71 @@ def main() -> None:
     model.eval()
     all_pred: List[np.ndarray] = []
     all_y: List[np.ndarray] = []
+    dataflow_first_batch_summary: Dict[str, object] | None = None
+    stage_rows: List[Dict[str, object]] = []
+    base_pred_all: List[np.ndarray] = []
+    local_pred_all: List[np.ndarray] = []
+    final_pred_all: List[np.ndarray] = []
+    gate_values: List[np.ndarray] = []
     with torch.no_grad():
         _maybe_set_probe_context(model, split="test", epoch=int(args.epochs))
-        for batch_x, batch_y in test_loader:
+        sample_offset = 0
+        for batch_idx, (batch_x, batch_y) in enumerate(test_loader):
             batch_x = batch_x.to(device, non_blocking=True)
-            logits = model(batch_x, fusion_alpha=1.0) if args.arm == "e2" else model(batch_x)
-            pred = logits.argmax(dim=1).cpu().numpy()
+            batch_y_np = batch_y.numpy()
+            if args.arm == "e2" and bool(args.dataflow_probe):
+                outputs = model(batch_x, fusion_alpha=1.0, return_features=True)
+                logits = outputs.final_logit
+                base_pred = outputs.base_logit.argmax(dim=1).cpu().numpy()
+                local_pred = outputs.local_closed_form_logit.argmax(dim=1).cpu().numpy()
+                final_pred = outputs.final_logit.argmax(dim=1).cpu().numpy()
+                base_pred_all.append(base_pred)
+                local_pred_all.append(local_pred)
+                final_pred_all.append(final_pred)
+                if outputs.readout_gate is not None:
+                    gate_values.append(outputs.readout_gate.detach().cpu().numpy())
+                if batch_idx == 0:
+                    local_head = getattr(model, "local_head", None)
+                    local_dataflow = None
+                    if local_head is not None and hasattr(local_head, "export_last_dataflow_summary"):
+                        local_dataflow = local_head.export_last_dataflow_summary()
+                    dataflow_first_batch_summary = {
+                        "dataset": str(args.dataset),
+                        "arm": str(args.arm),
+                        "split": "test",
+                        "raw_input_shape": [int(v) for v in batch_x.shape],
+                        "sequence_features_shape": [int(v) for v in outputs.sequence_features.shape],
+                        "latent_shape": [int(v) for v in outputs.latent.shape],
+                        "base_logit_shape": [int(v) for v in outputs.base_logit.shape],
+                        "local_logit_shape": [int(v) for v in outputs.local_closed_form_logit.shape],
+                        "final_logit_shape": [int(v) for v in outputs.final_logit.shape],
+                        "readout_gate_shape": None if outputs.readout_gate is None else [int(v) for v in outputs.readout_gate.shape],
+                        "beta": float(outputs.beta.detach().cpu().item()),
+                        "local_head_dataflow": local_dataflow,
+                    }
+                for i in range(len(batch_y_np)):
+                    stage_rows.append(
+                        {
+                            "sample_index": int(sample_offset + i),
+                            "label": int(batch_y_np[i]),
+                            "base_pred": int(base_pred[i]),
+                            "local_pred": int(local_pred[i]),
+                            "final_pred": int(final_pred[i]),
+                            "base_correct": int(base_pred[i] == batch_y_np[i]),
+                            "local_correct": int(local_pred[i] == batch_y_np[i]),
+                            "final_correct": int(final_pred[i] == batch_y_np[i]),
+                            "base_local_agree": int(base_pred[i] == local_pred[i]),
+                            "base_final_agree": int(base_pred[i] == final_pred[i]),
+                            "local_final_agree": int(local_pred[i] == final_pred[i]),
+                        }
+                    )
+                sample_offset += len(batch_y_np)
+                pred = final_pred
+            else:
+                logits = model(batch_x, fusion_alpha=1.0) if args.arm == "e2" else model(batch_x)
+                pred = logits.argmax(dim=1).cpu().numpy()
             all_pred.append(pred)
-            all_y.append(batch_y.numpy())
+            all_y.append(batch_y_np)
 
     y_true = np.concatenate(all_y, axis=0)
     y_pred = np.concatenate(all_pred, axis=0)
@@ -404,6 +479,35 @@ def main() -> None:
         os.path.join(run_dir, "per_dataset.csv"),
         [summary],
     )
+    if bool(args.dataflow_probe) and args.arm == "e2" and stage_rows:
+        y_true_stage = np.concatenate(all_y, axis=0)
+        base_pred = np.concatenate(base_pred_all, axis=0)
+        local_pred = np.concatenate(local_pred_all, axis=0)
+        final_pred = np.concatenate(final_pred_all, axis=0)
+        agreement_summary = {
+            "base_acc": float(accuracy_score(y_true_stage, base_pred)),
+            "local_acc": float(accuracy_score(y_true_stage, local_pred)),
+            "final_acc": float(accuracy_score(y_true_stage, final_pred)),
+            "base_local_agreement": float(np.mean(base_pred == local_pred)),
+            "base_final_agreement": float(np.mean(base_pred == final_pred)),
+            "local_final_agreement": float(np.mean(local_pred == final_pred)),
+            "final_override_rate": float(np.mean(final_pred != base_pred)),
+            "helpful_override_rate": float(np.mean((final_pred == y_true_stage) & (base_pred != y_true_stage))),
+            "harmful_override_rate": float(np.mean((final_pred != y_true_stage) & (base_pred == y_true_stage))),
+        }
+        if gate_values:
+            gate_concat = np.concatenate(gate_values, axis=0)
+            agreement_summary["gate_mean"] = float(gate_concat.mean())
+            agreement_summary["gate_min"] = float(gate_concat.min())
+            agreement_summary["gate_max"] = float(gate_concat.max())
+        if dataflow_first_batch_summary is None:
+            dataflow_first_batch_summary = {"dataset": str(args.dataset), "arm": str(args.arm)}
+        _export_dataflow_probe_artifacts(
+            run_dir=run_dir,
+            first_batch_summary=dataflow_first_batch_summary,
+            stage_rows=stage_rows,
+            agreement_summary=agreement_summary,
+        )
     if bool(args.closed_form_probe) and args.arm == "e2":
         _export_probe_artifacts(model, run_dir=run_dir)
     print(

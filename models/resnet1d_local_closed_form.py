@@ -40,6 +40,7 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         detach_local_input: bool = False,
         support_mode: str = "same_only",
         prototype_aggregation: str = "pooled",
+        prototype_geometry_mode: str = "flat",
         readout_gate_mode: str = "none",
         block_channels: tuple[int, int, int] = (64, 128, 128),
         kernel_sizes: tuple[int, int, int] = (7, 5, 3),
@@ -66,6 +67,7 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
             enable_probe=bool(enable_probe),
             support_mode=str(support_mode),
             prototype_aggregation=str(prototype_aggregation),
+            prototype_geometry_mode=str(prototype_geometry_mode),
         )
         self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.float32))
         self.detach_local_input = bool(detach_local_input)
