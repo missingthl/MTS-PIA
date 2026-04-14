@@ -10,6 +10,7 @@ import sys
 import time
 from typing import Dict, List, Sequence
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -114,6 +115,13 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             prototypes_per_class=int(args.prototypes_per_class),
             routing_temperature=float(args.routing_temperature),
             ridge=float(args.closed_form_ridge),
+            ridge_mode=str(args.closed_form_ridge_mode),
+            ridge_trace_eps=float(args.closed_form_ridge_trace_eps),
+            solve_mode=str(args.closed_form_solve_mode),
+            pinv_rcond=float(args.closed_form_pinv_rcond),
+            input_norm_mode=str(args.closed_form_input_norm_mode),
+            input_norm_eps=float(args.closed_form_input_norm_eps),
+            enable_probe=bool(args.closed_form_probe),
             init_beta=float(args.init_beta),
             detach_local_input=bool(args.detach_local_latent),
             support_mode=str(args.local_support_mode),
@@ -168,6 +176,48 @@ def _compute_fusion_alpha(args: argparse.Namespace, *, epoch: int) -> float:
     return start + (1.0 - start) * progress
 
 
+def _maybe_set_probe_context(model: torch.nn.Module, *, split: str, epoch: int) -> None:
+    local_head = getattr(model, "local_head", None)
+    if local_head is not None and hasattr(local_head, "set_probe_context"):
+        local_head.set_probe_context(split=str(split), epoch=int(epoch))
+
+
+def _export_probe_artifacts(model: torch.nn.Module, *, run_dir: str) -> None:
+    local_head = getattr(model, "local_head", None)
+    if local_head is None or not hasattr(local_head, "export_probe_rows"):
+        return
+    rows = local_head.export_probe_rows()
+    if not rows:
+        return
+    probe_csv = os.path.join(run_dir, "closed_form_probe_rows.csv")
+    _write_csv(probe_csv, rows)
+
+    metrics = ["mean_trace", "condition_number", "effective_ridge", "weight_norm"]
+    summary: Dict[str, object] = {
+        "n_rows": int(len(rows)),
+        "splits": sorted({str(r["split"]) for r in rows}),
+        "metrics": {},
+    }
+    for metric in metrics:
+        values = np.asarray([float(r[metric]) for r in rows], dtype=np.float64)
+        summary["metrics"][metric] = {
+            "mean": float(values.mean()),
+            "std": float(values.std()),
+            "min": float(values.min()),
+            "max": float(values.max()),
+            "median": float(np.median(values)),
+        }
+        plt.figure(figsize=(6, 4))
+        plt.hist(values, bins=40)
+        plt.title(metric)
+        plt.xlabel(metric)
+        plt.ylabel("count")
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, f"closed_form_probe_{metric}.png"), dpi=160)
+        plt.close()
+    _write_json(os.path.join(run_dir, "closed_form_probe_summary.json"), summary)
+
+
 def _forward_outputs(model: torch.nn.Module, batch_x: torch.Tensor, *, args: argparse.Namespace):
     if args.arm == "e2":
         return model(batch_x, fusion_alpha=1.0, return_features=True)
@@ -203,6 +253,18 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--prototypes-per-class", type=int, default=4)
     p.add_argument("--routing-temperature", type=float, default=1.0)
     p.add_argument("--closed-form-ridge", type=float, default=1e-2)
+    p.add_argument("--closed-form-ridge-mode", type=str, default="fixed", choices=["fixed", "trace_adaptive"])
+    p.add_argument("--closed-form-ridge-trace-eps", type=float, default=1e-8)
+    p.add_argument(
+        "--closed-form-solve-mode",
+        type=str,
+        default="ridge_solve",
+        choices=["ridge_solve", "pinv", "dual_ridge", "dual_pinv"],
+    )
+    p.add_argument("--closed-form-pinv-rcond", type=float, default=1e-4)
+    p.add_argument("--closed-form-input-norm-mode", type=str, default="none", choices=["none", "l2_hypersphere"])
+    p.add_argument("--closed-form-input-norm-eps", type=float, default=1e-8)
+    p.add_argument("--closed-form-probe", action="store_true", default=False)
     p.add_argument("--local-support-mode", type=str, default="same_only", choices=["same_opp_balanced", "same_only", "same_opp_asym"])
     p.add_argument("--prototype-aggregation", type=str, default="pooled", choices=["pooled", "committee_mean"])
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
@@ -235,6 +297,9 @@ def main() -> None:
     train_x, test_x, train_y, test_y, num_classes = _load_fixedsplit_arrays(args)
     device = torch.device(args.device if torch.cuda.is_available() and "cuda" in args.device else "cpu")
     model = _build_model(args, in_channels=int(train_x.shape[1]), num_classes=int(num_classes)).to(device)
+    local_head = getattr(model, "local_head", None)
+    if local_head is not None and hasattr(local_head, "reset_probe"):
+        local_head.reset_probe()
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
 
     train_loader, test_loader = _make_loaders(
@@ -260,6 +325,16 @@ def main() -> None:
         "n_test": int(test_x.shape[0]),
         "in_channels": int(train_x.shape[1]),
         "seq_len": int(train_x.shape[2]),
+        "closed_form_ridge": float(args.closed_form_ridge),
+        "closed_form_ridge_mode": str(args.closed_form_ridge_mode),
+        "closed_form_ridge_trace_eps": float(args.closed_form_ridge_trace_eps),
+        "closed_form_solve_mode": str(args.closed_form_solve_mode),
+        "closed_form_pinv_rcond": float(args.closed_form_pinv_rcond),
+        "closed_form_input_norm_mode": str(args.closed_form_input_norm_mode),
+        "closed_form_input_norm_eps": float(args.closed_form_input_norm_eps),
+        "local_support_mode": str(args.local_support_mode),
+        "prototype_aggregation": str(args.prototype_aggregation),
+        "local_readout_gate": str(args.local_readout_gate),
         "run_dir": run_dir,
     }
     _write_json(os.path.join(run_dir, "run_meta.json"), run_meta)
@@ -271,6 +346,7 @@ def main() -> None:
         train_loss = 0.0
         train_correct = 0
         fusion_alpha = _compute_fusion_alpha(args, epoch=epoch)
+        _maybe_set_probe_context(model, split="train", epoch=epoch)
         for batch_x, batch_y in train_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
@@ -301,6 +377,7 @@ def main() -> None:
     all_pred: List[np.ndarray] = []
     all_y: List[np.ndarray] = []
     with torch.no_grad():
+        _maybe_set_probe_context(model, split="test", epoch=int(args.epochs))
         for batch_x, batch_y in test_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             logits = model(batch_x, fusion_alpha=1.0) if args.arm == "e2" else model(batch_x)
@@ -327,6 +404,8 @@ def main() -> None:
         os.path.join(run_dir, "per_dataset.csv"),
         [summary],
     )
+    if bool(args.closed_form_probe) and args.arm == "e2":
+        _export_probe_artifacts(model, run_dir=run_dir)
     print(
         f"[done][{args.dataset}][{args.arm}] acc={test_acc:.4f} macro_f1={test_macro_f1:.4f} wallclock={wallclock:.1f}s",
         flush=True,

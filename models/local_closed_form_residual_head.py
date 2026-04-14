@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LocalClosedFormResidualHead(nn.Module):
@@ -15,6 +17,13 @@ class LocalClosedFormResidualHead(nn.Module):
         prototypes_per_class: int,
         routing_temperature: float,
         ridge: float,
+        ridge_mode: str = "fixed",
+        ridge_trace_eps: float = 1e-8,
+        solve_mode: str = "ridge_solve",
+        pinv_rcond: float = 1e-4,
+        input_norm_mode: str = "none",
+        input_norm_eps: float = 1e-8,
+        enable_probe: bool = False,
         support_mode: str = "same_opp_balanced",
         prototype_aggregation: str = "pooled",
         prototype_init_scale: float = 0.02,
@@ -25,8 +34,21 @@ class LocalClosedFormResidualHead(nn.Module):
         self.prototypes_per_class = int(prototypes_per_class)
         self.routing_temperature = max(float(routing_temperature), 1e-6)
         self.ridge = float(ridge)
+        self.ridge_mode = str(ridge_mode)
+        self.ridge_trace_eps = max(float(ridge_trace_eps), 0.0)
+        self.solve_mode = str(solve_mode)
+        self.pinv_rcond = max(float(pinv_rcond), 0.0)
+        self.input_norm_mode = str(input_norm_mode)
+        self.input_norm_eps = max(float(input_norm_eps), 1e-12)
+        self.enable_probe = bool(enable_probe)
         self.support_mode = str(support_mode)
         self.prototype_aggregation = str(prototype_aggregation)
+        if self.ridge_mode not in {"fixed", "trace_adaptive"}:
+            raise ValueError(f"unsupported ridge mode: {self.ridge_mode}")
+        if self.solve_mode not in {"ridge_solve", "pinv", "dual_ridge", "dual_pinv"}:
+            raise ValueError(f"unsupported solve mode: {self.solve_mode}")
+        if self.input_norm_mode not in {"none", "l2_hypersphere"}:
+            raise ValueError(f"unsupported input norm mode: {self.input_norm_mode}")
         self.prototypes = nn.Parameter(
             torch.randn(
                 self.num_classes,
@@ -36,6 +58,68 @@ class LocalClosedFormResidualHead(nn.Module):
             )
             * float(prototype_init_scale)
         )
+        self._probe_rows: List[Dict[str, float | int | str]] = []
+        self._probe_split = "unset"
+        self._probe_epoch = -1
+
+    def reset_probe(self) -> None:
+        self._probe_rows = []
+        self._probe_split = "unset"
+        self._probe_epoch = -1
+
+    def set_probe_context(self, *, split: str, epoch: int) -> None:
+        self._probe_split = str(split)
+        self._probe_epoch = int(epoch)
+
+    def export_probe_rows(self) -> List[Dict[str, float | int | str]]:
+        return list(self._probe_rows)
+
+    def _record_probe_rows(
+        self,
+        *,
+        gram: torch.Tensor,
+        ridge_scale: torch.Tensor,
+        solved: torch.Tensor,
+        class_idx: int,
+        committee_idx: int,
+    ) -> None:
+        if not self.enable_probe:
+            return
+        with torch.no_grad():
+            dim = float(gram.shape[-1])
+            mean_trace = torch.einsum("bii->b", gram) / dim
+            eigvals = torch.linalg.eigvalsh(gram)
+            eig_abs = eigvals.abs()
+            cond_eps = max(self.ridge_trace_eps, 1e-12)
+            cond_number = eig_abs.max(dim=-1).values / eig_abs.min(dim=-1).values.clamp_min(cond_eps)
+            weight_norm = torch.linalg.vector_norm(solved, dim=-1)
+
+            mean_trace_cpu = mean_trace.detach().cpu().tolist()
+            cond_cpu = cond_number.detach().cpu().tolist()
+            ridge_cpu = ridge_scale.detach().cpu().tolist()
+            wnorm_cpu = weight_norm.detach().cpu().tolist()
+
+            for sample_idx, (trace_i, cond_i, ridge_i, wnorm_i) in enumerate(
+                zip(mean_trace_cpu, cond_cpu, ridge_cpu, wnorm_cpu)
+            ):
+                self._probe_rows.append(
+                    {
+                        "split": self._probe_split,
+                        "epoch": int(self._probe_epoch),
+                        "class_idx": int(class_idx),
+                        "committee_idx": int(committee_idx),
+                        "sample_idx_in_batch": int(sample_idx),
+                        "ridge_mode": self.ridge_mode,
+                        "solve_mode": self.solve_mode,
+                        "support_mode": self.support_mode,
+                        "prototype_aggregation": self.prototype_aggregation,
+                        "input_norm_mode": self.input_norm_mode,
+                        "mean_trace": float(trace_i),
+                        "condition_number": float(cond_i),
+                        "effective_ridge": float(ridge_i),
+                        "weight_norm": float(wnorm_i),
+                    }
+                )
 
     def _squared_similarity(self, h: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         diff = h[:, None, :] - p[None, :, :]
@@ -50,6 +134,20 @@ class LocalClosedFormResidualHead(nn.Module):
             return 0.75, 0.25
         raise ValueError(f"unsupported support mode: {self.support_mode}")
 
+    def _maybe_normalize_inputs(
+        self,
+        h: torch.Tensor,
+        same_proto: torch.Tensor,
+        opp_proto: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.input_norm_mode != "l2_hypersphere":
+            return h, same_proto, opp_proto
+        h = F.normalize(h, p=2, dim=-1, eps=self.input_norm_eps)
+        same_proto = F.normalize(same_proto, p=2, dim=-1, eps=self.input_norm_eps)
+        if opp_proto.numel() > 0:
+            opp_proto = F.normalize(opp_proto, p=2, dim=-1, eps=self.input_norm_eps)
+        return h, same_proto, opp_proto
+
     def _solve_direction(
         self,
         h: torch.Tensor,
@@ -57,9 +155,12 @@ class LocalClosedFormResidualHead(nn.Module):
         same_proto: torch.Tensor,
         opp_proto: torch.Tensor,
         eye: torch.Tensor,
+        class_idx: int,
+        committee_idx: int = -1,
     ) -> torch.Tensor:
         same_mass, opp_mass = self._resolve_support_masses()
         batch_size = int(h.shape[0])
+        h, same_proto, opp_proto = self._maybe_normalize_inputs(h, same_proto, opp_proto)
 
         if same_proto.shape[0] == 1:
             same_w = torch.full(
@@ -89,10 +190,69 @@ class LocalClosedFormResidualHead(nn.Module):
 
         gram = torch.einsum("bn,nd,ne->bde", weights, support, support)
         rhs = torch.einsum("bn,nd,n->bd", weights, support, targets)
-        return torch.linalg.solve(
-            gram + self.ridge * eye.unsqueeze(0),
-            rhs.unsqueeze(-1),
-        ).squeeze(-1)
+        weight_sqrt = torch.sqrt(weights.clamp_min(0.0))
+        weighted_support = weight_sqrt[:, :, None] * support.unsqueeze(0)
+        weighted_targets = weight_sqrt * targets.unsqueeze(0)
+
+        if self.solve_mode == "pinv":
+            ridge_scale = torch.zeros(
+                (gram.shape[0],),
+                dtype=h.dtype,
+                device=h.device,
+            )
+            solved = torch.matmul(
+                torch.linalg.pinv(gram, rcond=self.pinv_rcond, hermitian=True),
+                rhs.unsqueeze(-1),
+            ).squeeze(-1)
+        elif self.solve_mode == "dual_pinv":
+            ridge_scale = torch.zeros(
+                (gram.shape[0],),
+                dtype=h.dtype,
+                device=h.device,
+            )
+            dual_gram = torch.einsum("bnd,bmd->bnm", weighted_support, weighted_support)
+            dual_solution = torch.matmul(
+                torch.linalg.pinv(dual_gram, rcond=self.pinv_rcond, hermitian=True),
+                weighted_targets.unsqueeze(-1),
+            ).squeeze(-1)
+            solved = torch.einsum("bnd,bn->bd", weighted_support, dual_solution)
+        else:
+            if self.ridge_mode == "trace_adaptive":
+                dim = float(gram.shape[-1])
+                mean_trace = torch.einsum("bii->b", gram) / dim
+                ridge_scale = self.ridge * mean_trace.clamp_min(self.ridge_trace_eps)
+            else:
+                ridge_scale = torch.full(
+                    (gram.shape[0],),
+                    float(self.ridge),
+                    dtype=h.dtype,
+                    device=h.device,
+                )
+            if self.solve_mode == "dual_ridge":
+                dual_gram = torch.einsum("bnd,bmd->bnm", weighted_support, weighted_support)
+                dual_eye = torch.eye(
+                    dual_gram.shape[-1],
+                    dtype=h.dtype,
+                    device=h.device,
+                ).unsqueeze(0)
+                dual_solution = torch.linalg.solve(
+                    dual_gram + ridge_scale[:, None, None] * dual_eye,
+                    weighted_targets.unsqueeze(-1),
+                ).squeeze(-1)
+                solved = torch.einsum("bnd,bn->bd", weighted_support, dual_solution)
+            else:
+                solved = torch.linalg.solve(
+                    gram + ridge_scale[:, None, None] * eye.unsqueeze(0),
+                    rhs.unsqueeze(-1),
+                ).squeeze(-1)
+        self._record_probe_rows(
+            gram=gram,
+            ridge_scale=ridge_scale,
+            solved=solved,
+            class_idx=int(class_idx),
+            committee_idx=int(committee_idx),
+        )
+        return solved
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         batch_size = int(h.shape[0])
@@ -110,6 +270,7 @@ class LocalClosedFormResidualHead(nn.Module):
                     same_proto=same_proto,
                     opp_proto=opp_proto,
                     eye=eye,
+                    class_idx=class_idx,
                 )
                 class_logit = torch.sum(h * solved, dim=-1)
             elif self.prototype_aggregation == "committee_mean":
@@ -120,6 +281,8 @@ class LocalClosedFormResidualHead(nn.Module):
                         same_proto=same_proto[proto_idx : proto_idx + 1],
                         opp_proto=opp_proto,
                         eye=eye,
+                        class_idx=class_idx,
+                        committee_idx=proto_idx,
                     )
                     member_logits.append(torch.sum(h * solved, dim=-1))
                 class_logit = torch.stack(member_logits, dim=0).mean(dim=0)
@@ -152,6 +315,13 @@ class TensorCSPNetLocalClosedFormResidual(nn.Module):
         prototypes_per_class: int = 4,
         routing_temperature: float = 1.0,
         ridge: float = 1e-2,
+        ridge_mode: str = "fixed",
+        ridge_trace_eps: float = 1e-8,
+        solve_mode: str = "ridge_solve",
+        pinv_rcond: float = 1e-4,
+        input_norm_mode: str = "none",
+        input_norm_eps: float = 1e-8,
+        enable_probe: bool = False,
         init_beta: float = 0.1,
         detach_local_input: bool = False,
         support_mode: str = "same_opp_balanced",
@@ -174,6 +344,13 @@ class TensorCSPNetLocalClosedFormResidual(nn.Module):
             prototypes_per_class=int(prototypes_per_class),
             routing_temperature=float(routing_temperature),
             ridge=float(ridge),
+            ridge_mode=str(ridge_mode),
+            ridge_trace_eps=float(ridge_trace_eps),
+            solve_mode=str(solve_mode),
+            pinv_rcond=float(pinv_rcond),
+            input_norm_mode=str(input_norm_mode),
+            input_norm_eps=float(input_norm_eps),
+            enable_probe=bool(enable_probe),
             support_mode=str(support_mode),
             prototype_aggregation=str(prototype_aggregation),
         )
