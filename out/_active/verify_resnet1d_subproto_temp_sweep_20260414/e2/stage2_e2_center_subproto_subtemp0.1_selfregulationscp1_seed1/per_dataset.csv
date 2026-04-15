@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+selfregulationscp1,e2,1,0.8293515358361775,0.8268812629986765,49.13965559005737

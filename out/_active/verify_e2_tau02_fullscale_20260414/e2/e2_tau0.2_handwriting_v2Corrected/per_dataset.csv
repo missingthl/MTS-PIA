@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+handwriting,e2,1,0.5682352941176471,0.5429456021396963,328.82893323898315

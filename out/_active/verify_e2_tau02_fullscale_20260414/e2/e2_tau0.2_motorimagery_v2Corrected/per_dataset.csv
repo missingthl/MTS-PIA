@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+motorimagery,e2,1,0.52,0.45725915875169604,91.07307243347168

@@ -1,0 +1,2 @@
+dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
+ethanolconcentration,e2,1,0.28517110266159695,0.26953839660187734,105.95592737197876
