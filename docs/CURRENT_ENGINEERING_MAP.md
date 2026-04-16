@@ -1,6 +1,6 @@
 # Current Engineering Map
 
-更新时间：2026-04-14
+更新时间：2026-04-16
 
 这份文件现在优先回答两个问题：
 
@@ -79,15 +79,10 @@
 
 当前 `ResNet1D` 结果沉淀的最短读法：
 
-- 第一版 `E0 / E1 / E2` 框架对比已经覆盖 9 个数据集
-- `E2 + pinv` 目前比 `E0` 更强的数据集包括：
-  - `FingerMovements`
-  - `SelfRegulationSCP1`
-  - `Epilepsy`
-  - `AtrialFibrillation`
-- 模板机制已经出现数据集相关分工：
-  - `4模板 + pooled` 更稳于 `FingerMovements / SCP1`
-  - `4模板 + committee_mean` 更强于 `NATOPS / UWaveGestureLibrary / Epilepsy`
+- **阶段二验证完毕**：完成 21 个数据集在 `E2 tau=0.2 corrected` 协议下的全量扫表。
+- **超越 SOTA**：在 `NATOPS` (+0.5%)、`FingerMovements` (+2.0%)、`JapaneseVowels`、`Libras` 和 `MotorImagery` (+4.0%) 等 5 个数据集上超越了 MiniRocket SOTA，另有两个数据集战平。
+- **协同演化定论 (Synergy Verdict)**：通过 MiniRocket (Frozen Backbone) 挂载 DLCR 的实验对比（精度显著下降），确认了 DLCR 的威力源于**主干网在联合训练中针对闭式求解器进行的特征空间自适应（Synergy）**。
+- **当前最优配置**：`solve_mode=pinv` + `prototype_geometry_mode=center_subproto` + `tau=0.2`。
 
 ## 根目录怎么理解
 

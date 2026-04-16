@@ -261,7 +261,8 @@ class LocalClosedFormResidualHead(nn.Module):
     def _record_probe_rows(
         self,
         *,
-        gram: torch.Tensor,
+        h: torch.Tensor,
+        gram: torch.Tensor | None,
         ridge_scale: torch.Tensor,
         solved: torch.Tensor,
         class_idx: int,
@@ -270,16 +271,26 @@ class LocalClosedFormResidualHead(nn.Module):
         if not self.enable_probe:
             return
         with torch.no_grad():
-            dim = float(gram.shape[-1])
-            mean_trace = torch.einsum("bii->b", gram) / dim
-            eigvals = torch.linalg.eigvalsh(gram)
-            eig_abs = eigvals.abs()
-            cond_eps = max(self.ridge_trace_eps, 1e-12)
-            cond_number = eig_abs.max(dim=-1).values / eig_abs.min(dim=-1).values.clamp_min(cond_eps)
-            weight_norm = torch.linalg.vector_norm(solved, dim=-1)
+            batch_size = h.shape[0]
+            mean_trace_cpu = [0.0] * batch_size
+            cond_cpu = [0.0] * batch_size
 
-            mean_trace_cpu = mean_trace.detach().cpu().tolist()
-            cond_cpu = cond_number.detach().cpu().tolist()
+            if gram is not None:
+                dim = float(gram.shape[-1])
+                mean_trace = torch.einsum("bii->b", gram) / dim
+                mean_trace_cpu = mean_trace.detach().cpu().tolist()
+                
+                # Skip expensive eigenvalue decomposition for high-dimensional features
+                if int(gram.shape[-1]) <= 1024:
+                    # abs() helps with numerical stability for condition number
+                    eig_abs = torch.linalg.eigvalsh(gram).abs()
+                    cond_eps = max(self.ridge_trace_eps, 1e-12)
+                    cond_number = eig_abs.max(dim=-1).values / eig_abs.min(dim=-1).values.clamp_min(cond_eps)
+                    cond_cpu = cond_number.detach().cpu().tolist()
+                else:
+                    cond_cpu = [-1.0] * batch_size
+
+            weight_norm = torch.linalg.vector_norm(solved, dim=-1)
             ridge_cpu = ridge_scale.detach().cpu().tolist()
             wnorm_cpu = weight_norm.detach().cpu().tolist()
 
@@ -288,16 +299,16 @@ class LocalClosedFormResidualHead(nn.Module):
             ):
                 self._probe_rows.append(
                     {
-                        "split": self._probe_split,
+                        "split": str(self._probe_split),
                         "epoch": int(self._probe_epoch),
                         "class_idx": int(class_idx),
                         "committee_idx": int(committee_idx),
                         "sample_idx_in_batch": int(sample_idx),
-                        "ridge_mode": self.ridge_mode,
-                        "solve_mode": self.solve_mode,
-                        "support_mode": self.support_mode,
-                        "prototype_aggregation": self.prototype_aggregation,
-                        "input_norm_mode": self.input_norm_mode,
+                        "ridge_mode": str(self.ridge_mode),
+                        "solve_mode": str(self.solve_mode),
+                        "support_mode": str(self.support_mode),
+                        "prototype_aggregation": str(self.prototype_aggregation),
+                        "input_norm_mode": str(self.input_norm_mode),
                         "mean_trace": float(trace_i),
                         "condition_number": float(cond_i),
                         "effective_ridge": float(ridge_i),
@@ -381,17 +392,11 @@ class LocalClosedFormResidualHead(nn.Module):
             targets = torch.ones(same_proto.shape[0], dtype=h.dtype, device=h.device)
             opp_proto = opp_proto[:0]
 
-        gram = torch.einsum("bn,nd,ne->bde", weights, support, support)
-        rhs = torch.einsum("bn,nd,n->bd", weights, support, targets)
-        weight_sqrt = torch.sqrt(weights.clamp_min(0.0))
-        weighted_support = weight_sqrt[:, :, None] * support.unsqueeze(0)
-        weighted_targets = weight_sqrt * targets.unsqueeze(0)
-        solve_matrix_shape = list(gram.shape)
-        solve_space_dim = int(gram.shape[-1])
-
         if self.solve_mode == "pinv":
+            gram = torch.einsum("bn,nd,ne->bde", weights, support, support)
+            rhs = torch.einsum("bn,nd,n->bd", weights, support, targets)
             ridge_scale = torch.zeros(
-                (gram.shape[0],),
+                (h.shape[0],),
                 dtype=h.dtype,
                 device=h.device,
             )
@@ -399,12 +404,20 @@ class LocalClosedFormResidualHead(nn.Module):
                 torch.linalg.pinv(gram, rcond=self.pinv_rcond, hermitian=True),
                 rhs.unsqueeze(-1),
             ).squeeze(-1)
+            solve_matrix_shape = list(gram.shape)
+            solve_space_dim = int(gram.shape[-1])
         elif self.solve_mode == "dual_pinv":
+            gram = None 
+            rhs = None
             ridge_scale = torch.zeros(
-                (gram.shape[0],),
+                (h.shape[0],),
                 dtype=h.dtype,
                 device=h.device,
             )
+            weight_sqrt = torch.sqrt(weights.clamp_min(0.0))
+            weighted_support = weight_sqrt[:, :, None] * support.unsqueeze(0)
+            weighted_targets = weight_sqrt * targets.unsqueeze(0)
+            
             dual_gram = torch.einsum("bnd,bmd->bnm", weighted_support, weighted_support)
             dual_solution = torch.matmul(
                 torch.linalg.pinv(dual_gram, rcond=self.pinv_rcond, hermitian=True),
@@ -414,18 +427,31 @@ class LocalClosedFormResidualHead(nn.Module):
             solve_matrix_shape = list(dual_gram.shape)
             solve_space_dim = int(dual_gram.shape[-1])
         else:
-            if self.ridge_mode == "trace_adaptive":
+            # Handle ridge modes
+            if self.solve_mode == "dual_ridge":
+                gram = None
+                rhs = None
+            else:
+                gram = torch.einsum("bn,nd,ne->bde", weights, support, support)
+                rhs = torch.einsum("bn,nd,n->bd", weights, support, targets)
+
+            if gram is not None and self.ridge_mode == "trace_adaptive":
                 dim = float(gram.shape[-1])
                 mean_trace = torch.einsum("bii->b", gram) / dim
                 ridge_scale = self.ridge * mean_trace.clamp_min(self.ridge_trace_eps)
             else:
                 ridge_scale = torch.full(
-                    (gram.shape[0],),
+                    (h.shape[0],),
                     float(self.ridge),
                     dtype=h.dtype,
                     device=h.device,
                 )
+
             if self.solve_mode == "dual_ridge":
+                weight_sqrt = torch.sqrt(weights.clamp_min(0.0))
+                weighted_support = weight_sqrt[:, :, None] * support.unsqueeze(0)
+                weighted_targets = weight_sqrt * targets.unsqueeze(0)
+                
                 dual_gram = torch.einsum("bnd,bmd->bnm", weighted_support, weighted_support)
                 dual_eye = torch.eye(
                     dual_gram.shape[-1],
@@ -440,11 +466,16 @@ class LocalClosedFormResidualHead(nn.Module):
                 solve_matrix_shape = list(dual_gram.shape)
                 solve_space_dim = int(dual_gram.shape[-1])
             else:
+                eye = torch.eye(gram.shape[-1], dtype=h.dtype, device=h.device)
                 solved = torch.linalg.solve(
                     gram + ridge_scale[:, None, None] * eye.unsqueeze(0),
                     rhs.unsqueeze(-1),
                 ).squeeze(-1)
+                solve_matrix_shape = list(gram.shape)
+                solve_space_dim = int(gram.shape[-1])
+
         self._record_probe_rows(
+            h=h,
             gram=gram,
             ridge_scale=ridge_scale,
             solved=solved,
@@ -465,16 +496,16 @@ class LocalClosedFormResidualHead(nn.Module):
                 "negative_support_shape": [int(v) for v in opp_proto.shape],
                 "weights_shape": [int(v) for v in weights.shape],
                 "targets_shape": [int(v) for v in targets.shape],
-                "gram_shape": [int(v) for v in gram.shape],
-                "rhs_shape": [int(v) for v in rhs.shape],
+                "gram_shape": [int(v) for v in gram.shape] if gram is not None else [-1, -1, -1],
+                "rhs_shape": [int(v) for v in rhs.shape] if rhs is not None else [-1, -1],
                 "solve_matrix_shape": [int(v) for v in solve_matrix_shape],
                 "solve_space_dim": int(solve_space_dim),
                 "solved_shape": [int(v) for v in solved.shape],
                 "same_weight_max_mean": float(same_w.max(dim=-1).values.mean().item()),
                 "same_weight_entropy_mean": float(self._normalized_entropy(same_w).mean().item()),
                 "same_weight_sum_mean": float(same_w.sum(dim=-1).mean().item()),
-                "gram_trace_mean": float(torch.einsum("bii->b", gram).mean().item()),
-                "rhs_norm_mean": float(torch.linalg.vector_norm(rhs, dim=-1).mean().item()),
+                "gram_trace_mean": float(torch.einsum("bii->b", gram).mean().item()) if gram is not None else -1.0,
+                "rhs_norm_mean": float(torch.linalg.vector_norm(rhs, dim=-1).mean().item()) if rhs is not None else -1.0,
                 "weight_norm_mean": float(torch.linalg.vector_norm(solved, dim=-1).mean().item()),
                 "effective_ridge_mean": float(ridge_scale.mean().item()),
             }
