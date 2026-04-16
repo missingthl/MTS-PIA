@@ -38,6 +38,8 @@ def build_curriculum_aug_candidates(
     multiplier: int,
     seed: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
+    tid_arr = np.asarray(tid_train)
+    y_arr = np.asarray(y_train).astype(int).ravel()
     # 1. Dimension Contract & Defensive Checks
     actual_k = int(direction_bank.shape[0])
     if actual_k == 0:
