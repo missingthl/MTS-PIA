@@ -14,7 +14,7 @@ class AeonFixedSplitSpec:
 
 AEON_FIXED_SPLIT_SPECS: Dict[str, AeonFixedSplitSpec] = {
     "natops": AeonFixedSplitSpec("natops", "NATOPS", 20.0),
-    "har": AeonFixedSplitSpec("har", "HAR", 50.0),
+    "har": AeonFixedSplitSpec("har", "UCIHAR", 50.0),
     "fingermovements": AeonFixedSplitSpec("fingermovements", "FingerMovements", 20.0),
     "basicmotions": AeonFixedSplitSpec("basicmotions", "BasicMotions", 10.0),
     "handmovementdirection": AeonFixedSplitSpec("handmovementdirection", "HandMovementDirection", 20.0),
@@ -53,12 +53,18 @@ def _resolve_dataset_root(dataset_name: str) -> Path:
             p = base / cand
             if (p / f"{dataset_name}_TRAIN.ts").is_file():
                 return p
+            if (p / f"{cand}_TRAIN.ts").is_file():
+                return p
             # Try lowercase name
             p_low = base / cand.lower()
             if (p_low / f"{dataset_name}_TRAIN.ts").is_file():
                 return p_low
+            if (p_low / f"{cand.lower()}_TRAIN.ts").is_file():
+                return p_low
             # Try parent folder
             if (base / f"{dataset_name}_TRAIN.ts").is_file():
+                return base
+            if (base / f"{cand}_TRAIN.ts").is_file():
                 return base
 
     raise FileNotFoundError(f"Dataset {dataset_name} (candidates: {candidates}) not found in {local_data} or {main_data}")
