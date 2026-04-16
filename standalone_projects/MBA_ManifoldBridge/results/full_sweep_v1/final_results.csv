@@ -1,0 +1,2 @@
+dataset,seed,algo,model,base_f1,mba_f1,gain
+japanesevowels,1,lraes,resnet1d,0.024097167463307468,0.018308080808080808,-0.00578908665522666

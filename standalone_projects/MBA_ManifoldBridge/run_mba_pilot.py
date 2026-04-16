@@ -61,74 +61,106 @@ def _build_trial_records(trials, spd_eps=1e-4):
 
 def run_experiment(dataset_name, args):
     print(f"\n>>>> Dataset: {dataset_name} | Model: {args.model} <<<<")
-    all_trials = load_trials_for_dataset(dataset_name)
-    results = []
+    try:
+        all_trials = load_trials_for_dataset(dataset_name)
+    except Exception as e:
+        print(f"Failed to load {dataset_name}: {e}")
+        return [{
+            "dataset": dataset_name, "seed": -1, "status": "failed", "fail_reason": str(e),
+            "requested_k_dir": args.k_dir, "effective_k_dir": 0, "algo": args.algo, "model": args.model
+        }]
 
+    results = []
     seeds = [int(s) for s in args.seeds.split(",")]
+    
     for seed in seeds:
         print(f"Seed {seed}...")
-        train_trials, test_trials, _ = make_trial_split(all_trials, seed=seed)
-        train_recs, mean_log = _build_trial_records(train_trials)
-        test_recs, _ = _build_trial_records(test_trials)
-        
-        X_train_z = np.stack([r.z for r in train_recs])
-        y_train = np.array([r.y for r in train_recs])
-        X_test_z = np.stack([r.z for r in test_recs])
-        y_test = np.array([r.y for r in test_recs])
-        X_train_raw = np.stack([r.x_raw for r in train_recs])
-        X_test_raw = np.stack([r.x_raw for r in test_recs])
+        try:
+            train_trials, test_trials, _ = make_trial_split(all_trials, seed=seed)
+            train_recs, mean_log = _build_trial_records(train_trials)
+            test_recs, _ = _build_trial_records(test_trials)
+            
+            X_train_z = np.stack([r.z for r in train_recs])
+            y_train = np.array([r.y for r in train_recs])
+            X_test_z = np.stack([r.z for r in test_recs])
+            y_test = np.array([r.y for r in test_recs])
+            X_train_raw = np.stack([r.x_raw for r in train_recs])
+            X_test_raw = np.stack([r.x_raw for r in test_recs])
 
-        # 1. Bank Generation
-        if args.algo == "lraes":
-            W, _ = build_lraes_direction_bank(X_train_z, y_train, k_dir=args.k_dir, 
-                                             fisher_cfg=FisherPIAConfig(), lraes_cfg=LRAESConfig())
-        else:
-            W, _ = build_pia_direction_bank(X_train_z, k_dir=args.k_dir, seed=seed)
+            num_classes = len(np.unique(y_train))
+            latent_dim = X_train_z.shape[1]
 
-        # 2. Baseline
-        print("Fitting Baseline...")
-        if args.model == "resnet1d":
-            res_base = fit_eval_resnet1d(X_train_raw, y_train, X_test_raw, y_test, 
-                                        epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, device=args.device)
-        else:
-            model_base = build_model(n_kernels=args.n_kernels, random_state=seed)
-            res_base = fit_eval_minirocket(model_base, X_train_raw, y_train, X_test_raw, y_test)
-        
-        # 3. MBA Augmentation
-        gamma_budget = np.full((args.k_dir,), args.pia_gamma)
-        probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
-        z_aug, y_aug, tid_aug, _, _, _ = build_curriculum_aug_candidates(
-            X_train_z, y_train, np.array([r.tid for r in train_recs]),
-            direction_bank=W, direction_probs=probs, gamma_by_dir=gamma_budget, 
-            multiplier=args.multiplier, seed=seed + 42
-        )
-        
-        aug_trials = []
-        tid_to_rec = {r.tid: r for r in train_recs}
-        for i in range(len(z_aug)):
-            src = tid_to_rec[tid_aug[i]]
-            sigma_aug = logvec_to_spd(z_aug[i], mean_log)
-            x_aug, _ = bridge_single(torch.from_numpy(src.x_raw), torch.from_numpy(src.sigma_orig), torch.from_numpy(sigma_aug))
-            aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i])})
-        
-        X_mix = np.concatenate([X_train_raw, np.stack([t["x"] for t in aug_trials])])
-        y_mix = np.concatenate([y_train, np.array([t["y"] for t in aug_trials])])
-        
-        print(f"Fitting MBA Model ({len(X_mix)} samples)...")
-        if args.model == "resnet1d":
-            res_mba = fit_eval_resnet1d(X_mix, y_mix, X_test_raw, y_test, 
-                                       epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, device=args.device)
-        else:
-            model_mba = build_model(n_kernels=args.n_kernels, random_state=seed)
-            res_mba = fit_eval_minirocket(model_mba, X_mix, y_mix, X_test_raw, y_test)
-        
-        summary = {
-            "dataset": dataset_name, "seed": seed, "algo": args.algo, "model": args.model,
-            "base_f1": res_base["macro_f1"], "mba_f1": res_mba["macro_f1"],
-            "gain": res_mba["macro_f1"] - res_base["macro_f1"]
-        }
-        print(f"Base: {summary['base_f1']:.4f} | MBA: {summary['mba_f1']:.4f} | Gain: {summary['gain']:.4f}")
-        results.append(summary)
+            # 1. Bank Generation
+            if args.algo == "lraes":
+                W, _ = build_lraes_direction_bank(X_train_z, y_train, k_dir=args.k_dir, 
+                                                 fisher_cfg=FisherPIAConfig(), lraes_cfg=LRAESConfig())
+            else:
+                W, _ = build_pia_direction_bank(X_train_z, k_dir=args.k_dir, seed=seed)
+
+            # --- Dimension Contract Sync ---
+            effective_k = W.shape[0]
+            print(f"Requested K: {args.k_dir} | Effective K: {effective_k} | Classes: {num_classes}")
+
+            # 2. Baseline
+            print("Fitting Baseline...")
+            if args.model == "resnet1d":
+                res_base = fit_eval_resnet1d(X_train_raw, y_train, X_test_raw, y_test, 
+                                            epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, device=args.device)
+            else:
+                model_base = build_model(n_kernels=args.n_kernels, random_state=seed)
+                res_base = fit_eval_minirocket(model_base, X_train_raw, y_train, X_test_raw, y_test)
+            
+            # 3. MBA Augmentation
+            # Use effective_k for budget and probs initialization to prevent module contract drift
+            gamma_budget = np.full((effective_k,), args.pia_gamma)
+            probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
+            
+            z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
+                X_train_z, y_train, np.array([r.tid for r in train_recs]),
+                direction_bank=W, direction_probs=probs, gamma_by_dir=gamma_budget, 
+                multiplier=args.multiplier, seed=seed + 42
+            )
+            
+            aug_trials = []
+            tid_to_rec = {r.tid: r for r in train_recs}
+            for i in range(len(z_aug)):
+                src = tid_to_rec[tid_aug[i]]
+                sigma_aug = logvec_to_spd(z_aug[i], mean_log)
+                x_aug, _ = bridge_single(torch.from_numpy(src.x_raw), torch.from_numpy(src.sigma_orig), torch.from_numpy(sigma_aug))
+                aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i])})
+            
+            if len(aug_trials) > 0:
+                X_mix = np.concatenate([X_train_raw, np.stack([t["x"] for t in aug_trials])])
+                y_mix = np.concatenate([y_train, np.array([t["y"] for t in aug_trials])])
+            else:
+                X_mix, y_mix = X_train_raw, y_train
+            
+            print(f"Fitting MBA Model ({len(X_mix)} samples)...")
+            if args.model == "resnet1d":
+                res_mba = fit_eval_resnet1d(X_mix, y_mix, X_test_raw, y_test, 
+                                           epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, device=args.device)
+            else:
+                model_mba = build_model(n_kernels=args.n_kernels, random_state=seed)
+                res_mba = fit_eval_minirocket(model_mba, X_mix, y_mix, X_test_raw, y_test)
+            
+            summary = {
+                "dataset": dataset_name, "seed": seed, "status": "success", "fail_reason": "",
+                "requested_k_dir": args.k_dir, "effective_k_dir": effective_k,
+                "num_classes": num_classes, "latent_dim": latent_dim, "train_size": len(y_train),
+                "aug_total_count": aug_meta.get("aug_total_count", 0),
+                "algo": args.algo, "model": args.model,
+                "base_f1": res_base["macro_f1"], "mba_f1": res_mba["macro_f1"],
+                "gain": res_mba["macro_f1"] - res_base["macro_f1"]
+            }
+            print(f"Base: {summary['base_f1']:.4f} | MBA: {summary['mba_f1']:.4f} | Gain: {summary['gain']:.4f}")
+            results.append(summary)
+
+        except Exception as e:
+            print(f"Error in {dataset_name} Seed {seed}: {e}")
+            results.append({
+                "dataset": dataset_name, "seed": seed, "status": "failed", "fail_reason": str(e),
+                "requested_k_dir": args.k_dir, "effective_k_dir": 0, "algo": args.algo, "model": args.model
+            })
     
     return results
 
@@ -155,7 +187,8 @@ def main():
     
     datasets = [args.dataset]
     if args.all_datasets:
-        datasets = ["natops", "har"] + list(AEON_FIXED_SPLIT_SPECS.keys())
+        # AEON_FIXED_SPLIT_SPECS already contains natops and har
+        datasets = sorted(list(AEON_FIXED_SPLIT_SPECS.keys()))
     
     all_results = []
     for ds in datasets:

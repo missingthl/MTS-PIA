@@ -14,7 +14,7 @@ MBA focuses on **Data Augmentation**. We perform geometric operations in the lat
 
 ## Usage
 ```bash
-python run_mba_pilot.py --dataset natops --seeds 1 --rounds 3
+python run_mba_pilot.py --dataset natops --seeds 1,2,3 --model resnet1d
 ```
 
 ## Requirements

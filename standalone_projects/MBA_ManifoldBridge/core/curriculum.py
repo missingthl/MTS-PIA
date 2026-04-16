@@ -38,12 +38,37 @@ def build_curriculum_aug_candidates(
     multiplier: int,
     seed: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
-    """Build augmented latent candidates based on curriculum budgets."""
-    tid_arr = np.asarray(tid_train)
-    y_arr = np.asarray(y_train).astype(int).ravel()
-    k_dir = int(direction_bank.shape[0])
-    probs = direction_probs / float(np.sum(direction_probs) + 1e-12)
+    # 1. Dimension Contract & Defensive Checks
+    actual_k = int(direction_bank.shape[0])
+    if actual_k == 0:
+        # Emergency fallback: if no directions exist, we cannot augment. return original
+        return (X_train.astype(np.float32), y_train.astype(np.int64), tid_train,
+                X_train.astype(np.float32), np.zeros(len(y_train), dtype=np.int64),
+                {"aug_total_count": 0, "status": "fallback_no_bank"})
+
+    # Ensure probs match actual_k
+    p_vec = np.asarray(direction_probs).ravel()
+    if p_vec.size != actual_k:
+        # Force re-size or uniform fallback if contract is broken
+        if p_vec.size < actual_k:
+            p_vec = np.pad(p_vec, (0, actual_k - p_vec.size), mode='constant', constant_values=0.0)
+        else:
+            p_vec = p_vec[:actual_k]
+    
+    # Normalize and handle zero-sum
+    p_sum = np.sum(p_vec)
+    if p_sum <= 1e-12:
+        probs = np.full((actual_k,), 1.0 / actual_k, dtype=np.float64)
+    else:
+        probs = p_vec / p_sum
+    
     gammas = np.asarray(gamma_by_dir, dtype=np.float64).ravel()
+    if gammas.size != actual_k:
+        # Align gamma budget if needed
+        if gammas.size < actual_k:
+            gammas = np.pad(gammas, (0, actual_k - gammas.size), mode='edge')
+        else:
+            gammas = gammas[:actual_k]
 
     aug_X, aug_y, aug_tid, aug_src, aug_dir, aug_gamma = [], [], [], [], [], []
     tids = sorted(list(set(tid_arr.tolist())))
@@ -54,7 +79,8 @@ def build_curriculum_aug_candidates(
         
         for m in range(max(0, int(multiplier))):
             rs = np.random.RandomState(int(seed + m * 1009 + _stable_tid_hash(tid)))
-            dir_ids = rs.choice(k_dir, size=len(idx), replace=True, p=probs)
+            # Now safe because actual_k == len(probs)
+            dir_ids = rs.choice(actual_k, size=len(idx), replace=True, p=probs)
             signs = rs.choice([-1.0, 1.0], size=len(idx))
             g_vec = gammas[dir_ids]
             

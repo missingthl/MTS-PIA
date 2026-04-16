@@ -41,17 +41,27 @@ def _resolve_dataset_root(dataset_name: str) -> Path:
     # 2. Check main project data folder
     main_data = Path("../../data").resolve()
     
+    # Define aliases for specific datasets
+    aliases = {
+        "har": ["HAR", "UCIHAR", "UCI-HAR"]
+    }
+    candidates = [dataset_name] + aliases.get(dataset_name.lower(), [])
+    
     for base in [local_data, main_data]:
-        p = base / dataset_name
-        if (p / f"{dataset_name}_TRAIN.ts").is_file():
-            return p
-        p_low = base / dataset_name.lower()
-        if (p_low / f"{dataset_name}_TRAIN.ts").is_file():
-            return p_low
-        if (base / f"{dataset_name}_TRAIN.ts").is_file():
-            return base
+        for cand in candidates:
+            # Try direct name
+            p = base / cand
+            if (p / f"{dataset_name}_TRAIN.ts").is_file():
+                return p
+            # Try lowercase name
+            p_low = base / cand.lower()
+            if (p_low / f"{dataset_name}_TRAIN.ts").is_file():
+                return p_low
+            # Try parent folder
+            if (base / f"{dataset_name}_TRAIN.ts").is_file():
+                return base
 
-    raise FileNotFoundError(f"Dataset {dataset_name} root not found in {local_data} or {main_data}")
+    raise FileNotFoundError(f"Dataset {dataset_name} (candidates: {candidates}) not found in {local_data} or {main_data}")
 
 def _load_ts_file(path: Path) -> Tuple[np.ndarray, List[str], List[str]]:
     lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()

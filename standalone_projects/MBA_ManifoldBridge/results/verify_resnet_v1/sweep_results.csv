@@ -1,0 +1,2 @@
+dataset,seed,algo,model,base_f1,mba_f1,gain
+natops,1,lraes,resnet1d,0.6218609129875331,0.8270416390306519,0.20518072604311877
