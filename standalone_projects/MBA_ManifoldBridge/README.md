@@ -10,12 +10,19 @@ MBA focuses on **Data Augmentation**. We perform geometric operations in the lat
 - `run_mba_pilot.py`: Main entry point for experiments.
 - `core/`: Core mathematical logic (Bridge, PIA, Curriculum).
 - `utils/`: Utility functions for datasets and evaluation.
-- `data/`: Directory for datasets (recommend symlinking from original sources).
+- `results/`: Contains verified experimental results and the paper report.
 
 ## Usage
 ```bash
-python run_mba_pilot.py --dataset natops --seeds 1,2,3 --model resnet1d
+python run_mba_pilot.py --all-datasets --seeds 1,2,3 --algo lraes --model resnet1d
 ```
+
+## Scientific Results
+The framework has been validated across **21 MTS datasets**. The final results are stored in `results/paper_report/sweep_results.csv`. Key performance gains were observed on:
+- **Handwriting**: +5.7% (avg)
+- **JapaneseVowels**: +4.8% (avg)
+- **UWaveGestureLibrary**: +2.7% (avg)
+- **NATOPS**: +2.8% (avg)
 
 ## Requirements
 - `torch >= 2.0`

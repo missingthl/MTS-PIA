@@ -4,7 +4,7 @@ import os
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Iterator, Iterable, Optional
+from typing import Dict, List, Tuple, Iterator, Iterable, Optional, Any
 
 @dataclass(frozen=True)
 class AeonFixedSplitSpec:
@@ -68,6 +68,40 @@ def _resolve_dataset_root(dataset_name: str) -> Path:
                 return base
 
     raise FileNotFoundError(f"Dataset {dataset_name} (candidates: {candidates}) not found in {local_data} or {main_data}")
+
+def _resolve_har_root(dataset_name: str) -> Path:
+    local_data = Path("data").resolve()
+    main_data = Path("../../data").resolve()
+    candidates = ["har", "HAR", "UCIHAR", "UCI-HAR"]
+    
+    for base in [local_data, main_data]:
+        for cand in candidates:
+            p = base / cand
+            # Check for nesting
+            p_tries = [p, p / "UCI HAR Dataset", p / "UCI HAR Dataset" / "UCI HAR Dataset"]
+            for pt in p_tries:
+                if (pt / "train").is_dir() and (pt / "test").is_dir():
+                    return pt
+    raise FileNotFoundError(f"Raw HAR directory not found in {local_data} or {main_data}")
+
+def _load_har_split(split_root: Path, split: str) -> Tuple[np.ndarray, np.ndarray]:
+    inertial_dir = split_root / split / "Inertial Signals"
+    channels = ["body_acc_x", "body_acc_y", "body_acc_z", "body_gyro_x", "body_gyro_y", "body_gyro_z", "total_acc_x", "total_acc_y", "total_acc_z"]
+    signals = []
+    for ch in channels:
+        fp = inertial_dir / f"{ch}_{split}.txt"
+        signals.append(np.loadtxt(fp, dtype=np.float32))
+    
+    x = np.stack(signals, axis=1)  # [N, 9, T=128]
+    y_path = split_root / split / f"y_{split}.txt"
+    y = np.loadtxt(y_path, dtype=np.int64).reshape(-1) - 1
+    return x, y
+
+class UCIHARTrialDataset:
+    def __init__(self, root: Path):
+        self.root = root
+        self.train_x, self.train_y = _load_har_split(self.root, "train")
+        self.test_x, self.test_y = _load_har_split(self.root, "test")
 
 def _load_ts_file(path: Path) -> Tuple[np.ndarray, List[str], List[str]]:
     lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -151,7 +185,12 @@ def load_trials_for_dataset(dataset_name: str) -> List[Trial]:
     if ds_key not in AEON_FIXED_SPLIT_SPECS:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
     
-    loader = AeonFixedSplitTrialDataset(ds_key)
+    if ds_key == "har":
+        root = _resolve_har_root("har")
+        loader: Any = UCIHARTrialDataset(root)
+    else:
+        loader = AeonFixedSplitTrialDataset(ds_key)
+    
     trials = []
     for i in range(loader.train_x.shape[0]):
         trials.append(Trial(tid=f"{ds_key}_train_{i}", x=loader.train_x[i], y=int(loader.train_y[i]), split="train"))
