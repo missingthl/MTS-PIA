@@ -25,8 +25,22 @@ The framework has been validated across **21 MTS datasets**. The final results a
 - **NATOPS**: +2.8% (avg)
 
 ## Requirements
-- `torch >= 2.0`
-- `numpy`
-- `pandas`
-- `scikit-learn`
-- `aeon`
+- `torch >= 2.0.0`
+- `numpy >= 1.26.0`
+- `pandas >= 2.0.0`
+- `scikit-learn >= 1.3.0`
+- `aeon >= 1.0.0`
+
+## Setup
+You can set up the environment using either Pip or Conda:
+
+**Option 1: Pip**
+```bash
+pip install -r requirements.txt
+```
+
+**Option 2: Conda (Recommended)**
+```bash
+conda env create -f environment.yml
+conda activate mba
+```
