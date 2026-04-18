@@ -1,3 +1,0 @@
-dataset,dataset_role,seed,constructive_count,discriminative_count,overlap_count,role_overlap_jaccard,constructive_only_ratio,discriminative_only_ratio
-selfregulationscp1,main,1,427.0,431.0,182.0,0.2692307692307692,0.5737704918032787,0.5777262180974478
-natops,anchor,1,252.0,252.0,84.0,0.2,0.6666666666666666,0.6666666666666666

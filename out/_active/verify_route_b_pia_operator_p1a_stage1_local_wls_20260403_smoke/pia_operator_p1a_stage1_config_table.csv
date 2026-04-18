@@ -1,2 +1,0 @@
-dataset,seed,terminal,prototype_count,anchors_per_prototype,local_topk,fast_r_dimension,pia_activation,pia_n_iters,pia_c_repr,pia_bias_lr,pia_bias_update_mode,prop_win_ratio,prop_hop_ratio,min_window_extra_channels,force_hop_len
-fingermovements,1,dynamic_minirocket,4,8,4,4,sigmoid,3,1.0,0.25,residual,0.2,0.1,4,1

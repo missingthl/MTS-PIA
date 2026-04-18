@@ -1,5 +1,0 @@
-dataset,seed,stage,mode,within_prototype_compactness,between_prototype_separation,nearest_prototype_margin,temporal_assignment_stability,prototype_family_dispersion
-handmovementdirection,1,before_fast,prototype_memory,1.56909293877548,0.8373653340690788,0.009827454001208004,0.9785677083333333,0.8563240907511849
-handmovementdirection,1,post_fast_geometry,prototype_memory,1.57030018588735,0.8425370271356822,0.007389685084439525,0.9770052083333333,0.8613085906271797
-handmovementdirection,1,refit_only_geometry,prototype_memory,1.5720123692082333,0.8491319976607267,0.007255898962512916,0.9774479166666665,0.8677762419849469
-handmovementdirection,1,delayed_refresh_geometry,prototype_memory,1.571917417117906,0.8515892044158839,0.007497878123541159,0.9774218749999999,0.8701229914112659

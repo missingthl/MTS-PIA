@@ -1,2 +1,0 @@
-dataset,seed,test_acc,test_macro_f1,train_trial_count,test_trial_count,n_channels,seq_len,seq_len_model_input,protocol
-natops,1,0.9333333333333333,0.9330357142857143,180,180,24,51,51,dataset_provided_train_test_full_sequence

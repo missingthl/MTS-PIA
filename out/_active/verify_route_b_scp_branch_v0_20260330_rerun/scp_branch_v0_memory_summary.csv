@@ -1,3 +1,0 @@
-dataset,seed,class_id,candidate_window_count_class,safe_window_count_class,prototype_count_class,coverage_ratio_class,coverage_threshold_class,low_coverage_flag,effective_trigger,purity_threshold_class,local_step_threshold_class
-selfregulationscp1,1,0,72518,72518,4,1.0,3626,0,1,,
-selfregulationscp1,1,1,71800,71800,4,1.0,3590,0,1,,

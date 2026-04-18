@@ -1,4 +1,0 @@
-dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1,delta_vs_no_shaping,delta_vs_mean_centered,margin_to_score_conversion
-selfregulationscp1,1,baseline_0,dynamic_minirocket,1.0,0.6378378378378378,0.6348324609194174,0.0,0.0,0.0
-selfregulationscp1,1,mean_centered,dynamic_minirocket,1.0,0.6378378378378378,0.6317000284602978,-0.0031324324591195385,0.0,38.6311863297369
-selfregulationscp1,1,single_template_pia,dynamic_minirocket,1.0,0.6378378378378378,0.6323626893939394,-0.002469771525478004,0.0006626609336415346,37.93826156046982

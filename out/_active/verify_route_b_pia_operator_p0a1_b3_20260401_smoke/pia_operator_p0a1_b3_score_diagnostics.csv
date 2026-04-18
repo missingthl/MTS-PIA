@@ -1,8 +1,0 @@
-dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1
-natops,1,baseline_0,dynamic_gru,1.0,0.9790849673202615,0.8286955114786415
-natops,1,mean_centered,dynamic_gru,1.0,0.9361111111111112,0.7836666189541989
-natops,1,c0_unweighted_a2r,dynamic_gru,1.0,0.9790849673202615,0.8231285890549479
-natops,1,c3lr_r1_global_a2r,dynamic_gru,1.0,0.9790849673202615,0.7945518608722546
-natops,1,b3_r1_continuous_geom,dynamic_gru,1.0,0.9790849673202615,0.782916410562979
-natops,1,c3lr_r4_global_a2r,dynamic_gru,1.0,0.9790849673202615,0.8233096409695645
-natops,1,b3_r4_continuous_geom,dynamic_gru,1.0,0.9790849673202615,0.8286955114786415

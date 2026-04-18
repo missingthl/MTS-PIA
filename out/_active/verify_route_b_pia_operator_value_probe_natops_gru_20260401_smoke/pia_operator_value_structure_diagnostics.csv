@@ -1,4 +1,0 @@
-dataset,seed,stage,mode,within_prototype_compactness,between_prototype_separation,nearest_prototype_margin,temporal_assignment_stability,prototype_family_dispersion
-natops,1,before,prototype_memory,4.758645925542442,9.347560495450905,1.212169935540465,0.9893719806763287,8.7565885521043
-natops,1,after_mean_centered,prototype_memory,4.743847863756827,9.367443346786432,1.2508716045478108,0.9893719806763287,8.7747485575916
-natops,1,after_single_template_pia,prototype_memory,4.758447032114631,9.391551852752043,1.2124085195632615,0.9893719806763287,8.794801272105799

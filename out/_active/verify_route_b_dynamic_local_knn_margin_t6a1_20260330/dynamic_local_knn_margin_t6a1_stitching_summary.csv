@@ -1,3 +1,0 @@
-dataset,dataset_role,seed,mode,augmented_trial_count,masked_window_ratio,stitch_boundary_count,stitch_boundary_jump_ratio_mean,stitched_continuity_distortion_ratio,stitch_scope,raw_level_stitching
-selfregulationscp1,main,1,t6a1_local_knn_margin_unified,179.0,0.2981843575418994,3.022346368715084,1.003482269009269,1.0018782107143918,z_seq_only,0.0
-natops,anchor,1,t6a1_local_knn_margin_unified,100.0,0.504,1.36,1.0002757731840801,1.0001632819575246,z_seq_only,0.0

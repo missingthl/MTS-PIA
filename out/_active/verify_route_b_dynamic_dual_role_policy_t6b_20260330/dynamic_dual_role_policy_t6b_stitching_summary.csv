@@ -1,3 +1,0 @@
-dataset,dataset_role,seed,augmented_trial_count,masked_window_ratio,stitch_boundary_count,stitch_boundary_jump_ratio_mean,stitched_continuity_distortion_ratio,stitch_scope,raw_level_stitching
-selfregulationscp1,main,1,182.0,0.2932692307692308,2.934065934065934,1.002531290225712,1.001428848084343,z_seq_only,0.0
-natops,anchor,1,96.0,0.525,1.3854166666666667,1.0000128215619042,1.0000387790944478,z_seq_only,0.0

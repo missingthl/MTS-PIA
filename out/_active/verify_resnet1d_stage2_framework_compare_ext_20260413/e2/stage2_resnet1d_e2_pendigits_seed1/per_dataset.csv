@@ -1,2 +1,0 @@
-dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
-pendigits,e2,1,0.9882790165809033,0.9881908283402524,404.13610005378723

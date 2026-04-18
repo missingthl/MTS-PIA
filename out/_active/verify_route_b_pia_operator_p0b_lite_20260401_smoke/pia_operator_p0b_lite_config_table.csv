@@ -1,2 +1,0 @@
-dataset,seed,terminal,window_len,hop_len,z_dim,prototype_count,anchors_per_prototype,fast_mainline,fast_r_dimension,fit_window_count,fit_trial_count,opp_pair_rule,response_stats_mode,r0_geometry_rebuild_mode
-natops,1,dynamic_gru,28,1,300,4,8,A2r+C3LR+r4+global,4,192,58,nearest_opposite_prototype,deployment_train,frozen_identity_post_fast_refit

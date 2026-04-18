@@ -1,9 +1,0 @@
-dataset,seed,class_id,pooled_window_count_orig,pooled_window_count_feedback,pooled_window_count_total,ovr_negative_window_count,basis_cosine_to_old_shared,basis_angle_to_old_shared,inter_basis_cosine_mean,inter_basis_cosine_min,inter_basis_cosine_max,basis_mode,basis_solver_mode,routing_scope
-selfregulationscp1,1,0.0,808.0,444.0,1252.0,1210.0,0.009128565450771094,1.5616676345577354,1.0,1.0,1.0,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-selfregulationscp1,1,1.0,800.0,410.0,1210.0,1252.0,0.009128565450771094,1.5616676345577354,1.0,1.0,1.0,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-natops,1,0.0,115.0,86.0,201.0,977.0,0.05045962788579131,1.5203152611712965,0.20152024265672433,0.001581333604494223,0.8583676629315372,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-natops,1,1.0,110.0,82.0,192.0,986.0,0.004944265853821645,1.56585204079646,0.20152024265672433,0.001581333604494223,0.8583676629315372,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-natops,1,2.0,110.0,82.0,192.0,986.0,0.03142114007528824,1.5393700141352191,0.20152024265672433,0.001581333604494223,0.8583676629315372,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-natops,1,3.0,115.0,85.0,200.0,978.0,0.04411927552102929,1.5266627256167409,0.20152024265672433,0.001581333604494223,0.8583676629315372,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-natops,1,4.0,110.0,82.0,192.0,986.0,0.10298965451299971,1.4676237314417915,0.20152024265672433,0.001581333604494223,0.8583676629315372,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only
-natops,1,5.0,115.0,86.0,201.0,977.0,0.08534090630983193,1.4853514888633261,0.20152024265672433,0.001581333604494223,0.8583676629315372,class_conditioned_single_axis_ovr,ovr_fisher_single_axis,train_augmentation_only

@@ -1,2 +1,0 @@
-dataset,static_manifold_macro_f1_mean,static_manifold_macro_f1_std,static_manifold_macro_f1,dynamic_meanpool_macro_f1_mean,dynamic_meanpool_macro_f1_std,dynamic_meanpool_macro_f1,dynamic_gru_macro_f1_mean,dynamic_gru_macro_f1_std,dynamic_gru_macro_f1,raw_minirocket_macro_f1_mean,raw_minirocket_macro_f1_std,raw_minirocket_macro_f1,best_model
-har,0.6811225495340422,0.0,0.6811 +/- 0.0000,0.6461440109811858,0.0,0.6461 +/- 0.0000,0.7332181682338591,0.0,0.7332 +/- 0.0000,0.9594607409126548,0.0,0.9595 +/- 0.0000,dynamic_gru

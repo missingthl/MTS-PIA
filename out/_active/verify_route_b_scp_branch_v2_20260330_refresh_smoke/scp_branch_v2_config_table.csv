@@ -1,2 +1,0 @@
-dataset,seed,shared_backbone,shared_object,semantics,prototype_count,anchors_per_prototype,anchor_selection_mode,same_dist_quantile,beta,epsilon_scale,proto_update_alpha,retrain_reference_protocol
-selfregulationscp1,1,dense_zseq_dynamic_minirocket,prototype_memory_v1b_tight_anchor_local_shaping,new_v2_geometry_refresh,4,8,tight_margin,50.0,0.5,0.1,0.2,same_dense_zseq_dynamic_minirocket_retrain

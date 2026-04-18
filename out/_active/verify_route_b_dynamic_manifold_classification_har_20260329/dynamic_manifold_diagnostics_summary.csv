@@ -1,4 +1,0 @@
-dataset,seed,model_type,trajectory_len_mean,step_change_mean,local_curvature_proxy,classwise_dispersion,transition_separation_proxy,notes
-har,1,static_linear,1.0,0.0,0.0,2.814797798792521,0.0,dynamic proxies use minimal reproducible definitions
-har,1,dynamic_meanpool,8.0,1.8185484210596077,2.826348587430103,2.2350617249806723,0.0507880263030529,dynamic proxies use minimal reproducible definitions
-har,1,dynamic_gru,8.0,1.8185484210596077,2.826348587430103,2.2350617249806723,0.0507880263030529,dynamic proxies use minimal reproducible definitions

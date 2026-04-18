@@ -1,2 +1,0 @@
-dataset,raw_baseline_macro_f1,vector_operator_macro_f1,logeuclidean_operator_macro_f1,vector_delta_vs_raw_mean,logeuclidean_delta_vs_raw_mean,logeuclidean_delta_vs_vector_mean,per_seed_sign_vs_vector
-selfregulationscp1,0.7334 +/- 0.0000,0.7196 +/- 0.0000,0.7162 +/- 0.0000,-0.013828153508510632,-0.01716506048606936,-0.003336906977558729,-

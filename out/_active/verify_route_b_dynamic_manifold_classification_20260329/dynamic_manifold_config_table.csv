@@ -1,7 +1,0 @@
-dataset,seed,model_type,window_len,hop_len,channels,z_dim,num_classes,gru_hidden_dim,dropout,epochs,batch_size,lr,weight_decay,patience
-natops,1,static_linear,28,5,24,300,6,128,0.3,3,16,0.001,0.0001,3
-natops,1,dynamic_meanpool,28,5,24,300,6,128,0.3,3,16,0.001,0.0001,3
-natops,1,dynamic_gru,28,5,24,300,6,128,0.3,3,16,0.001,0.0001,3
-selfregulationscp1,1,static_linear,179,90,6,21,2,128,0.3,3,16,0.001,0.0001,3
-selfregulationscp1,1,dynamic_meanpool,179,90,6,21,2,128,0.3,3,16,0.001,0.0001,3
-selfregulationscp1,1,dynamic_gru,179,90,6,21,2,128,0.3,3,16,0.001,0.0001,3

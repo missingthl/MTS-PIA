@@ -1,4 +1,0 @@
-dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1,delta_vs_no_shaping,delta_vs_mean_centered,margin_to_score_conversion
-natops,1,baseline_0,dynamic_gru,1.0,0.9790849673202615,0.8286955114786415,0.0,0.0,0.0
-natops,1,mean_centered,dynamic_gru,1.0,0.9361111111111112,0.7836666189541989,-0.04502889252444264,0.0,-1.1634867964228595
-natops,1,single_template_pia,dynamic_gru,1.0,0.9790849673202615,0.8177427185458708,-0.010952792932770739,0.034076099591671904,-45.905562949123876

@@ -1,7 +1,0 @@
-dataset,seed,split_name,train_max_len,model_input_len,trajectory_len_mean,trajectory_len_min,trajectory_len_max,padding_ratio_mean,truncate_ratio_mean,n_padded,n_truncated
-natops,1,train,24,24,24.0,24.0,24.0,0.0,0.0,0,0
-natops,1,val,24,24,24.0,24.0,24.0,0.0,0.0,0,0
-natops,1,test,24,24,24.0,24.0,24.0,0.0,0.0,0,0
-selfregulationscp1,1,train,718,718,718.0,718.0,718.0,0.0,0.0,0,0
-selfregulationscp1,1,val,718,718,718.0,718.0,718.0,0.0,0.0,0,0
-selfregulationscp1,1,test,718,718,718.0,718.0,718.0,0.0,0.0,0,0

@@ -1,6 +1,0 @@
-dataset,seed,candidate_window_count,safe_window_count,accepted_window_count,accept_rate,source_trial_coverage,class_balance_proxy,pool_type,informative_gate
-basicmotions,1,270,200,200,0.7407407407407407,1.0,0.8333333333333334,window_conditioned_feedback_pool,safety_only
-handmovementdirection,1,1080,597,597,0.5527777777777778,1.0,0.7674418604651163,window_conditioned_feedback_pool,safety_only
-uwavegesturelibrary,1,720,278,278,0.3861111111111111,0.9555555555555556,0.3584905660377358,window_conditioned_feedback_pool,safety_only
-epilepsy,1,816,580,580,0.7107843137254902,0.9803921568627451,0.7777777777777778,window_conditioned_feedback_pool,safety_only
-natops,1,675,503,503,0.7451851851851852,0.9851851851851852,0.9534883720930233,window_conditioned_feedback_pool,safety_only

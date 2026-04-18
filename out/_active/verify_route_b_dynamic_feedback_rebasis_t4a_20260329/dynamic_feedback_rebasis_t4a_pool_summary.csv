@@ -1,3 +1,0 @@
-dataset,seed,candidate_count,accepted_count,accept_rate,class_balance_proxy,mean_purity_drop_accepted,mean_continuity_ratio_accepted,pool_type
-natops,1,135,85,0.6296296296296297,0.7058823529411765,-0.061176470588235304,1.0000883918854098,safety_filtered_pool
-selfregulationscp1,1,201,107,0.5323383084577115,0.9107142857142857,-0.04485981308411215,1.0063560544412424,safety_filtered_pool

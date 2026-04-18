@@ -1,9 +1,0 @@
-dataset,dataset_role,seed,mode,class_id,safe_window_count_class,admitted_window_count_class,coverage_ratio_class,coverage_threshold_class,low_coverage_flag,effective_trigger
-selfregulationscp1,main,1,t6a1_local_knn_margin_unified,0.0,444.0,222.0,0.5,23.0,0.0,1.0
-selfregulationscp1,main,1,t6a1_local_knn_margin_unified,1.0,410.0,205.0,0.5,21.0,0.0,1.0
-natops,anchor,1,t6a1_local_knn_margin_unified,0.0,86.0,43.0,0.5,8.0,0.0,1.0
-natops,anchor,1,t6a1_local_knn_margin_unified,1.0,82.0,41.0,0.5,8.0,0.0,1.0
-natops,anchor,1,t6a1_local_knn_margin_unified,2.0,82.0,41.0,0.5,8.0,0.0,1.0
-natops,anchor,1,t6a1_local_knn_margin_unified,3.0,85.0,43.0,0.5058823529411764,8.0,0.0,1.0
-natops,anchor,1,t6a1_local_knn_margin_unified,4.0,82.0,41.0,0.5,8.0,0.0,1.0
-natops,anchor,1,t6a1_local_knn_margin_unified,5.0,86.0,43.0,0.5,8.0,0.0,1.0

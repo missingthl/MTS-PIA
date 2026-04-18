@@ -1,8 +1,0 @@
-dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1
-selfregulationscp1,1,baseline_0,dynamic_minirocket,1.0,0.6378378378378378,0.6348324609194174
-selfregulationscp1,1,mean_centered,dynamic_minirocket,1.0,0.6378378378378378,0.6317000284602978
-selfregulationscp1,1,c0_unweighted_a2r,dynamic_minirocket,1.0,0.6378378378378378,0.6348324609194174
-selfregulationscp1,1,c3lr_r1_global_a2r,dynamic_minirocket,1.0,0.6214689265536724,0.6417880330923809
-selfregulationscp1,1,b3_r1_continuous_geom,dynamic_minirocket,1.0,0.6378378378378378,0.6449244368406045
-selfregulationscp1,1,c3lr_r4_global_a2r,dynamic_minirocket,1.0,0.653941163260723,0.6379621708963026
-selfregulationscp1,1,b3_r4_continuous_geom,dynamic_minirocket,1.0,0.6378378378378378,0.641089373847892

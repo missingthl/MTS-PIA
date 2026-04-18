@@ -1,4 +1,0 @@
-metric,mean,std
-test_acc,0.9333333333333333,0.0
-test_macro_f1,0.9330357142857143,0.0
-n_seeds,1.0,0.0

@@ -1,5 +1,0 @@
-dataset,seed,arm,terminal,train_macro_f1,val_macro_f1,test_macro_f1
-uwavegesturelibrary,1,f1_fast_mainline,dynamic_minirocket,1.0,0.7319444444444445,0.7195937417139298
-uwavegesturelibrary,1,r0_post_fast_refit_no_rebuild,dynamic_minirocket,1.0,0.6873015873015873,0.6949878675004137
-uwavegesturelibrary,1,p0b_lite_delayed_refresh,dynamic_minirocket,1.0,0.7319444444444445,0.7099922124726188
-uwavegesturelibrary,1,baseline_0,dynamic_minirocket,1.0,0.7319444444444445,0.7193076937678575

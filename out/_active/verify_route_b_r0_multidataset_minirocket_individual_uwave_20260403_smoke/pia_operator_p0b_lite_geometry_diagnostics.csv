@@ -1,5 +1,0 @@
-dataset,seed,stage,mode,within_prototype_compactness,between_prototype_separation,nearest_prototype_margin,temporal_assignment_stability,prototype_family_dispersion
-uwavegesturelibrary,1,before_fast,prototype_memory,2.3810481179497245,4.580963163778823,-0.12786225971556817,0.9812169312169312,4.546863592925119
-uwavegesturelibrary,1,post_fast_geometry,prototype_memory,2.384975516277559,4.6140161622248845,-0.13454247366168462,0.9811287477954145,4.581921003503673
-uwavegesturelibrary,1,refit_only_geometry,prototype_memory,2.411177498912568,4.62591029768203,-0.13352459543596115,0.9812610229276896,4.594182127776004
-uwavegesturelibrary,1,delayed_refresh_geometry,prototype_memory,2.4046540418410807,4.646402641420761,-0.13998650324466494,0.9805555555555555,4.617636687915773

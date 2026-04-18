@@ -1,2 +1,0 @@
-dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
-cricket,e0,1,0.9722222222222222,0.972027972027972,5.098780393600464

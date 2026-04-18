@@ -1,2 +1,0 @@
-dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
-atrialfibrillation,e0,1,0.26666666666666666,0.21367521367521367,3.7767412662506104

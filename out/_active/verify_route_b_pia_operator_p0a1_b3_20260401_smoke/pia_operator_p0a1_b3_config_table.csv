@@ -1,2 +1,0 @@
-dataset,seed,terminal,window_len,hop_len,z_dim,prototype_count,anchors_per_prototype,r_dimensions,fit_window_count,fit_trial_count,stage_b_response_variant,c3_target_mode,c3_response_stats_mode,c3_opp_pair_rule
-natops,1,dynamic_gru,28,1,300,4,8,"1,4",192,58,sigmoid_clip_tanh_local_median_scaled_iqr,linear_pm1,deployment_train,nearest_opposite_prototype

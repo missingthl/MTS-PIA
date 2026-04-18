@@ -1,2 +1,0 @@
-dataset,arm,seed,test_acc,test_macro_f1,wallclock_seconds
-fingermovements,e2,1,0.52,0.5104039167686658,0.46953535079956055

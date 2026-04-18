@@ -1,7 +1,0 @@
-dataset,seed,operator_mode,axis_count,r_dimension,gamma_main,smooth_lambda,window_len,hop_len,gru_hidden_dim,dropout,epochs,batch_size
-natops,1,baseline,1,1,0.1,0.0,28,5,128,0.3,3,16
-natops,1,operator_unsmoothed,1,1,0.1,0.0,28,5,128,0.3,3,16
-natops,1,operator_smoothed,1,1,0.1,0.5,28,5,128,0.3,3,16
-selfregulationscp1,1,baseline,1,1,0.1,0.0,179,90,128,0.3,3,16
-selfregulationscp1,1,operator_unsmoothed,1,1,0.1,0.0,179,90,128,0.3,3,16
-selfregulationscp1,1,operator_smoothed,1,1,0.1,0.5,179,90,128,0.3,3,16

@@ -1,3 +1,0 @@
-dataset,raw_baseline_macro_f1,base_pia_macro_f1,static_refined_macro_f1,risk_aware_macro_f1,delta_vs_raw_mean,delta_vs_base_pia_mean,delta_vs_static_refined_mean,per_seed_sign_vs_static_refined
-natops,0.7246 +/- 0.0000,0.7294 +/- 0.0000,0.7108 +/- 0.0000,0.7105 +/- 0.0000,-0.014160199681853336,-0.01897077884765852,-0.00030993922192756873,-
-selfregulationscp1,0.7334 +/- 0.0000,0.5662 +/- 0.0000,0.5631 +/- 0.0000,0.5699 +/- 0.0000,-0.16349187112354668,0.0036912555451786844,0.006785939873530156,+
