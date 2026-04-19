@@ -155,6 +155,9 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             tangent_source=str(args.tangent_source),
             prob_tangent_version=str(args.prob_tangent_version),
             rank_selection_mode=str(args.rank_selection_mode),
+            posterior_mode=str(args.posterior_mode),
+            posterior_student_dof=float(args.posterior_student_dof),
+            mdl_penalty_beta=float(args.mdl_penalty_beta),
             readout_gate_mode=str(args.local_readout_gate),
         )
     raise ValueError(f"unknown arm: {args.arm}")
@@ -260,6 +263,48 @@ def _export_dataflow_probe_artifacts(
         _write_csv(os.path.join(run_dir, "dataflow_test_stage_rows.csv"), stage_rows)
 
 
+def _export_mdl_rank_trace_artifact(
+    *,
+    run_dir: str,
+    first_batch_summary: Dict[str, object] | None,
+) -> None:
+    if not first_batch_summary:
+        return
+    local_head_dataflow = first_batch_summary.get("local_head_dataflow")
+    if not isinstance(local_head_dataflow, dict):
+        return
+    class_summaries = local_head_dataflow.get("class_summaries")
+    if not isinstance(class_summaries, list):
+        return
+    trace_rows: List[Dict[str, object]] = []
+    for class_summary in class_summaries:
+        if not isinstance(class_summary, dict):
+            continue
+        rank_rows = class_summary.get("rank_rows")
+        if not isinstance(rank_rows, list) or not rank_rows:
+            continue
+        trace_rows.append(
+            {
+                "class_idx": class_summary.get("class_idx"),
+                "selected_rank": class_summary.get("selected_rank"),
+                "ppca_sigma2": class_summary.get("ppca_sigma2"),
+                "lw_shrinkage_alpha": class_summary.get("lw_shrinkage_alpha"),
+                "posterior_mode": class_summary.get("posterior_mode"),
+                "mdl_penalty_beta": class_summary.get("mdl_penalty_beta"),
+                "rank_rows": rank_rows,
+            }
+        )
+    if not trace_rows:
+        return
+    payload = {
+        "dataset": first_batch_summary.get("dataset"),
+        "arm": first_batch_summary.get("arm"),
+        "split": first_batch_summary.get("split"),
+        "trace_rows": trace_rows,
+    }
+    _write_json(os.path.join(run_dir, "mdl_rank_trace.json"), payload)
+
+
 def _export_tangent_probe_artifacts(model: torch.nn.Module, *, run_dir: str) -> None:
     local_head = getattr(model, "local_head", None)
     if local_head is None or not hasattr(local_head, "export_tangent_probe_payload"):
@@ -363,6 +408,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--tangent-probe", action="store_true", default=False)
     p.add_argument("--prob-tangent-version", type=str, default="v1", choices=["v1", "v2", "v3"])
     p.add_argument("--rank-selection-mode", type=str, default="mdl", choices=["mdl", "bic"])
+    p.add_argument("--posterior-mode", type=str, default="gaussian_dimnorm", choices=["gaussian_dimnorm", "student_t"])
+    p.add_argument("--posterior-student-dof", type=float, default=3.0)
+    p.add_argument("--mdl-penalty-beta", type=float, default=1.0)
+    p.add_argument("--emit-mdl-rank-trace", action="store_true", default=False)
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
     p.add_argument("--detach-local-latent", action="store_true", default=False)
     p.add_argument("--fusion-warmup-hold-epochs", type=int, default=0)
@@ -475,6 +524,9 @@ def main() -> None:
         "tangent_probe": bool(args.tangent_probe),
         "prob_tangent_version": str(args.prob_tangent_version),
         "rank_selection_mode": str(args.rank_selection_mode),
+        "posterior_mode": str(args.posterior_mode),
+        "posterior_student_dof": float(args.posterior_student_dof),
+        "mdl_penalty_beta": float(args.mdl_penalty_beta),
         "local_readout_gate": str(args.local_readout_gate),
         "run_dir": run_dir,
     }
@@ -532,6 +584,10 @@ def main() -> None:
     selected_lw_alpha_all: List[np.ndarray] = []
     selected_ppca_sigma2_all: List[np.ndarray] = []
     selected_posterior_confidence_all: List[np.ndarray] = []
+    selected_posterior_log_confidence_all: List[np.ndarray] = []
+    selected_posterior_residual_energy_all: List[np.ndarray] = []
+    selected_posterior_residual_energy_per_dim_all: List[np.ndarray] = []
+    selected_posterior_sigma2_eff_all: List[np.ndarray] = []
     with torch.no_grad():
         _maybe_set_probe_context(model, split="test", epoch=int(args.epochs))
         sample_offset = 0
@@ -567,6 +623,14 @@ def main() -> None:
                         selected_ppca_sigma2_all.append(np.asarray(routing_payload["ppca_sigma2"], dtype=np.float64))
                     if "posterior_confidence" in routing_payload:
                         selected_posterior_confidence_all.append(np.asarray(routing_payload["posterior_confidence"], dtype=np.float64))
+                    if "posterior_log_confidence" in routing_payload:
+                        selected_posterior_log_confidence_all.append(np.asarray(routing_payload["posterior_log_confidence"], dtype=np.float64))
+                    if "posterior_residual_energy" in routing_payload:
+                        selected_posterior_residual_energy_all.append(np.asarray(routing_payload["posterior_residual_energy"], dtype=np.float64))
+                    if "posterior_residual_energy_per_dim" in routing_payload:
+                        selected_posterior_residual_energy_per_dim_all.append(np.asarray(routing_payload["posterior_residual_energy_per_dim"], dtype=np.float64))
+                    if "posterior_sigma2_eff" in routing_payload:
+                        selected_posterior_sigma2_eff_all.append(np.asarray(routing_payload["posterior_sigma2_eff"], dtype=np.float64))
                 if batch_idx == 0:
                     local_head = getattr(model, "local_head", None)
                     local_dataflow = None
@@ -616,10 +680,14 @@ def main() -> None:
                             "local_routing_entropy": float(local_routing_entropy),
                             "local_subproto_cos_gap": float(local_subproto_cos_gap),
                             "local_routing_width": int(local_routing_width),
-                            "local_selected_rank": None if "selected_rank" not in routing_payload else int(routing_payload["selected_rank"][i]),
-                            "local_lw_shrinkage_alpha": None if "lw_shrinkage_alpha" not in routing_payload else float(routing_payload["lw_shrinkage_alpha"][i]),
-                            "local_ppca_sigma2": None if "ppca_sigma2" not in routing_payload else float(routing_payload["ppca_sigma2"][i]),
-                            "local_posterior_confidence": None if "posterior_confidence" not in routing_payload else float(routing_payload["posterior_confidence"][i]),
+                            "local_selected_rank": None if routing_payload is None or "selected_rank" not in routing_payload else int(routing_payload["selected_rank"][i]),
+                            "local_lw_shrinkage_alpha": None if routing_payload is None or "lw_shrinkage_alpha" not in routing_payload else float(routing_payload["lw_shrinkage_alpha"][i]),
+                            "local_ppca_sigma2": None if routing_payload is None or "ppca_sigma2" not in routing_payload else float(routing_payload["ppca_sigma2"][i]),
+                            "local_posterior_confidence": None if routing_payload is None or "posterior_confidence" not in routing_payload else float(routing_payload["posterior_confidence"][i]),
+                            "local_posterior_log_confidence": None if routing_payload is None or "posterior_log_confidence" not in routing_payload else float(routing_payload["posterior_log_confidence"][i]),
+                            "local_posterior_residual_energy": None if routing_payload is None or "posterior_residual_energy" not in routing_payload else float(routing_payload["posterior_residual_energy"][i]),
+                            "local_posterior_residual_energy_per_dim": None if routing_payload is None or "posterior_residual_energy_per_dim" not in routing_payload else float(routing_payload["posterior_residual_energy_per_dim"][i]),
+                            "local_posterior_sigma2_eff": None if routing_payload is None or "posterior_sigma2_eff" not in routing_payload else float(routing_payload["posterior_sigma2_eff"][i]),
                         }
                     )
                 sample_offset += len(batch_y_np)
@@ -700,7 +768,30 @@ def main() -> None:
         if selected_posterior_confidence_all:
             posterior_confidence = np.concatenate(selected_posterior_confidence_all, axis=0)
             agreement_summary["posterior_confidence_mean"] = float(posterior_confidence.mean())
+            agreement_summary["posterior_confidence_std"] = float(posterior_confidence.std())
+            agreement_summary["posterior_confidence_q10"] = float(np.quantile(posterior_confidence, 0.10))
+            agreement_summary["posterior_confidence_q50"] = float(np.quantile(posterior_confidence, 0.50))
+            agreement_summary["posterior_confidence_q90"] = float(np.quantile(posterior_confidence, 0.90))
+            agreement_summary["posterior_confidence_qgap"] = float(
+                agreement_summary["posterior_confidence_q90"] - agreement_summary["posterior_confidence_q10"]
+            )
+            agreement_summary["posterior_confidence_qratio"] = float(
+                agreement_summary["posterior_confidence_q90"] / max(agreement_summary["posterior_confidence_q10"], 1e-12)
+            )
             agreement_summary["posterior_confidence_far_decay_mean"] = float((1.0 - posterior_confidence).mean())
+        if selected_posterior_log_confidence_all:
+            posterior_log_confidence = np.concatenate(selected_posterior_log_confidence_all, axis=0)
+            agreement_summary["posterior_log_confidence_mean"] = float(posterior_log_confidence.mean())
+            agreement_summary["posterior_log_confidence_std"] = float(posterior_log_confidence.std())
+        if selected_posterior_residual_energy_all:
+            posterior_residual_energy = np.concatenate(selected_posterior_residual_energy_all, axis=0)
+            agreement_summary["posterior_residual_energy_mean"] = float(posterior_residual_energy.mean())
+        if selected_posterior_residual_energy_per_dim_all:
+            posterior_residual_energy_per_dim = np.concatenate(selected_posterior_residual_energy_per_dim_all, axis=0)
+            agreement_summary["posterior_residual_energy_per_dim_mean"] = float(posterior_residual_energy_per_dim.mean())
+        if selected_posterior_sigma2_eff_all:
+            posterior_sigma2_eff = np.concatenate(selected_posterior_sigma2_eff_all, axis=0)
+            agreement_summary["posterior_sigma2_eff_mean"] = float(posterior_sigma2_eff.mean())
         local_head = getattr(model, "local_head", None)
         if local_head is not None and hasattr(local_head, "export_learned_prototype_geometry_summary"):
             learned_geometry = local_head.export_learned_prototype_geometry_summary()
@@ -714,6 +805,11 @@ def main() -> None:
             stage_rows=stage_rows,
             agreement_summary=agreement_summary,
         )
+        if bool(args.emit_mdl_rank_trace):
+            _export_mdl_rank_trace_artifact(
+                run_dir=run_dir,
+                first_batch_summary=dataflow_first_batch_summary,
+            )
     if bool(args.closed_form_probe) and args.arm == "e2":
         _export_probe_artifacts(model, run_dir=run_dir)
     if bool(args.tangent_probe) and args.arm == "e2":

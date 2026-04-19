@@ -47,6 +47,9 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         tangent_source: str = "subproto_offsets",
         prob_tangent_version: str = "v1",
         rank_selection_mode: str = "mdl",
+        posterior_mode: str = "gaussian_dimnorm",
+        posterior_student_dof: float = 3.0,
+        mdl_penalty_beta: float = 1.0,
         readout_gate_mode: str = "none",
         block_channels: tuple[int, int, int] = (64, 128, 128),
         kernel_sizes: tuple[int, int, int] = (7, 5, 3),
@@ -80,6 +83,9 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
             tangent_source=str(tangent_source),
             prob_tangent_version=str(prob_tangent_version),
             rank_selection_mode=str(rank_selection_mode),
+            posterior_mode=str(posterior_mode),
+            posterior_student_dof=float(posterior_student_dof),
+            mdl_penalty_beta=float(mdl_penalty_beta),
         )
         self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.float32))
         self.detach_local_input = bool(detach_local_input)

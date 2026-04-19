@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
@@ -35,6 +35,9 @@ class LocalClosedFormResidualHead(nn.Module):
         tangent_source: str = "subproto_offsets",
         prob_tangent_version: str = "v1",
         rank_selection_mode: str = "mdl",
+        posterior_mode: str = "gaussian_dimnorm",
+        posterior_student_dof: float = 3.0,
+        mdl_penalty_beta: float = 1.0,
     ) -> None:
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -64,6 +67,9 @@ class LocalClosedFormResidualHead(nn.Module):
         self.tangent_source = str(tangent_source)
         self.prob_tangent_version = str(prob_tangent_version)
         self.rank_selection_mode = str(rank_selection_mode)
+        self.posterior_mode = str(posterior_mode)
+        self.posterior_student_dof = max(float(posterior_student_dof), 1e-6)
+        self.mdl_penalty_beta = max(float(mdl_penalty_beta), 1e-6)
         if self.ridge_mode not in {"fixed", "trace_adaptive"}:
             raise ValueError(f"unsupported ridge mode: {self.ridge_mode}")
         if self.solve_mode not in {"ridge_solve", "pinv", "dual_ridge", "dual_pinv"}:
@@ -80,6 +86,8 @@ class LocalClosedFormResidualHead(nn.Module):
             raise ValueError(f"unsupported prob tangent version: {self.prob_tangent_version}")
         if self.rank_selection_mode not in {"mdl", "bic"}:
             raise ValueError(f"unsupported rank selection mode: {self.rank_selection_mode}")
+        if self.posterior_mode not in {"gaussian_dimnorm", "student_t"}:
+            raise ValueError(f"unsupported posterior mode: {self.posterior_mode}")
         if self.prototype_geometry_mode in {"center_tangent", "center_prob_tangent"} and self.support_mode != "same_only":
             raise ValueError(f"{self.prototype_geometry_mode} geometry currently supports same_only support mode only")
         if self.prototype_geometry_mode == "flat":
@@ -424,6 +432,19 @@ class LocalClosedFormResidualHead(nn.Module):
         dim = int(max(1, dim))
         return int(rank * (dim + 1) - rank * (rank - 1) / 2 + 1)
 
+    def _posterior_stat_summary(self, tensor: torch.Tensor) -> Dict[str, float]:
+        values = tensor.reshape(-1)
+        if values.numel() == 0:
+            return {"mean": 0.0, "std": 0.0, "q10": 0.0, "q50": 0.0, "q90": 0.0}
+        values = values.to(dtype=torch.float32)
+        return {
+            "mean": float(values.mean().item()),
+            "std": float(values.std(unbiased=False).item()),
+            "q10": float(torch.quantile(values, 0.10).item()),
+            "q50": float(torch.quantile(values, 0.50).item()),
+            "q90": float(torch.quantile(values, 0.90).item()),
+        }
+
     def _select_prob_tangent_rank(
         self,
         eigvals: torch.Tensor,
@@ -441,6 +462,7 @@ class LocalClosedFormResidualHead(nn.Module):
         best_sigma2 = scale_eps
         best_score: float | None = None
         mode = str(self.rank_selection_mode)
+        beta = float(self.mdl_penalty_beta)
 
         for rank in range(max_rank + 1):
             if rank < dim:
@@ -461,15 +483,21 @@ class LocalClosedFormResidualHead(nn.Module):
             )
             param_count = self._ppca_parameter_count(rank=rank, dim=dim)
             bic_score = 2.0 * neg_log_likelihood + float(param_count) * log_n
-            mdl_score = neg_log_likelihood + 0.5 * float(param_count) * log_n + 0.5 * float(rank) * math.log(float(max(2, dim)))
+            mdl_penalty = 0.5 * beta * float(param_count) * log_n + 0.5 * beta * float(rank) * math.log(float(max(2, dim)))
+            mdl_score = neg_log_likelihood + mdl_penalty
             score = mdl_score if mode == "mdl" else bic_score
             rank_rows.append(
                 {
                     "rank": int(rank),
                     "sigma2": float(sigma2),
+                    "selected_logdet": float(selected_logdet),
                     "neg_log_likelihood": float(neg_log_likelihood),
+                    "penalty_term": float(mdl_penalty),
+                    "beta_scaled_penalty": float(mdl_penalty),
                     "bic_score": float(bic_score),
                     "mdl_score": float(mdl_score),
+                    "param_count": int(param_count),
+                    "residual_dim": int(residual_dim),
                     "selected_eig_sum": float(selected.sum().item()) if rank > 0 else 0.0,
                 }
             )
@@ -633,14 +661,32 @@ class LocalClosedFormResidualHead(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         sigma2_floor = max(float(sigma2), self._scale_aware_eps(selected_eigvals))
         centered = h - class_center.unsqueeze(0)
+        feature_dim = max(1, int(h.shape[-1]))
         if basis.numel() == 0 or selected_eigvals.numel() == 0:
             residual = centered
             residual_dim = max(1, int(h.shape[-1]))
             residual_energy = torch.sum(residual * residual, dim=-1)
-            confidence = torch.exp(-residual_energy / (2.0 * sigma2_floor * float(residual_dim)))
+            residual_energy_per_dim = residual_energy / float(residual_dim)
+            if self.posterior_mode == "student_t":
+                sigma2_eff = residual_energy.new_full(
+                    residual_energy.shape,
+                    max(float(self.posterior_student_dof) * sigma2_floor * float(feature_dim), self._scale_aware_eps(residual_energy)),
+                )
+                base = 1.0 + residual_energy / sigma2_eff.clamp_min(self._scale_aware_eps(residual_energy))
+                log_confidence = -0.5 * float(self.posterior_student_dof + residual_dim) * torch.log(base.clamp_min(1.0))
+            else:
+                sigma2_eff = residual_energy.new_full(
+                    residual_energy.shape,
+                    max(sigma2_floor * float(residual_dim) * float(feature_dim), self._scale_aware_eps(residual_energy)),
+                )
+                log_confidence = -residual_energy / (2.0 * sigma2_eff.clamp_min(self._scale_aware_eps(residual_energy)))
+            confidence = torch.exp(log_confidence.clamp(min=-60.0, max=0.0))
             return {
                 "confidence": confidence.clamp(0.0, 1.0),
+                "log_confidence": log_confidence,
                 "residual_energy": residual_energy,
+                "residual_energy_per_dim": residual_energy_per_dim,
+                "sigma2_eff": sigma2_eff,
                 "residual": residual,
             }
 
@@ -650,10 +696,27 @@ class LocalClosedFormResidualHead(nn.Module):
         residual = centered - projected
         residual_dim = max(1, int(h.shape[-1] - basis.shape[0]))
         residual_energy = torch.sum(residual * residual, dim=-1)
-        confidence = torch.exp(-residual_energy / (2.0 * sigma2_floor * float(residual_dim)))
+        residual_energy_per_dim = residual_energy / float(residual_dim)
+        if self.posterior_mode == "student_t":
+            sigma2_eff = residual_energy.new_full(
+                residual_energy.shape,
+                max(float(self.posterior_student_dof) * sigma2_floor * float(feature_dim), self._scale_aware_eps(residual_energy)),
+            )
+            base = 1.0 + residual_energy / sigma2_eff.clamp_min(self._scale_aware_eps(residual_energy))
+            log_confidence = -0.5 * float(self.posterior_student_dof + residual_dim) * torch.log(base.clamp_min(1.0))
+        else:
+            sigma2_eff = residual_energy.new_full(
+                residual_energy.shape,
+                max(sigma2_floor * float(residual_dim) * float(feature_dim), self._scale_aware_eps(residual_energy)),
+            )
+            log_confidence = -residual_energy / (2.0 * sigma2_eff.clamp_min(self._scale_aware_eps(residual_energy)))
+        confidence = torch.exp(log_confidence.clamp(min=-60.0, max=0.0))
         return {
             "confidence": confidence.clamp(0.0, 1.0),
+            "log_confidence": log_confidence,
             "residual_energy": residual_energy,
+            "residual_energy_per_dim": residual_energy_per_dim,
+            "sigma2_eff": sigma2_eff,
             "residual": residual,
         }
 
@@ -1083,6 +1146,10 @@ class LocalClosedFormResidualHead(nn.Module):
         prob_shrinkage_alpha_values: List[torch.Tensor] = []
         prob_sigma2_values: List[torch.Tensor] = []
         prob_posterior_confidence_values: List[torch.Tensor] = []
+        prob_posterior_log_confidence_values: List[torch.Tensor] = []
+        prob_posterior_residual_energy_values: List[torch.Tensor] = []
+        prob_posterior_residual_energy_per_dim_values: List[torch.Tensor] = []
+        prob_posterior_sigma2_eff_values: List[torch.Tensor] = []
 
         if self.prototype_geometry_mode == "center_subproto":
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
@@ -1252,10 +1319,29 @@ class LocalClosedFormResidualHead(nn.Module):
                         sigma2=float(prob_payload["sigma2"]),
                     )
                     posterior_confidence = posterior_payload["confidence"].to(dtype=h.dtype, device=h.device)
+                    posterior_log_confidence = posterior_payload["log_confidence"].to(dtype=h.dtype, device=h.device)
+                    posterior_residual_energy = posterior_payload["residual_energy"].to(dtype=h.dtype, device=h.device)
+                    posterior_residual_energy_per_dim = posterior_payload["residual_energy_per_dim"].to(dtype=h.dtype, device=h.device)
+                    posterior_sigma2_eff = posterior_payload["sigma2_eff"].to(dtype=h.dtype, device=h.device)
                     if same_routing.shape[-1] > 1:
                         tangent_weights = same_routing[:, 1:] * posterior_confidence.unsqueeze(-1)
                         collapsed_mass = same_routing[:, 1:].sum(dim=-1, keepdim=True) - tangent_weights.sum(dim=-1, keepdim=True)
                         same_routing = torch.cat([same_routing[:, :1] + collapsed_mass, tangent_weights], dim=-1)
+                    posterior_conf_stats = self._posterior_stat_summary(posterior_confidence)
+                    posterior_log_conf_stats = self._posterior_stat_summary(posterior_log_confidence)
+                    posterior_q_gap = float(posterior_conf_stats["q90"] - posterior_conf_stats["q10"])
+                    posterior_q_ratio = float(
+                        posterior_conf_stats["q90"] / max(posterior_conf_stats["q10"], 1e-12)
+                    )
+                else:
+                    posterior_log_confidence = torch.zeros_like(posterior_confidence)
+                    posterior_residual_energy = torch.zeros_like(posterior_confidence)
+                    posterior_residual_energy_per_dim = torch.zeros_like(posterior_confidence)
+                    posterior_sigma2_eff = torch.ones_like(posterior_confidence)
+                    posterior_conf_stats = {"q10": 1.0, "q50": 1.0, "q90": 1.0, "mean": 1.0, "std": 0.0}
+                    posterior_log_conf_stats = {"q10": 0.0, "q50": 0.0, "q90": 0.0, "mean": 0.0, "std": 0.0}
+                    posterior_q_gap = 0.0
+                    posterior_q_ratio = 1.0
                 tangent_basis_shape = [int(v) for v in prob_payload["basis"].shape]
                 solved, diag = self._solve_direction(
                     h,
@@ -1281,15 +1367,30 @@ class LocalClosedFormResidualHead(nn.Module):
                         "opp_center_weight_entropy_mean": 0.0,
                         "prob_tangent_version": str(self.prob_tangent_version),
                         "rank_selection_mode": str(self.rank_selection_mode),
+                        "posterior_mode": str(self.posterior_mode),
+                        "posterior_student_dof": float(self.posterior_student_dof),
+                        "mdl_penalty_beta": float(self.mdl_penalty_beta),
                         "selected_rank": int(prob_payload["selected_rank"]),
                         "lw_shrinkage_alpha": float(prob_payload["shrinkage_alpha"]),
                         "ppca_sigma2": float(prob_payload["sigma2"]),
                         "posterior_confidence_mean": float(posterior_confidence.mean().item()),
+                        "posterior_log_confidence_mean": float(posterior_log_conf_stats["mean"]),
+                        "posterior_log_confidence_std": float(posterior_log_conf_stats["std"]),
+                        "posterior_confidence_std": float(posterior_conf_stats["std"]),
+                        "posterior_confidence_q10": float(posterior_conf_stats["q10"]),
+                        "posterior_confidence_q50": float(posterior_conf_stats["q50"]),
+                        "posterior_confidence_q90": float(posterior_conf_stats["q90"]),
+                        "posterior_confidence_qgap": float(posterior_q_gap),
+                        "posterior_confidence_qratio": float(posterior_q_ratio),
+                        "posterior_residual_energy_mean": float(posterior_residual_energy.mean().item()),
+                        "posterior_residual_energy_per_dim_mean": float(posterior_residual_energy_per_dim.mean().item()),
+                        "posterior_sigma2_eff_mean": float(posterior_sigma2_eff.mean().item()),
                         "k0_fallback": int(int(prob_payload["selected_rank"]) == 0),
                         "tangent_requested_rank": int(min(4, self.prototypes_per_class)),
                         "tangent_rank95": int(prob_payload["rank95"]),
                         "tangent_effective_rank": float(prob_payload["effective_rank"]),
                         "tangent_source": str(self.tangent_source),
+                        "rank_rows": [dict(row) for row in prob_payload["rank_rows"]],
                         "center_to_subproto_cos_mean": 1.0,
                         "center_to_subproto_cos_std": 0.0,
                         "subproto_pairwise_cos_mean": 0.0,
@@ -1325,6 +1426,10 @@ class LocalClosedFormResidualHead(nn.Module):
                 )
                 if self.prob_tangent_version == "v3":
                     prob_posterior_confidence_values.append(posterior_confidence)
+                    prob_posterior_log_confidence_values.append(posterior_log_confidence)
+                    prob_posterior_residual_energy_values.append(posterior_residual_energy)
+                    prob_posterior_residual_energy_per_dim_values.append(posterior_residual_energy_per_dim)
+                    prob_posterior_sigma2_eff_values.append(posterior_sigma2_eff)
         elif self.prototype_geometry_mode == "center_only":
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
             class_prior = torch.softmax(
@@ -1479,6 +1584,14 @@ class LocalClosedFormResidualHead(nn.Module):
                 if prob_posterior_confidence_values:
                     posterior_stack = torch.stack(prob_posterior_confidence_values, dim=1)
                     payload["posterior_confidence"] = posterior_stack[batch_indices, local_pred].detach().cpu().tolist()
+                    log_conf_stack = torch.stack(prob_posterior_log_confidence_values, dim=1)
+                    residual_energy_stack = torch.stack(prob_posterior_residual_energy_values, dim=1)
+                    residual_energy_per_dim_stack = torch.stack(prob_posterior_residual_energy_per_dim_values, dim=1)
+                    sigma2_eff_stack = torch.stack(prob_posterior_sigma2_eff_values, dim=1)
+                    payload["posterior_log_confidence"] = log_conf_stack[batch_indices, local_pred].detach().cpu().tolist()
+                    payload["posterior_residual_energy"] = residual_energy_stack[batch_indices, local_pred].detach().cpu().tolist()
+                    payload["posterior_residual_energy_per_dim"] = residual_energy_per_dim_stack[batch_indices, local_pred].detach().cpu().tolist()
+                    payload["posterior_sigma2_eff"] = sigma2_eff_stack[batch_indices, local_pred].detach().cpu().tolist()
             self._last_batch_routing_payload = payload
         self._last_dataflow_summary = {
             "split": str(self._probe_split),
@@ -1503,6 +1616,9 @@ class LocalClosedFormResidualHead(nn.Module):
             "tangent_source": str(self.tangent_source),
             "prob_tangent_version": str(self.prob_tangent_version),
             "rank_selection_mode": str(self.rank_selection_mode),
+            "posterior_mode": str(self.posterior_mode),
+            "posterior_student_dof": float(self.posterior_student_dof),
+            "mdl_penalty_beta": float(self.mdl_penalty_beta),
             "solve_mode": self.solve_mode,
             "ridge_mode": self.ridge_mode,
             "input_norm_mode": self.input_norm_mode,
