@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -32,6 +33,8 @@ class LocalClosedFormResidualHead(nn.Module):
         prototype_init_scale: float = 0.02,
         tangent_rank: int = 2,
         tangent_source: str = "subproto_offsets",
+        prob_tangent_version: str = "v1",
+        rank_selection_mode: str = "mdl",
     ) -> None:
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -59,20 +62,26 @@ class LocalClosedFormResidualHead(nn.Module):
         self.prototype_geometry_mode = str(prototype_geometry_mode)
         self.tangent_rank = max(int(tangent_rank), 1)
         self.tangent_source = str(tangent_source)
+        self.prob_tangent_version = str(prob_tangent_version)
+        self.rank_selection_mode = str(rank_selection_mode)
         if self.ridge_mode not in {"fixed", "trace_adaptive"}:
             raise ValueError(f"unsupported ridge mode: {self.ridge_mode}")
         if self.solve_mode not in {"ridge_solve", "pinv", "dual_ridge", "dual_pinv"}:
             raise ValueError(f"unsupported solve mode: {self.solve_mode}")
         if self.input_norm_mode not in {"none", "l2_hypersphere"}:
             raise ValueError(f"unsupported input norm mode: {self.input_norm_mode}")
-        if self.prototype_geometry_mode not in {"flat", "center_subproto", "center_only", "center_tangent"}:
+        if self.prototype_geometry_mode not in {"flat", "center_subproto", "center_only", "center_tangent", "center_prob_tangent"}:
             raise ValueError(f"unsupported prototype geometry mode: {self.prototype_geometry_mode}")
-        if self.prototype_geometry_mode in {"center_subproto", "center_only", "center_tangent"} and self.prototype_aggregation != "pooled":
+        if self.prototype_geometry_mode in {"center_subproto", "center_only", "center_tangent", "center_prob_tangent"} and self.prototype_aggregation != "pooled":
             raise ValueError(f"{self.prototype_geometry_mode} geometry currently supports pooled aggregation only")
         if self.tangent_source not in {"subproto_offsets"}:
             raise ValueError(f"unsupported tangent source: {self.tangent_source}")
-        if self.prototype_geometry_mode == "center_tangent" and self.support_mode != "same_only":
-            raise ValueError("center_tangent geometry currently supports same_only support mode only")
+        if self.prob_tangent_version not in {"v1", "v2", "v3"}:
+            raise ValueError(f"unsupported prob tangent version: {self.prob_tangent_version}")
+        if self.rank_selection_mode not in {"mdl", "bic"}:
+            raise ValueError(f"unsupported rank selection mode: {self.rank_selection_mode}")
+        if self.prototype_geometry_mode in {"center_tangent", "center_prob_tangent"} and self.support_mode != "same_only":
+            raise ValueError(f"{self.prototype_geometry_mode} geometry currently supports same_only support mode only")
         if self.prototype_geometry_mode == "flat":
             self.register_parameter(
                 "prototypes",
@@ -134,7 +143,7 @@ class LocalClosedFormResidualHead(nn.Module):
         self._last_batch_routing_payload: Dict[str, object] | None = None
 
     def _initialize_center_subproto_offsets(self) -> None:
-        if self.prototype_geometry_mode not in {"center_subproto", "center_tangent"}:
+        if self.prototype_geometry_mode not in {"center_subproto", "center_tangent", "center_prob_tangent"}:
             return
         assert self.center_params is not None
         assert self.sub_offsets is not None
@@ -235,7 +244,7 @@ class LocalClosedFormResidualHead(nn.Module):
             }
 
     def export_tangent_probe_payload(self) -> Dict[str, object] | None:
-        if self.prototype_geometry_mode not in {"center_subproto", "center_tangent"}:
+        if self.prototype_geometry_mode not in {"center_subproto", "center_tangent", "center_prob_tangent"}:
             return None
         with torch.no_grad():
             class_centers = self._get_class_centers()
@@ -342,6 +351,311 @@ class LocalClosedFormResidualHead(nn.Module):
             posinf=0.0,
             neginf=0.0,
         )
+
+    def _scale_aware_eps(self, reference: torch.Tensor | float, *, multiplier: float = 1e-6) -> float:
+        if isinstance(reference, torch.Tensor):
+            ref_tensor = torch.nan_to_num(reference.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+            if ref_tensor.numel() == 0:
+                scale = 1.0
+            else:
+                scale = float(ref_tensor.abs().max().item())
+        else:
+            scale = abs(float(reference))
+        scale = max(scale, 1.0)
+        return max(float(self.input_norm_eps), float(multiplier) * scale, 1e-12)
+
+    @staticmethod
+    def _symmetrize(matrix: torch.Tensor) -> torch.Tensor:
+        return 0.5 * (matrix + matrix.transpose(-1, -2))
+
+    def _compute_ledoit_wolf_shrunk_covariance(
+        self,
+        samples: torch.Tensor,
+    ) -> Dict[str, object]:
+        x = torch.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
+        if x.dim() != 2:
+            raise ValueError(f"expected 2D samples, got shape={list(x.shape)}")
+        n_samples = int(x.shape[0])
+        dim = int(x.shape[1])
+        if n_samples <= 0:
+            raise ValueError("Ledoit-Wolf covariance requires at least one sample")
+
+        # `subproto_offsets` are already defined relative to the class center, so
+        # we treat them as an already-centered local cloud instead of removing
+        # their sample mean once more. This preserves the intended 4-direction
+        # local structure rather than collapsing it to rank <= 3.
+        centered = x
+        x2 = centered.square()
+        emp_cov = self._symmetrize(centered.transpose(0, 1) @ centered / float(max(1, n_samples)))
+        emp_cov_trace = x2.sum(dim=0) / float(max(1, n_samples))
+        mu = float(emp_cov_trace.sum().item()) / float(max(1, dim))
+
+        beta_ = float((x2.transpose(0, 1) @ x2).sum().item())
+        delta_raw = float(((centered.transpose(0, 1) @ centered).square()).sum().item())
+        delta_scaled = delta_raw / float(max(1, n_samples**2))
+        beta = (beta_ / float(max(1, n_samples)) - delta_scaled) / float(max(1, dim * n_samples))
+        delta = (delta_scaled - 2.0 * mu * float(emp_cov_trace.sum().item()) + float(dim) * (mu**2)) / float(max(1, dim))
+        delta = max(delta, self._scale_aware_eps(emp_cov))
+        beta = min(max(beta, 0.0), delta)
+        shrinkage = 0.0 if beta <= 0.0 else float(beta / delta)
+        shrinkage = float(min(max(shrinkage, 0.0), 1.0))
+
+        target = torch.eye(dim, dtype=emp_cov.dtype, device=emp_cov.device) * float(mu)
+        shrunk_cov = self._symmetrize((1.0 - shrinkage) * emp_cov + shrinkage * target)
+        return {
+            "centered_samples": centered,
+            "empirical_cov": emp_cov,
+            "shrunk_cov": shrunk_cov,
+            "shrinkage_alpha": float(shrinkage),
+            "mu": float(mu),
+        }
+
+    @staticmethod
+    def _effective_rank_from_eigvals(eigvals: torch.Tensor) -> float:
+        if eigvals.numel() == 0:
+            return 0.0
+        total = eigvals.sum().clamp_min(1e-12)
+        probs = eigvals / total
+        entropy = -(probs * probs.clamp_min(1e-12).log()).sum()
+        return float(torch.exp(entropy).item())
+
+    def _ppca_parameter_count(self, *, rank: int, dim: int) -> int:
+        rank = int(max(0, rank))
+        dim = int(max(1, dim))
+        return int(rank * (dim + 1) - rank * (rank - 1) / 2 + 1)
+
+    def _select_prob_tangent_rank(
+        self,
+        eigvals: torch.Tensor,
+        *,
+        sample_count: int,
+        max_rank: int | None = None,
+    ) -> Dict[str, object]:
+        dim = int(eigvals.numel())
+        max_rank = int(min(4, self.prototypes_per_class, dim) if max_rank is None else min(max_rank, dim))
+        scale_eps = self._scale_aware_eps(eigvals)
+        sample_count = max(int(sample_count), 2)
+        log_n = math.log(float(sample_count))
+        rank_rows: List[Dict[str, float | int]] = []
+        best_rank = 0
+        best_sigma2 = scale_eps
+        best_score: float | None = None
+        mode = str(self.rank_selection_mode)
+
+        for rank in range(max_rank + 1):
+            if rank < dim:
+                discarded = eigvals[rank:]
+                sigma2 = float(discarded.mean().item())
+            else:
+                discarded = eigvals[:0]
+                sigma2 = scale_eps
+            sigma2 = max(sigma2, scale_eps)
+            selected = eigvals[:rank]
+            selected_logdet = float(torch.log(selected.clamp_min(scale_eps)).sum().item()) if rank > 0 else 0.0
+            residual_dim = max(dim - rank, 1)
+            neg_log_likelihood = 0.5 * float(sample_count) * (
+                float(dim) * math.log(2.0 * math.pi)
+                + selected_logdet
+                + float(residual_dim) * math.log(sigma2)
+                + float(dim)
+            )
+            param_count = self._ppca_parameter_count(rank=rank, dim=dim)
+            bic_score = 2.0 * neg_log_likelihood + float(param_count) * log_n
+            mdl_score = neg_log_likelihood + 0.5 * float(param_count) * log_n + 0.5 * float(rank) * math.log(float(max(2, dim)))
+            score = mdl_score if mode == "mdl" else bic_score
+            rank_rows.append(
+                {
+                    "rank": int(rank),
+                    "sigma2": float(sigma2),
+                    "neg_log_likelihood": float(neg_log_likelihood),
+                    "bic_score": float(bic_score),
+                    "mdl_score": float(mdl_score),
+                    "selected_eig_sum": float(selected.sum().item()) if rank > 0 else 0.0,
+                }
+            )
+            if best_score is None or float(score) < float(best_score):
+                best_rank = int(rank)
+                best_sigma2 = float(sigma2)
+                best_score = float(score)
+
+        return {
+            "selected_rank": int(best_rank),
+            "sigma2": float(best_sigma2),
+            "rank_rows": rank_rows,
+        }
+
+    def _compute_prob_tangent_support(
+        self,
+        *,
+        class_center: torch.Tensor,
+        same_proto: torch.Tensor,
+        sub_offsets: torch.Tensor | None = None,
+    ) -> Dict[str, object]:
+        if self.tangent_source == "subproto_offsets" and sub_offsets is not None:
+            deviations = sub_offsets.to(dtype=same_proto.dtype, device=same_proto.device)
+        else:
+            deviations = same_proto - class_center.unsqueeze(0)
+        deviations = deviations - torch.sum(deviations * class_center.unsqueeze(0), dim=-1, keepdim=True) * class_center.unsqueeze(0)
+        deviations = torch.nan_to_num(deviations, nan=0.0, posinf=0.0, neginf=0.0)
+        if deviations.shape[0] == 0 or float(torch.linalg.vector_norm(deviations).item()) <= 0.0:
+            support = class_center.unsqueeze(0)
+            empty_tensor = deviations.new_zeros((0,))
+            return {
+                "support": support,
+                "basis": deviations[:0],
+                "selected_rank": 0,
+                "rank95": 0,
+                "effective_rank": 0.0,
+                "shrinkage_alpha": 0.0,
+                "sigma2": self._scale_aware_eps(class_center),
+                "selected_eigvals_tensor": empty_tensor,
+                "selected_eigvals": [],
+                "energy_probs": [],
+                "cumulative_energy": [],
+                "rank_rows": [],
+                "signal_variance": empty_tensor,
+            }
+
+        lw_payload = self._compute_ledoit_wolf_shrunk_covariance(deviations)
+        centered = lw_payload["centered_samples"]
+        sample_count = int(centered.shape[0])
+        dual_cov = self._symmetrize(centered @ centered.transpose(0, 1) / float(max(1, sample_count)))
+        dual_eigvals, dual_eigvecs = torch.linalg.eigh(dual_cov)
+        dual_eigvals = torch.flip(dual_eigvals.clamp_min(0.0), dims=[0])
+        dual_eigvecs = torch.flip(dual_eigvecs, dims=[1])
+        basis_rows: List[torch.Tensor] = []
+        empirical_eigvals: List[torch.Tensor] = []
+        eig_eps = self._scale_aware_eps(dual_eigvals)
+        for eigval, dual_vec in zip(dual_eigvals.unbind(dim=0), dual_eigvecs.transpose(0, 1).unbind(dim=0)):
+            eigval_value = float(eigval.item())
+            if eigval_value <= eig_eps:
+                continue
+            basis_vec = torch.matmul(centered.transpose(0, 1), dual_vec) / math.sqrt(float(sample_count) * eigval_value)
+            basis_vec = torch.nan_to_num(
+                F.normalize(basis_vec.unsqueeze(0), p=2, dim=-1, eps=self.input_norm_eps).squeeze(0),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            basis_rows.append(basis_vec)
+            empirical_eigvals.append(eigval)
+
+        if basis_rows:
+            empirical_eigvals_tensor = torch.stack(empirical_eigvals, dim=0)
+            basis_all = torch.stack(basis_rows, dim=0)
+        else:
+            empirical_eigvals_tensor = deviations.new_zeros((0,))
+            basis_all = deviations[:0]
+
+        dim = int(deviations.shape[-1])
+        shrinkage_alpha = float(lw_payload["shrinkage_alpha"])
+        mu = float(lw_payload["mu"])
+        shrunk_nonzero = (1.0 - shrinkage_alpha) * empirical_eigvals_tensor + shrinkage_alpha * float(mu)
+        null_count = max(0, dim - int(shrunk_nonzero.numel()))
+        if null_count > 0:
+            shrunk_tail = deviations.new_full((null_count,), float(shrinkage_alpha * mu))
+            full_shrunk_eigvals = torch.cat([shrunk_nonzero, shrunk_tail], dim=0)
+        else:
+            full_shrunk_eigvals = shrunk_nonzero
+
+        total_energy = full_shrunk_eigvals.sum().clamp_min(1e-12)
+        energy_probs = full_shrunk_eigvals / total_energy
+        cumulative_energy = torch.cumsum(energy_probs, dim=0)
+        rank95 = int(torch.nonzero(cumulative_energy >= 0.95, as_tuple=False)[0, 0].item() + 1) if full_shrunk_eigvals.numel() > 0 else 0
+        effective_rank = self._effective_rank_from_eigvals(full_shrunk_eigvals)
+        max_rank = int(min(4, self.prototypes_per_class, basis_all.shape[0]))
+
+        if self.prob_tangent_version == "v1":
+            selected_rank = int(max_rank)
+            rank_rows: List[Dict[str, float | int]] = []
+            if selected_rank < int(full_shrunk_eigvals.numel()):
+                sigma2 = float(full_shrunk_eigvals[selected_rank:].mean().item())
+            else:
+                sigma2 = self._scale_aware_eps(full_shrunk_eigvals)
+        else:
+            rank_eigvals = shrunk_nonzero[:max(1, max_rank)] if shrunk_nonzero.numel() > 0 else full_shrunk_eigvals[:1]
+            rank_payload = self._select_prob_tangent_rank(
+                rank_eigvals,
+                sample_count=int(deviations.shape[0]),
+                max_rank=max_rank,
+            )
+            selected_rank = int(rank_payload["selected_rank"])
+            if selected_rank < int(full_shrunk_eigvals.numel()):
+                sigma2 = float(full_shrunk_eigvals[selected_rank:].mean().item())
+            else:
+                sigma2 = self._scale_aware_eps(full_shrunk_eigvals)
+            rank_rows = list(rank_payload["rank_rows"])
+        sigma2 = max(float(sigma2), self._scale_aware_eps(full_shrunk_eigvals))
+
+        basis = basis_all[:selected_rank]
+        selected_eigvals = shrunk_nonzero[:selected_rank]
+        if self.prob_tangent_version == "v3":
+            signal_variance = (selected_eigvals - float(sigma2)).clamp_min(self._scale_aware_eps(selected_eigvals))
+        else:
+            signal_variance = selected_eigvals.clamp_min(self._scale_aware_eps(selected_eigvals))
+
+        if selected_rank > 0:
+            tangent_points = class_center.unsqueeze(0) + torch.sqrt(signal_variance).unsqueeze(-1) * basis
+            tangent_points = torch.nan_to_num(
+                F.normalize(tangent_points, p=2, dim=-1, eps=self.input_norm_eps),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            support = torch.cat([class_center.unsqueeze(0), tangent_points], dim=0)
+        else:
+            support = class_center.unsqueeze(0)
+
+        return {
+            "support": support,
+            "basis": basis,
+            "selected_rank": int(selected_rank),
+            "rank95": int(rank95),
+            "effective_rank": float(effective_rank),
+            "shrinkage_alpha": float(shrinkage_alpha),
+            "sigma2": float(sigma2),
+            "selected_eigvals_tensor": selected_eigvals,
+            "selected_eigvals": selected_eigvals.detach().cpu().tolist(),
+            "energy_probs": energy_probs.detach().cpu().tolist(),
+            "cumulative_energy": cumulative_energy.detach().cpu().tolist(),
+            "rank_rows": rank_rows,
+            "signal_variance": signal_variance,
+        }
+
+    def _compute_prob_tangent_posterior(
+        self,
+        *,
+        h: torch.Tensor,
+        class_center: torch.Tensor,
+        basis: torch.Tensor,
+        selected_eigvals: torch.Tensor,
+        sigma2: float,
+    ) -> Dict[str, torch.Tensor]:
+        sigma2_floor = max(float(sigma2), self._scale_aware_eps(selected_eigvals))
+        centered = h - class_center.unsqueeze(0)
+        if basis.numel() == 0 or selected_eigvals.numel() == 0:
+            residual = centered
+            residual_dim = max(1, int(h.shape[-1]))
+            residual_energy = torch.sum(residual * residual, dim=-1)
+            confidence = torch.exp(-residual_energy / (2.0 * sigma2_floor * float(residual_dim)))
+            return {
+                "confidence": confidence.clamp(0.0, 1.0),
+                "residual_energy": residual_energy,
+                "residual": residual,
+            }
+
+        coeff = torch.matmul(centered, basis.transpose(0, 1))
+        shrink = ((selected_eigvals - sigma2_floor) / selected_eigvals.clamp_min(self._scale_aware_eps(selected_eigvals))).clamp(0.0, 1.0)
+        projected = torch.matmul(coeff * shrink.unsqueeze(0), basis)
+        residual = centered - projected
+        residual_dim = max(1, int(h.shape[-1] - basis.shape[0]))
+        residual_energy = torch.sum(residual * residual, dim=-1)
+        confidence = torch.exp(-residual_energy / (2.0 * sigma2_floor * float(residual_dim)))
+        return {
+            "confidence": confidence.clamp(0.0, 1.0),
+            "residual_energy": residual_energy,
+            "residual": residual,
+        }
 
     def _compute_tangent_support(
         self,
@@ -765,6 +1079,10 @@ class LocalClosedFormResidualHead(nn.Module):
         sub_prototypes_shape: List[int] | None = None
         class_prior_shape: List[int] | None = None
         tangent_basis_shape: List[int] | None = None
+        prob_selected_rank_values: List[torch.Tensor] = []
+        prob_shrinkage_alpha_values: List[torch.Tensor] = []
+        prob_sigma2_values: List[torch.Tensor] = []
+        prob_posterior_confidence_values: List[torch.Tensor] = []
 
         if self.prototype_geometry_mode == "center_subproto":
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
@@ -901,6 +1219,112 @@ class LocalClosedFormResidualHead(nn.Module):
                 class_routings.append(same_routing)
                 class_cosines.append(same_cosine)
                 class_logits.append(class_logit)
+        elif self.prototype_geometry_mode == "center_prob_tangent":
+            class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
+            sub_prototypes = self._get_sub_prototypes(class_centers).to(dtype=h.dtype, device=h.device)
+            class_prior = torch.softmax(
+                self._cosine_similarity(h, class_centers) / self.class_prior_temperature,
+                dim=-1,
+            )
+            class_centers_shape = [int(v) for v in class_centers.shape]
+            sub_prototypes_shape = [int(v) for v in sub_prototypes.shape]
+            class_prior_shape = [int(v) for v in class_prior.shape]
+            for class_idx in range(self.num_classes):
+                prob_payload = self._compute_prob_tangent_support(
+                    class_center=class_centers[class_idx],
+                    same_proto=sub_prototypes[class_idx],
+                    sub_offsets=None if self.sub_offsets is None else self.sub_offsets[class_idx],
+                )
+                same_proto = prob_payload["support"].to(dtype=h.dtype, device=h.device)
+                same_cosine = self._cosine_similarity(h, same_proto)
+                same_routing = torch.softmax(same_cosine / self.routing_temperature, dim=-1)
+                posterior_confidence = torch.ones(
+                    (batch_size,),
+                    dtype=h.dtype,
+                    device=h.device,
+                )
+                if self.prob_tangent_version == "v3":
+                    posterior_payload = self._compute_prob_tangent_posterior(
+                        h=h,
+                        class_center=class_centers[class_idx],
+                        basis=prob_payload["basis"].to(dtype=h.dtype, device=h.device),
+                        selected_eigvals=prob_payload["selected_eigvals_tensor"].to(dtype=h.dtype, device=h.device),
+                        sigma2=float(prob_payload["sigma2"]),
+                    )
+                    posterior_confidence = posterior_payload["confidence"].to(dtype=h.dtype, device=h.device)
+                    if same_routing.shape[-1] > 1:
+                        tangent_weights = same_routing[:, 1:] * posterior_confidence.unsqueeze(-1)
+                        collapsed_mass = same_routing[:, 1:].sum(dim=-1, keepdim=True) - tangent_weights.sum(dim=-1, keepdim=True)
+                        same_routing = torch.cat([same_routing[:, :1] + collapsed_mass, tangent_weights], dim=-1)
+                tangent_basis_shape = [int(v) for v in prob_payload["basis"].shape]
+                solved, diag = self._solve_direction(
+                    h,
+                    same_proto=same_proto,
+                    opp_proto=class_centers[:0],
+                    eye=eye,
+                    class_idx=class_idx,
+                    same_weights_override=same_routing,
+                    opp_weights_override=None,
+                    extra_diag={
+                        "class_prior_shape": [int(v) for v in class_prior.shape],
+                        "subproto_routing_shape": [int(v) for v in same_routing.shape],
+                        "class_centers_shape": [int(v) for v in class_centers.shape],
+                        "sub_prototypes_shape": [int(v) for v in sub_prototypes.shape],
+                        "tangent_basis_shape": [int(v) for v in prob_payload["basis"].shape],
+                        "class_prior_max_mean": float(class_prior.max(dim=-1).values.mean().item()),
+                        "class_prior_entropy_mean": float(self._normalized_entropy(class_prior).mean().item()),
+                        "class_prior_temperature": float(self.class_prior_temperature),
+                        "subproto_temperature": float(self.subproto_temperature),
+                        "subproto_weight_max_mean": float(same_routing.max(dim=-1).values.mean().item()),
+                        "subproto_weight_entropy_mean": float(self._normalized_entropy(same_routing).mean().item()),
+                        "same_support_norm_mean": float(torch.linalg.vector_norm(same_proto, dim=-1).mean().item()),
+                        "opp_center_weight_entropy_mean": 0.0,
+                        "prob_tangent_version": str(self.prob_tangent_version),
+                        "rank_selection_mode": str(self.rank_selection_mode),
+                        "selected_rank": int(prob_payload["selected_rank"]),
+                        "lw_shrinkage_alpha": float(prob_payload["shrinkage_alpha"]),
+                        "ppca_sigma2": float(prob_payload["sigma2"]),
+                        "posterior_confidence_mean": float(posterior_confidence.mean().item()),
+                        "k0_fallback": int(int(prob_payload["selected_rank"]) == 0),
+                        "tangent_requested_rank": int(min(4, self.prototypes_per_class)),
+                        "tangent_rank95": int(prob_payload["rank95"]),
+                        "tangent_effective_rank": float(prob_payload["effective_rank"]),
+                        "tangent_source": str(self.tangent_source),
+                        "center_to_subproto_cos_mean": 1.0,
+                        "center_to_subproto_cos_std": 0.0,
+                        "subproto_pairwise_cos_mean": 0.0,
+                        "subproto_pairwise_cos_std": 0.0,
+                        "subproto_nn_cos_mean": 0.0,
+                        "subproto_cov_trace": 0.0,
+                        "subproto_cov_top_eig": 0.0,
+                        "subproto_cov_effective_rank": float(prob_payload["effective_rank"]),
+                        "subproto_cos_top1_top2_gap_mean": float(
+                            (torch.topk(same_cosine, k=2, dim=-1).values[:, 0] - torch.topk(same_cosine, k=2, dim=-1).values[:, 1]).mean().item()
+                        ) if same_cosine.shape[-1] > 1 else 0.0,
+                        "subproto_cos_max_minus_mean_mean": float(
+                            (same_cosine.max(dim=-1).values - same_cosine.mean(dim=-1)).mean().item()
+                        ),
+                        "subproto_cos_var_mean": float(same_cosine.var(dim=-1, unbiased=False).mean().item()),
+                        "subproto_cos_top1_mean": float(same_cosine.max(dim=-1).values.mean().item()),
+                    },
+                )
+                class_logit = torch.sum(h * solved, dim=-1)
+                diag["aggregation_mode"] = "center_prob_tangent_support"
+                class_summaries.append(diag)
+                class_routings.append(same_routing)
+                class_cosines.append(same_cosine)
+                class_logits.append(class_logit)
+                prob_selected_rank_values.append(
+                    torch.full((batch_size,), float(prob_payload["selected_rank"]), dtype=h.dtype, device=h.device)
+                )
+                prob_shrinkage_alpha_values.append(
+                    torch.full((batch_size,), float(prob_payload["shrinkage_alpha"]), dtype=h.dtype, device=h.device)
+                )
+                prob_sigma2_values.append(
+                    torch.full((batch_size,), float(prob_payload["sigma2"]), dtype=h.dtype, device=h.device)
+                )
+                if self.prob_tangent_version == "v3":
+                    prob_posterior_confidence_values.append(posterior_confidence)
         elif self.prototype_geometry_mode == "center_only":
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
             class_prior = torch.softmax(
@@ -1033,7 +1457,7 @@ class LocalClosedFormResidualHead(nn.Module):
                 )
             selected_cos_gap = torch.nan_to_num(selected_cos_gap, nan=0.0, posinf=0.0, neginf=0.0)
             selected_entropy = self._normalized_entropy(selected_routing)
-            self._last_batch_routing_payload = {
+            payload = {
                 "routing_width": int(selected_routing.shape[-1]),
                 "local_pred_class": local_pred.detach().cpu().tolist(),
                 "top1_index": selected_top1_index.detach().cpu().tolist(),
@@ -1041,6 +1465,21 @@ class LocalClosedFormResidualHead(nn.Module):
                 "routing_entropy": selected_entropy.detach().cpu().tolist(),
                 "cos_top1_top2_gap": selected_cos_gap.detach().cpu().tolist(),
             }
+            if prob_selected_rank_values:
+                selected_rank_stack = torch.stack(prob_selected_rank_values, dim=1)
+                shrinkage_stack = torch.stack(prob_shrinkage_alpha_values, dim=1)
+                sigma2_stack = torch.stack(prob_sigma2_values, dim=1)
+                payload.update(
+                    {
+                        "selected_rank": selected_rank_stack[batch_indices, local_pred].detach().cpu().tolist(),
+                        "lw_shrinkage_alpha": shrinkage_stack[batch_indices, local_pred].detach().cpu().tolist(),
+                        "ppca_sigma2": sigma2_stack[batch_indices, local_pred].detach().cpu().tolist(),
+                    }
+                )
+                if prob_posterior_confidence_values:
+                    posterior_stack = torch.stack(prob_posterior_confidence_values, dim=1)
+                    payload["posterior_confidence"] = posterior_stack[batch_indices, local_pred].detach().cpu().tolist()
+            self._last_batch_routing_payload = payload
         self._last_dataflow_summary = {
             "split": str(self._probe_split),
             "epoch": int(self._probe_epoch),
@@ -1062,6 +1501,8 @@ class LocalClosedFormResidualHead(nn.Module):
             "subproto_temperature": float(self.subproto_temperature),
             "tangent_rank": int(self.tangent_rank),
             "tangent_source": str(self.tangent_source),
+            "prob_tangent_version": str(self.prob_tangent_version),
+            "rank_selection_mode": str(self.rank_selection_mode),
             "solve_mode": self.solve_mode,
             "ridge_mode": self.ridge_mode,
             "input_norm_mode": self.input_norm_mode,

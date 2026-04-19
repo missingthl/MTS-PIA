@@ -45,6 +45,8 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         prototype_geometry_mode: str = "flat",
         tangent_rank: int = 2,
         tangent_source: str = "subproto_offsets",
+        prob_tangent_version: str = "v1",
+        rank_selection_mode: str = "mdl",
         readout_gate_mode: str = "none",
         block_channels: tuple[int, int, int] = (64, 128, 128),
         kernel_sizes: tuple[int, int, int] = (7, 5, 3),
@@ -76,6 +78,8 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
             prototype_geometry_mode=str(prototype_geometry_mode),
             tangent_rank=int(tangent_rank),
             tangent_source=str(tangent_source),
+            prob_tangent_version=str(prob_tangent_version),
+            rank_selection_mode=str(rank_selection_mode),
         )
         self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.float32))
         self.detach_local_input = bool(detach_local_input)

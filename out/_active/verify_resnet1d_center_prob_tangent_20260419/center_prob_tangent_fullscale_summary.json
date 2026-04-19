@@ -1,0 +1,39 @@
+{
+  "manifest": "/home/THL/project/MTS-PIA/out/_active/verify_resnet1d_center_prob_tangent_20260419/phase1_fullscale/center_prob_tangent_phase1_fullscale_manifest.json",
+  "phase": "phase1_fullscale",
+  "comparison_csv": "/home/THL/project/MTS-PIA/out/_active/verify_resnet1d_center_prob_tangent_20260419/center_prob_tangent_fullscale_table.csv",
+  "n_rows": 63,
+  "avg_test_acc_by_label": {
+    "center_only": 0.7482646889684806,
+    "best_center_subproto": 0.7449669338044468,
+    "center_prob_tangent_v3": 0.7459166978926393
+  },
+  "winner_counts": {
+    "best_center_subproto": 8,
+    "center_only": 9,
+    "center_prob_tangent_v3": 4
+  },
+  "winners_by_dataset": {
+    "articularywordrecognition": "best_center_subproto",
+    "atrialfibrillation": "center_only",
+    "basicmotions": "center_only",
+    "cricket": "center_only",
+    "epilepsy": "best_center_subproto",
+    "ering": "best_center_subproto",
+    "ethanolconcentration": "center_only",
+    "fingermovements": "center_only",
+    "handmovementdirection": "center_prob_tangent_v3",
+    "handwriting": "best_center_subproto",
+    "har": "center_only",
+    "heartbeat": "center_only",
+    "japanesevowels": "best_center_subproto",
+    "libras": "center_prob_tangent_v3",
+    "motorimagery": "center_prob_tangent_v3",
+    "natops": "center_only",
+    "pendigits": "best_center_subproto",
+    "racketsports": "center_only",
+    "selfregulationscp1": "best_center_subproto",
+    "selfregulationscp2": "best_center_subproto",
+    "uwavegesturelibrary": "center_prob_tangent_v3"
+  }
+}

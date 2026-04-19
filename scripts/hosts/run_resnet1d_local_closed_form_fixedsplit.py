@@ -153,6 +153,8 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             prototype_geometry_mode=str(args.prototype_geometry_mode),
             tangent_rank=int(args.tangent_rank),
             tangent_source=str(args.tangent_source),
+            prob_tangent_version=str(args.prob_tangent_version),
+            rank_selection_mode=str(args.rank_selection_mode),
             readout_gate_mode=str(args.local_readout_gate),
         )
     raise ValueError(f"unknown arm: {args.arm}")
@@ -355,10 +357,12 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--dataflow-probe", action="store_true", default=False)
     p.add_argument("--local-support-mode", type=str, default="same_only", choices=["same_opp_balanced", "same_only", "same_opp_asym"])
     p.add_argument("--prototype-aggregation", type=str, default="pooled", choices=["pooled", "committee_mean"])
-    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto", "center_only", "center_tangent"])
+    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto", "center_only", "center_tangent", "center_prob_tangent"])
     p.add_argument("--tangent-rank", type=int, default=2)
     p.add_argument("--tangent-source", type=str, default="subproto_offsets", choices=["subproto_offsets"])
     p.add_argument("--tangent-probe", action="store_true", default=False)
+    p.add_argument("--prob-tangent-version", type=str, default="v1", choices=["v1", "v2", "v3"])
+    p.add_argument("--rank-selection-mode", type=str, default="mdl", choices=["mdl", "bic"])
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
     p.add_argument("--detach-local-latent", action="store_true", default=False)
     p.add_argument("--fusion-warmup-hold-epochs", type=int, default=0)
@@ -469,6 +473,8 @@ def main() -> None:
         "tangent_rank": int(args.tangent_rank),
         "tangent_source": str(args.tangent_source),
         "tangent_probe": bool(args.tangent_probe),
+        "prob_tangent_version": str(args.prob_tangent_version),
+        "rank_selection_mode": str(args.rank_selection_mode),
         "local_readout_gate": str(args.local_readout_gate),
         "run_dir": run_dir,
     }
@@ -522,6 +528,10 @@ def main() -> None:
     selected_routing_entropy_all: List[np.ndarray] = []
     selected_cos_gap_all: List[np.ndarray] = []
     selected_routing_widths: List[int] = []
+    selected_rank_all: List[np.ndarray] = []
+    selected_lw_alpha_all: List[np.ndarray] = []
+    selected_ppca_sigma2_all: List[np.ndarray] = []
+    selected_posterior_confidence_all: List[np.ndarray] = []
     with torch.no_grad():
         _maybe_set_probe_context(model, split="test", epoch=int(args.epochs))
         sample_offset = 0
@@ -549,6 +559,14 @@ def main() -> None:
                     selected_routing_entropy_all.append(np.asarray(routing_payload["routing_entropy"], dtype=np.float64))
                     selected_cos_gap_all.append(np.asarray(routing_payload["cos_top1_top2_gap"], dtype=np.float64))
                     selected_routing_widths.append(int(routing_payload["routing_width"]))
+                    if "selected_rank" in routing_payload:
+                        selected_rank_all.append(np.asarray(routing_payload["selected_rank"], dtype=np.int64))
+                    if "lw_shrinkage_alpha" in routing_payload:
+                        selected_lw_alpha_all.append(np.asarray(routing_payload["lw_shrinkage_alpha"], dtype=np.float64))
+                    if "ppca_sigma2" in routing_payload:
+                        selected_ppca_sigma2_all.append(np.asarray(routing_payload["ppca_sigma2"], dtype=np.float64))
+                    if "posterior_confidence" in routing_payload:
+                        selected_posterior_confidence_all.append(np.asarray(routing_payload["posterior_confidence"], dtype=np.float64))
                 if batch_idx == 0:
                     local_head = getattr(model, "local_head", None)
                     local_dataflow = None
@@ -598,6 +616,10 @@ def main() -> None:
                             "local_routing_entropy": float(local_routing_entropy),
                             "local_subproto_cos_gap": float(local_subproto_cos_gap),
                             "local_routing_width": int(local_routing_width),
+                            "local_selected_rank": None if "selected_rank" not in routing_payload else int(routing_payload["selected_rank"][i]),
+                            "local_lw_shrinkage_alpha": None if "lw_shrinkage_alpha" not in routing_payload else float(routing_payload["lw_shrinkage_alpha"][i]),
+                            "local_ppca_sigma2": None if "ppca_sigma2" not in routing_payload else float(routing_payload["ppca_sigma2"][i]),
+                            "local_posterior_confidence": None if "posterior_confidence" not in routing_payload else float(routing_payload["posterior_confidence"][i]),
                         }
                     )
                 sample_offset += len(batch_y_np)
@@ -664,6 +686,21 @@ def main() -> None:
             agreement_summary["subproto_top1_occupancy_entropy"] = float(occupancy_entropy)
             agreement_summary["subproto_usage_effective_count"] = float(np.exp(raw_entropy))
             agreement_summary["subproto_top1_occupancy_counts"] = [int(v) for v in counts.tolist()]
+        if selected_rank_all:
+            selected_rank = np.concatenate(selected_rank_all, axis=0)
+            lw_alpha = np.concatenate(selected_lw_alpha_all, axis=0) if selected_lw_alpha_all else np.zeros_like(selected_rank, dtype=np.float64)
+            rank_counts = np.bincount(selected_rank.clip(min=0), minlength=max(1, int(selected_rank.max(initial=0)) + 1))
+            agreement_summary["selected_rank_distribution"] = {str(idx): int(value) for idx, value in enumerate(rank_counts.tolist())}
+            agreement_summary["mean_selected_rank"] = float(selected_rank.mean())
+            agreement_summary["k0_fallback_rate"] = float(np.mean(selected_rank == 0))
+            agreement_summary["lw_shrinkage_alpha_mean"] = float(lw_alpha.mean())
+        if selected_ppca_sigma2_all:
+            sigma2 = np.concatenate(selected_ppca_sigma2_all, axis=0)
+            agreement_summary["ppca_sigma2_mean"] = float(sigma2.mean())
+        if selected_posterior_confidence_all:
+            posterior_confidence = np.concatenate(selected_posterior_confidence_all, axis=0)
+            agreement_summary["posterior_confidence_mean"] = float(posterior_confidence.mean())
+            agreement_summary["posterior_confidence_far_decay_mean"] = float((1.0 - posterior_confidence).mean())
         local_head = getattr(model, "local_head", None)
         if local_head is not None and hasattr(local_head, "export_learned_prototype_geometry_summary"):
             learned_geometry = local_head.export_learned_prototype_geometry_summary()
