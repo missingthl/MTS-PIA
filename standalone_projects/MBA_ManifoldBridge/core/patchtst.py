@@ -178,7 +178,7 @@ class PatchTST(nn.Module):
         means = x.mean(dim=-1, keepdim=True).detach()
         x = x - means
         stdev = torch.sqrt(torch.var(x, dim=-1, keepdim=True, unbiased=False) + 1e-5)
-        x /= stdev
+        x = x / stdev
 
         # do patching and embedding
         enc_out, n_vars = self.patch_embedding(x) # [B*C, patch_num, d_model]
