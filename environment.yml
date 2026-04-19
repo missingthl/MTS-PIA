@@ -48,3 +48,4 @@ dependencies:
   - pip
   - pip:
     - openpyxl>=3.0.0
+    - einops>=0.8.0

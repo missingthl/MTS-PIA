@@ -30,6 +30,8 @@ class LocalClosedFormResidualHead(nn.Module):
         prototype_aggregation: str = "pooled",
         prototype_geometry_mode: str = "flat",
         prototype_init_scale: float = 0.02,
+        tangent_rank: int = 2,
+        tangent_source: str = "subproto_offsets",
     ) -> None:
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -55,16 +57,22 @@ class LocalClosedFormResidualHead(nn.Module):
         self.support_mode = str(support_mode)
         self.prototype_aggregation = str(prototype_aggregation)
         self.prototype_geometry_mode = str(prototype_geometry_mode)
+        self.tangent_rank = max(int(tangent_rank), 1)
+        self.tangent_source = str(tangent_source)
         if self.ridge_mode not in {"fixed", "trace_adaptive"}:
             raise ValueError(f"unsupported ridge mode: {self.ridge_mode}")
         if self.solve_mode not in {"ridge_solve", "pinv", "dual_ridge", "dual_pinv"}:
             raise ValueError(f"unsupported solve mode: {self.solve_mode}")
         if self.input_norm_mode not in {"none", "l2_hypersphere"}:
             raise ValueError(f"unsupported input norm mode: {self.input_norm_mode}")
-        if self.prototype_geometry_mode not in {"flat", "center_subproto", "center_only"}:
+        if self.prototype_geometry_mode not in {"flat", "center_subproto", "center_only", "center_tangent"}:
             raise ValueError(f"unsupported prototype geometry mode: {self.prototype_geometry_mode}")
-        if self.prototype_geometry_mode in {"center_subproto", "center_only"} and self.prototype_aggregation != "pooled":
+        if self.prototype_geometry_mode in {"center_subproto", "center_only", "center_tangent"} and self.prototype_aggregation != "pooled":
             raise ValueError(f"{self.prototype_geometry_mode} geometry currently supports pooled aggregation only")
+        if self.tangent_source not in {"subproto_offsets"}:
+            raise ValueError(f"unsupported tangent source: {self.tangent_source}")
+        if self.prototype_geometry_mode == "center_tangent" and self.support_mode != "same_only":
+            raise ValueError("center_tangent geometry currently supports same_only support mode only")
         if self.prototype_geometry_mode == "flat":
             self.register_parameter(
                 "prototypes",
@@ -123,9 +131,10 @@ class LocalClosedFormResidualHead(nn.Module):
         self._probe_split = "unset"
         self._probe_epoch = -1
         self._last_dataflow_summary: Dict[str, object] | None = None
+        self._last_batch_routing_payload: Dict[str, object] | None = None
 
     def _initialize_center_subproto_offsets(self) -> None:
-        if self.prototype_geometry_mode != "center_subproto":
+        if self.prototype_geometry_mode not in {"center_subproto", "center_tangent"}:
             return
         assert self.center_params is not None
         assert self.sub_offsets is not None
@@ -158,6 +167,7 @@ class LocalClosedFormResidualHead(nn.Module):
         self._probe_rows = []
         self._probe_split = "unset"
         self._probe_epoch = -1
+        self._last_batch_routing_payload = None
 
     def set_probe_context(self, *, split: str, epoch: int) -> None:
         self._probe_split = str(split)
@@ -170,6 +180,127 @@ class LocalClosedFormResidualHead(nn.Module):
         if self._last_dataflow_summary is None:
             return None
         return dict(self._last_dataflow_summary)
+
+    def export_last_batch_routing_payload(self) -> Dict[str, object] | None:
+        if self._last_batch_routing_payload is None:
+            return None
+        return dict(self._last_batch_routing_payload)
+
+    def export_learned_prototype_geometry_summary(self) -> Dict[str, object] | None:
+        if self.prototype_geometry_mode == "flat":
+            return None
+        with torch.no_grad():
+            if self.prototype_geometry_mode == "center_only":
+                return {
+                    "prototype_geometry_mode": "center_only",
+                    "center_to_subproto_cos_mean": 1.0,
+                    "center_to_subproto_cos_std": 0.0,
+                    "subproto_pairwise_cos_mean": 1.0,
+                    "subproto_pairwise_cos_std": 0.0,
+                    "subproto_nn_cos_mean": 1.0,
+                    "subproto_cov_trace": 0.0,
+                    "subproto_cov_top_eig": 0.0,
+                    "subproto_cov_effective_rank": 1.0,
+                    "effective_support_count": 1,
+                }
+
+            class_centers = self._get_class_centers()
+            sub_prototypes = self._get_sub_prototypes(class_centers)
+            metric_keys = [
+                "center_to_subproto_cos_mean",
+                "center_to_subproto_cos_std",
+                "subproto_pairwise_cos_mean",
+                "subproto_pairwise_cos_std",
+                "subproto_nn_cos_mean",
+                "subproto_cov_trace",
+                "subproto_cov_top_eig",
+                "subproto_cov_effective_rank",
+            ]
+            values = {k: [] for k in metric_keys}
+            for class_idx in range(self.num_classes):
+                metrics = self._summarize_subprototype_geometry(
+                    class_center=class_centers[class_idx],
+                    same_proto=sub_prototypes[class_idx],
+                    same_cosine=self._cosine_similarity(
+                        class_centers[class_idx : class_idx + 1],
+                        sub_prototypes[class_idx],
+                    ),
+                )
+                for key in metric_keys:
+                    values[key].append(float(metrics[key]))
+            return {
+                "prototype_geometry_mode": str(self.prototype_geometry_mode),
+                **{key: float(sum(vals) / max(1, len(vals))) for key, vals in values.items()},
+                "effective_support_count": int(self.prototypes_per_class),
+            }
+
+    def export_tangent_probe_payload(self) -> Dict[str, object] | None:
+        if self.prototype_geometry_mode not in {"center_subproto", "center_tangent"}:
+            return None
+        with torch.no_grad():
+            class_centers = self._get_class_centers()
+            sub_prototypes = self._get_sub_prototypes(class_centers)
+            class_rows: List[Dict[str, object]] = []
+            rank95_values: List[int] = []
+            effective_ranks: List[float] = []
+            spectral_gaps: List[float] = []
+            top1_energy_ratios: List[float] = []
+            actual_basis_ranks: List[int] = []
+            for class_idx in range(self.num_classes):
+                tangent_payload = self._compute_tangent_support(
+                    class_center=class_centers[class_idx],
+                    same_proto=sub_prototypes[class_idx],
+                    sub_offsets=None if self.sub_offsets is None else self.sub_offsets[class_idx],
+                )
+                class_rows.append(
+                    {
+                        "class_idx": int(class_idx),
+                        "prototype_geometry_mode": str(self.prototype_geometry_mode),
+                        "tangent_source": str(self.tangent_source),
+                        "requested_tangent_rank": int(self.tangent_rank),
+                        "actual_tangent_rank": int(tangent_payload["actual_rank"]),
+                        "rank95": int(tangent_payload["rank95"]),
+                        "effective_rank": float(tangent_payload["effective_rank"]),
+                        "top1_energy_ratio": float(tangent_payload["top1_energy_ratio"]),
+                        "top1_top2_spectral_gap": float(tangent_payload["top1_top2_spectral_gap"]),
+                        "singular_values": [float(v) for v in tangent_payload["singular_values"]],
+                        "energy_probs": [float(v) for v in tangent_payload["energy_probs"]],
+                        "cumulative_energy": [float(v) for v in tangent_payload["cumulative_energy"]],
+                    }
+                )
+                rank95_values.append(int(tangent_payload["rank95"]))
+                effective_ranks.append(float(tangent_payload["effective_rank"]))
+                spectral_gaps.append(float(tangent_payload["top1_top2_spectral_gap"]))
+                top1_energy_ratios.append(float(tangent_payload["top1_energy_ratio"]))
+                actual_basis_ranks.append(int(tangent_payload["actual_rank"]))
+
+            observed = sorted({max(1, int(v)) for v in rank95_values})
+            if not observed:
+                recommended = [1]
+            elif len(observed) <= 3:
+                recommended = observed
+            else:
+                recommended = sorted({observed[0], observed[len(observed) // 2], observed[-1]})
+            recommended = [int(min(self.prototypes_per_class, max(1, v))) for v in recommended]
+            recommended = sorted({int(v) for v in recommended})
+            summary = {
+                "prototype_geometry_mode": str(self.prototype_geometry_mode),
+                "tangent_source": str(self.tangent_source),
+                "requested_tangent_rank": int(self.tangent_rank),
+                "num_classes": int(self.num_classes),
+                "prototypes_per_class": int(self.prototypes_per_class),
+                "rank95_mean": float(sum(rank95_values) / max(1, len(rank95_values))),
+                "effective_rank_mean": float(sum(effective_ranks) / max(1, len(effective_ranks))),
+                "top1_energy_ratio_mean": float(sum(top1_energy_ratios) / max(1, len(top1_energy_ratios))),
+                "top1_top2_spectral_gap_mean": float(sum(spectral_gaps) / max(1, len(spectral_gaps))),
+                "actual_tangent_rank_mean": float(sum(actual_basis_ranks) / max(1, len(actual_basis_ranks))),
+                "recommended_candidate_ranks": recommended,
+                "rank95_values": rank95_values,
+            }
+            return {
+                "summary": summary,
+                "class_rows": class_rows,
+            }
 
     @staticmethod
     def _normalized_entropy(weights: torch.Tensor) -> torch.Tensor:
@@ -187,20 +318,91 @@ class LocalClosedFormResidualHead(nn.Module):
 
     def _get_class_centers(self) -> torch.Tensor:
         if self.prototype_geometry_mode == "flat":
-            raise RuntimeError("class centers only exist for center_subproto geometry")
+            raise RuntimeError("class centers only exist for center-based prototype geometry")
         assert self.center_params is not None
-        return F.normalize(self.center_params, p=2, dim=-1, eps=self.input_norm_eps)
+        return torch.nan_to_num(
+            F.normalize(self.center_params, p=2, dim=-1, eps=self.input_norm_eps),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
 
     def _get_sub_prototypes(self, class_centers: torch.Tensor) -> torch.Tensor:
         if self.prototype_geometry_mode in {"flat", "center_only"}:
-            raise RuntimeError("sub prototypes only exist for center_subproto geometry")
+            raise RuntimeError("sub prototypes only exist for center_subproto/center_tangent geometry")
         assert self.sub_offsets is not None
-        return F.normalize(
-            class_centers[:, None, :] + self.sub_offsets,
-            p=2,
-            dim=-1,
-            eps=self.input_norm_eps,
+        return torch.nan_to_num(
+            F.normalize(
+                class_centers[:, None, :] + self.sub_offsets,
+                p=2,
+                dim=-1,
+                eps=self.input_norm_eps,
+            ),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
         )
+
+    def _compute_tangent_support(
+        self,
+        *,
+        class_center: torch.Tensor,
+        same_proto: torch.Tensor,
+        sub_offsets: torch.Tensor | None = None,
+    ) -> Dict[str, object]:
+        if self.tangent_source == "subproto_offsets" and sub_offsets is not None:
+            deviations = sub_offsets.to(dtype=same_proto.dtype, device=same_proto.device)
+        else:
+            deviations = same_proto - class_center.unsqueeze(0)
+        deviations = deviations - torch.sum(deviations * class_center.unsqueeze(0), dim=-1, keepdim=True) * class_center.unsqueeze(0)
+        deviations = torch.nan_to_num(deviations, nan=0.0, posinf=0.0, neginf=0.0)
+        if deviations.shape[0] == 0 or float(torch.linalg.vector_norm(deviations).item()) <= 0.0:
+            basis = deviations[:0]
+            singular_values = deviations.new_zeros((0,))
+        else:
+            try:
+                _, singular_values, vh = torch.linalg.svd(deviations, full_matrices=False)
+            except RuntimeError:
+                deviations_cpu = deviations.detach().cpu().to(dtype=torch.float64)
+                _, singular_values_cpu, vh_cpu = torch.linalg.svd(deviations_cpu, full_matrices=False)
+                singular_values = singular_values_cpu.to(dtype=deviations.dtype, device=deviations.device)
+                vh = vh_cpu.to(dtype=deviations.dtype, device=deviations.device)
+            max_rank = int(min(self.tangent_rank, vh.shape[0]))
+            basis = vh[:max_rank]
+            if basis.numel() > 0:
+                basis = F.normalize(basis, p=2, dim=-1, eps=self.input_norm_eps)
+        if singular_values.numel() > 0:
+            energy = singular_values.square()
+            energy_probs = energy / energy.sum().clamp_min(1e-12)
+            cumulative_energy = torch.cumsum(energy_probs, dim=0)
+            rank95 = int(torch.nonzero(cumulative_energy >= 0.95, as_tuple=False)[0, 0].item() + 1)
+            entropy = -(energy_probs * energy_probs.clamp_min(1e-12).log()).sum()
+            effective_rank = float(torch.exp(entropy).item())
+            top1_energy_ratio = float(energy_probs[0].item())
+            if energy_probs.numel() > 1:
+                top1_top2_gap = float((energy_probs[0] - energy_probs[1]).item())
+            else:
+                top1_top2_gap = float(top1_energy_ratio)
+        else:
+            energy_probs = deviations.new_zeros((0,))
+            cumulative_energy = deviations.new_zeros((0,))
+            rank95 = 0
+            effective_rank = 0.0
+            top1_energy_ratio = 0.0
+            top1_top2_gap = 0.0
+        support = torch.cat([class_center.unsqueeze(0), basis], dim=0)
+        return {
+            "support": support,
+            "basis": basis,
+            "actual_rank": int(basis.shape[0]),
+            "rank95": int(rank95),
+            "effective_rank": float(effective_rank),
+            "top1_energy_ratio": float(top1_energy_ratio),
+            "top1_top2_spectral_gap": float(top1_top2_gap),
+            "singular_values": singular_values.detach().cpu().tolist(),
+            "energy_probs": energy_probs.detach().cpu().tolist(),
+            "cumulative_energy": cumulative_energy.detach().cpu().tolist(),
+        }
 
     def _summarize_subprototype_geometry(
         self,
@@ -229,7 +431,13 @@ class LocalClosedFormResidualHead(nn.Module):
 
                 centered = same_proto - same_proto.mean(dim=0, keepdim=True)
                 cov = centered.transpose(0, 1) @ centered / float(max(1, same_proto.shape[0] - 1))
-                eigvals = torch.linalg.eigvalsh(cov).clamp_min(0.0)
+                cov = torch.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0)
+                try:
+                    eigvals = torch.linalg.eigvalsh(cov).clamp_min(0.0)
+                except RuntimeError:
+                    eigvals = torch.linalg.eigvalsh(
+                        cov.detach().cpu().to(dtype=torch.float64)
+                    ).to(dtype=cov.dtype, device=cov.device).clamp_min(0.0)
                 metrics["subproto_cov_trace"] = float(eigvals.sum().item())
                 metrics["subproto_cov_top_eig"] = float(eigvals.max().item())
                 if float(eigvals.sum().item()) > 0.0:
@@ -400,8 +608,20 @@ class LocalClosedFormResidualHead(nn.Module):
                 dtype=h.dtype,
                 device=h.device,
             )
+            gram_safe = torch.nan_to_num(gram, nan=0.0, posinf=0.0, neginf=0.0)
+            try:
+                gram_pinv = torch.linalg.pinv(gram_safe, rcond=self.pinv_rcond, hermitian=True)
+            except RuntimeError:
+                try:
+                    gram_pinv = torch.linalg.pinv(gram_safe, rcond=self.pinv_rcond, hermitian=False)
+                except RuntimeError:
+                    gram_pinv = torch.linalg.pinv(
+                        gram_safe.detach().cpu().to(dtype=torch.float64),
+                        rcond=self.pinv_rcond,
+                        hermitian=False,
+                    ).to(dtype=h.dtype, device=h.device)
             solved = torch.matmul(
-                torch.linalg.pinv(gram, rcond=self.pinv_rcond, hermitian=True),
+                gram_pinv,
                 rhs.unsqueeze(-1),
             ).squeeze(-1)
             solve_matrix_shape = list(gram.shape)
@@ -419,8 +639,20 @@ class LocalClosedFormResidualHead(nn.Module):
             weighted_targets = weight_sqrt * targets.unsqueeze(0)
             
             dual_gram = torch.einsum("bnd,bmd->bnm", weighted_support, weighted_support)
+            dual_gram_safe = torch.nan_to_num(dual_gram, nan=0.0, posinf=0.0, neginf=0.0)
+            try:
+                dual_gram_pinv = torch.linalg.pinv(dual_gram_safe, rcond=self.pinv_rcond, hermitian=True)
+            except RuntimeError:
+                try:
+                    dual_gram_pinv = torch.linalg.pinv(dual_gram_safe, rcond=self.pinv_rcond, hermitian=False)
+                except RuntimeError:
+                    dual_gram_pinv = torch.linalg.pinv(
+                        dual_gram_safe.detach().cpu().to(dtype=torch.float64),
+                        rcond=self.pinv_rcond,
+                        hermitian=False,
+                    ).to(dtype=h.dtype, device=h.device)
             dual_solution = torch.matmul(
-                torch.linalg.pinv(dual_gram, rcond=self.pinv_rcond, hermitian=True),
+                dual_gram_pinv,
                 weighted_targets.unsqueeze(-1),
             ).squeeze(-1)
             solved = torch.einsum("bnd,bn->bd", weighted_support, dual_solution)
@@ -478,10 +710,11 @@ class LocalClosedFormResidualHead(nn.Module):
             h=h,
             gram=gram,
             ridge_scale=ridge_scale,
-            solved=solved,
+            solved=torch.nan_to_num(solved, nan=0.0, posinf=0.0, neginf=0.0),
             class_idx=int(class_idx),
             committee_idx=int(committee_idx),
         )
+        solved = torch.nan_to_num(solved, nan=0.0, posinf=0.0, neginf=0.0)
         with torch.no_grad():
             diag: Dict[str, object] = {
                 "class_idx": int(class_idx),
@@ -526,9 +759,12 @@ class LocalClosedFormResidualHead(nn.Module):
         eye = torch.eye(self.feature_dim, dtype=h.dtype, device=h.device)
         class_logits = []
         class_summaries: List[Dict[str, object]] = []
+        class_routings: List[torch.Tensor] = []
+        class_cosines: List[torch.Tensor] = []
         class_centers_shape: List[int] | None = None
         sub_prototypes_shape: List[int] | None = None
         class_prior_shape: List[int] | None = None
+        tangent_basis_shape: List[int] | None = None
 
         if self.prototype_geometry_mode == "center_subproto":
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
@@ -589,6 +825,81 @@ class LocalClosedFormResidualHead(nn.Module):
                 class_logit = torch.sum(h * solved, dim=-1)
                 diag["aggregation_mode"] = "center_subproto_weighted_support"
                 class_summaries.append(diag)
+                class_routings.append(same_routing)
+                class_cosines.append(same_cosine)
+                class_logits.append(class_logit)
+        elif self.prototype_geometry_mode == "center_tangent":
+            class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
+            sub_prototypes = self._get_sub_prototypes(class_centers).to(dtype=h.dtype, device=h.device)
+            class_prior = torch.softmax(
+                self._cosine_similarity(h, class_centers) / self.class_prior_temperature,
+                dim=-1,
+            )
+            class_centers_shape = [int(v) for v in class_centers.shape]
+            sub_prototypes_shape = [int(v) for v in sub_prototypes.shape]
+            class_prior_shape = [int(v) for v in class_prior.shape]
+            for class_idx in range(self.num_classes):
+                tangent_payload = self._compute_tangent_support(
+                    class_center=class_centers[class_idx],
+                    same_proto=sub_prototypes[class_idx],
+                    sub_offsets=None if self.sub_offsets is None else self.sub_offsets[class_idx],
+                )
+                same_proto = tangent_payload["support"].to(dtype=h.dtype, device=h.device)
+                same_cosine = self._cosine_similarity(h, same_proto)
+                same_routing = torch.softmax(same_cosine / self.routing_temperature, dim=-1)
+                tangent_basis_shape = [int(v) for v in tangent_payload["basis"].shape]
+                solved, diag = self._solve_direction(
+                    h,
+                    same_proto=same_proto,
+                    opp_proto=class_centers[:0],
+                    eye=eye,
+                    class_idx=class_idx,
+                    same_weights_override=same_routing,
+                    opp_weights_override=None,
+                    extra_diag={
+                        "class_prior_shape": [int(v) for v in class_prior.shape],
+                        "subproto_routing_shape": [int(v) for v in same_routing.shape],
+                        "class_centers_shape": [int(v) for v in class_centers.shape],
+                        "sub_prototypes_shape": [int(v) for v in sub_prototypes.shape],
+                        "tangent_basis_shape": [int(v) for v in tangent_payload["basis"].shape],
+                        "class_prior_max_mean": float(class_prior.max(dim=-1).values.mean().item()),
+                        "class_prior_entropy_mean": float(self._normalized_entropy(class_prior).mean().item()),
+                        "class_prior_temperature": float(self.class_prior_temperature),
+                        "subproto_temperature": float(self.subproto_temperature),
+                        "subproto_weight_max_mean": float(same_routing.max(dim=-1).values.mean().item()),
+                        "subproto_weight_entropy_mean": float(self._normalized_entropy(same_routing).mean().item()),
+                        "same_support_norm_mean": float(torch.linalg.vector_norm(same_proto, dim=-1).mean().item()),
+                        "opp_center_weight_entropy_mean": 0.0,
+                        "tangent_rank": int(tangent_payload["actual_rank"]),
+                        "tangent_requested_rank": int(self.tangent_rank),
+                        "tangent_source": str(self.tangent_source),
+                        "tangent_rank95": int(tangent_payload["rank95"]),
+                        "tangent_effective_rank": float(tangent_payload["effective_rank"]),
+                        "tangent_top1_energy_ratio": float(tangent_payload["top1_energy_ratio"]),
+                        "tangent_top1_top2_spectral_gap": float(tangent_payload["top1_top2_spectral_gap"]),
+                        "center_to_subproto_cos_mean": 1.0,
+                        "center_to_subproto_cos_std": 0.0,
+                        "subproto_pairwise_cos_mean": 0.0,
+                        "subproto_pairwise_cos_std": 0.0,
+                        "subproto_nn_cos_mean": 0.0,
+                        "subproto_cov_trace": 0.0,
+                        "subproto_cov_top_eig": 0.0,
+                        "subproto_cov_effective_rank": float(tangent_payload["effective_rank"]),
+                        "subproto_cos_top1_top2_gap_mean": float(
+                            (torch.topk(same_cosine, k=2, dim=-1).values[:, 0] - torch.topk(same_cosine, k=2, dim=-1).values[:, 1]).mean().item()
+                        ) if same_cosine.shape[-1] > 1 else 0.0,
+                        "subproto_cos_max_minus_mean_mean": float(
+                            (same_cosine.max(dim=-1).values - same_cosine.mean(dim=-1)).mean().item()
+                        ),
+                        "subproto_cos_var_mean": float(same_cosine.var(dim=-1, unbiased=False).mean().item()),
+                        "subproto_cos_top1_mean": float(same_cosine.max(dim=-1).values.mean().item()),
+                    },
+                )
+                class_logit = torch.sum(h * solved, dim=-1)
+                diag["aggregation_mode"] = "center_tangent_support"
+                class_summaries.append(diag)
+                class_routings.append(same_routing)
+                class_cosines.append(same_cosine)
                 class_logits.append(class_logit)
         elif self.prototype_geometry_mode == "center_only":
             class_centers = self._get_class_centers().to(dtype=h.dtype, device=h.device)
@@ -644,6 +955,8 @@ class LocalClosedFormResidualHead(nn.Module):
                 class_logit = torch.sum(h * solved, dim=-1)
                 diag["aggregation_mode"] = "center_only_support"
                 class_summaries.append(diag)
+                class_routings.append(same_routing)
+                class_cosines.append(same_cosine)
                 class_logits.append(class_logit)
         else:
             for class_idx in range(self.num_classes):
@@ -690,6 +1003,44 @@ class LocalClosedFormResidualHead(nn.Module):
                     raise ValueError(f"unsupported prototype aggregation: {self.prototype_aggregation}")
                 class_logits.append(class_logit)
         local_logits = torch.stack(class_logits, dim=-1).reshape(batch_size, self.num_classes)
+        self._last_batch_routing_payload = None
+        if class_routings:
+            max_width = max(int(t.shape[-1]) for t in class_routings)
+            padded_routings: List[torch.Tensor] = []
+            padded_cosines: List[torch.Tensor] = []
+            for routing, cosine in zip(class_routings, class_cosines):
+                pad_width = int(max_width - routing.shape[-1])
+                if pad_width > 0:
+                    routing = F.pad(routing, (0, pad_width), value=0.0)
+                    cosine = F.pad(cosine, (0, pad_width), value=float("-inf"))
+                padded_routings.append(routing)
+                padded_cosines.append(cosine)
+            all_routings = torch.stack(padded_routings, dim=1)  # [B, C, M]
+            all_cosines = torch.stack(padded_cosines, dim=1)  # [B, C, M]
+            local_pred = local_logits.argmax(dim=-1)
+            batch_indices = torch.arange(batch_size, device=h.device)
+            selected_routing = all_routings[batch_indices, local_pred]
+            selected_cosines = all_cosines[batch_indices, local_pred]
+            selected_top1_weight, selected_top1_index = selected_routing.max(dim=-1)
+            if selected_cosines.shape[-1] > 1:
+                top2 = torch.topk(selected_cosines, k=2, dim=-1).values
+                selected_cos_gap = top2[:, 0] - top2[:, 1]
+            else:
+                selected_cos_gap = torch.zeros(
+                    (batch_size,),
+                    dtype=selected_cosines.dtype,
+                    device=selected_cosines.device,
+                )
+            selected_cos_gap = torch.nan_to_num(selected_cos_gap, nan=0.0, posinf=0.0, neginf=0.0)
+            selected_entropy = self._normalized_entropy(selected_routing)
+            self._last_batch_routing_payload = {
+                "routing_width": int(selected_routing.shape[-1]),
+                "local_pred_class": local_pred.detach().cpu().tolist(),
+                "top1_index": selected_top1_index.detach().cpu().tolist(),
+                "top1_weight": selected_top1_weight.detach().cpu().tolist(),
+                "routing_entropy": selected_entropy.detach().cpu().tolist(),
+                "cos_top1_top2_gap": selected_cos_gap.detach().cpu().tolist(),
+            }
         self._last_dataflow_summary = {
             "split": str(self._probe_split),
             "epoch": int(self._probe_epoch),
@@ -698,6 +1049,7 @@ class LocalClosedFormResidualHead(nn.Module):
             "prototypes_shape": None if self.prototypes is None else [int(v) for v in self.prototypes.shape],
             "class_centers_shape": class_centers_shape,
             "sub_prototypes_shape": sub_prototypes_shape,
+            "tangent_basis_shape": tangent_basis_shape,
             "class_prior_shape": class_prior_shape,
             "local_logit_shape": [int(v) for v in local_logits.shape],
             "feature_dim": int(self.feature_dim),
@@ -708,11 +1060,19 @@ class LocalClosedFormResidualHead(nn.Module):
             "routing_temperature": float(self.routing_temperature),
             "class_prior_temperature": float(self.class_prior_temperature),
             "subproto_temperature": float(self.subproto_temperature),
+            "tangent_rank": int(self.tangent_rank),
+            "tangent_source": str(self.tangent_source),
             "solve_mode": self.solve_mode,
             "ridge_mode": self.ridge_mode,
             "input_norm_mode": self.input_norm_mode,
             "class_summaries": class_summaries,
         }
+        geometry_summary = self.export_learned_prototype_geometry_summary()
+        if geometry_summary is not None:
+            self._last_dataflow_summary["learned_prototype_geometry"] = geometry_summary
+        tangent_probe = self.export_tangent_probe_payload()
+        if tangent_probe is not None:
+            self._last_dataflow_summary["tangent_probe_summary"] = tangent_probe["summary"]
         return local_logits
 
 

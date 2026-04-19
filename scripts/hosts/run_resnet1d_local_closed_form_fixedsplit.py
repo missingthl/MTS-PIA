@@ -151,6 +151,8 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             support_mode=str(args.local_support_mode),
             prototype_aggregation=str(args.prototype_aggregation),
             prototype_geometry_mode=str(args.prototype_geometry_mode),
+            tangent_rank=int(args.tangent_rank),
+            tangent_source=str(args.tangent_source),
             readout_gate_mode=str(args.local_readout_gate),
         )
     raise ValueError(f"unknown arm: {args.arm}")
@@ -256,6 +258,36 @@ def _export_dataflow_probe_artifacts(
         _write_csv(os.path.join(run_dir, "dataflow_test_stage_rows.csv"), stage_rows)
 
 
+def _export_tangent_probe_artifacts(model: torch.nn.Module, *, run_dir: str) -> None:
+    local_head = getattr(model, "local_head", None)
+    if local_head is None or not hasattr(local_head, "export_tangent_probe_payload"):
+        return
+    payload = local_head.export_tangent_probe_payload()
+    if not payload:
+        return
+    summary = dict(payload.get("summary", {}))
+    class_rows = list(payload.get("class_rows", []))
+    _write_json(os.path.join(run_dir, "tangent_probe_summary.json"), summary)
+    if class_rows:
+        csv_rows: List[Dict[str, object]] = []
+        for row in class_rows:
+            csv_rows.append(
+                {
+                    "class_idx": row.get("class_idx"),
+                    "prototype_geometry_mode": row.get("prototype_geometry_mode"),
+                    "tangent_source": row.get("tangent_source"),
+                    "requested_tangent_rank": row.get("requested_tangent_rank"),
+                    "actual_tangent_rank": row.get("actual_tangent_rank"),
+                    "rank95": row.get("rank95"),
+                    "effective_rank": row.get("effective_rank"),
+                    "top1_energy_ratio": row.get("top1_energy_ratio"),
+                    "top1_top2_spectral_gap": row.get("top1_top2_spectral_gap"),
+                }
+            )
+        _write_csv(os.path.join(run_dir, "tangent_probe_class_rows.csv"), csv_rows)
+        _write_json(os.path.join(run_dir, "tangent_probe_full.json"), {"class_rows": class_rows, "summary": summary})
+
+
 def _forward_outputs(model: torch.nn.Module, batch_x: torch.Tensor, *, args: argparse.Namespace):
     if args.arm == "e2":
         return model(batch_x, fusion_alpha=1.0, return_features=True)
@@ -270,6 +302,19 @@ def _make_run_dir(args: argparse.Namespace) -> str:
         f"verify_resnet1d_local_closed_form_fixedsplit_{time.strftime('%Y%m%d')}",
     )
     return os.path.join(out_root, str(args.arm), tag)
+
+
+def _normalized_entropy_from_probs(probs: np.ndarray) -> float:
+    if probs.size <= 1:
+        return 0.0
+    probs = probs.astype(np.float64, copy=False)
+    probs = probs / np.clip(probs.sum(), a_min=1e-12, a_max=None)
+    valid = probs > 0
+    entropy = float(-(probs[valid] * np.log(probs[valid])).sum())
+    denom = float(np.log(float(probs.size)))
+    if denom <= 0.0:
+        return 0.0
+    return entropy / denom
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -310,7 +355,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--dataflow-probe", action="store_true", default=False)
     p.add_argument("--local-support-mode", type=str, default="same_only", choices=["same_opp_balanced", "same_only", "same_opp_asym"])
     p.add_argument("--prototype-aggregation", type=str, default="pooled", choices=["pooled", "committee_mean"])
-    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto", "center_only"])
+    p.add_argument("--prototype-geometry-mode", type=str, default="flat", choices=["flat", "center_subproto", "center_only", "center_tangent"])
+    p.add_argument("--tangent-rank", type=int, default=2)
+    p.add_argument("--tangent-source", type=str, default="subproto_offsets", choices=["subproto_offsets"])
+    p.add_argument("--tangent-probe", action="store_true", default=False)
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
     p.add_argument("--detach-local-latent", action="store_true", default=False)
     p.add_argument("--fusion-warmup-hold-epochs", type=int, default=0)
@@ -371,6 +419,9 @@ def main() -> None:
     run_meta = {
         "dataset": str(args.dataset),
         "arm": str(args.arm),
+        "split_protocol": "fixedsplit",
+        "runner_protocol": "resnet1d_local_closed_form_fixedsplit",
+        "host_backbone": "ResNet1D",
         "seed": int(args.seed),
         "epochs": int(args.epochs),
         "train_batch_size": int(args.train_batch_size),
@@ -380,6 +431,30 @@ def main() -> None:
         "n_test": int(test_x.shape[0]),
         "in_channels": int(train_x.shape[1]),
         "seq_len": int(train_x.shape[2]),
+        "prototypes_per_class": int(args.prototypes_per_class),
+        "routing_temperature": float(
+            getattr(local_head, "routing_temperature", float(args.routing_temperature))
+            if local_head is not None
+            else float(args.routing_temperature)
+        ),
+        "class_prior_temperature": float(
+            getattr(
+                local_head,
+                "class_prior_temperature",
+                float(args.routing_temperature if args.class_prior_temperature is None else args.class_prior_temperature),
+            )
+            if local_head is not None
+            else float(args.routing_temperature if args.class_prior_temperature is None else args.class_prior_temperature)
+        ),
+        "subproto_temperature": float(
+            getattr(
+                local_head,
+                "subproto_temperature",
+                float(args.routing_temperature if args.subproto_temperature is None else args.subproto_temperature),
+            )
+            if local_head is not None
+            else float(args.routing_temperature if args.subproto_temperature is None else args.subproto_temperature)
+        ),
         "closed_form_ridge": float(args.closed_form_ridge),
         "closed_form_ridge_mode": str(args.closed_form_ridge_mode),
         "closed_form_ridge_trace_eps": float(args.closed_form_ridge_trace_eps),
@@ -391,6 +466,9 @@ def main() -> None:
         "local_support_mode": str(args.local_support_mode),
         "prototype_aggregation": str(args.prototype_aggregation),
         "prototype_geometry_mode": str(args.prototype_geometry_mode),
+        "tangent_rank": int(args.tangent_rank),
+        "tangent_source": str(args.tangent_source),
+        "tangent_probe": bool(args.tangent_probe),
         "local_readout_gate": str(args.local_readout_gate),
         "run_dir": run_dir,
     }
@@ -439,6 +517,11 @@ def main() -> None:
     local_pred_all: List[np.ndarray] = []
     final_pred_all: List[np.ndarray] = []
     gate_values: List[np.ndarray] = []
+    selected_top1_index_all: List[np.ndarray] = []
+    selected_top1_weight_all: List[np.ndarray] = []
+    selected_routing_entropy_all: List[np.ndarray] = []
+    selected_cos_gap_all: List[np.ndarray] = []
+    selected_routing_widths: List[int] = []
     with torch.no_grad():
         _maybe_set_probe_context(model, split="test", epoch=int(args.epochs))
         sample_offset = 0
@@ -456,6 +539,16 @@ def main() -> None:
                 final_pred_all.append(final_pred)
                 if outputs.readout_gate is not None:
                     gate_values.append(outputs.readout_gate.detach().cpu().numpy())
+                routing_payload = None
+                local_head = getattr(model, "local_head", None)
+                if local_head is not None and hasattr(local_head, "export_last_batch_routing_payload"):
+                    routing_payload = local_head.export_last_batch_routing_payload()
+                if routing_payload is not None:
+                    selected_top1_index_all.append(np.asarray(routing_payload["top1_index"], dtype=np.int64))
+                    selected_top1_weight_all.append(np.asarray(routing_payload["top1_weight"], dtype=np.float64))
+                    selected_routing_entropy_all.append(np.asarray(routing_payload["routing_entropy"], dtype=np.float64))
+                    selected_cos_gap_all.append(np.asarray(routing_payload["cos_top1_top2_gap"], dtype=np.float64))
+                    selected_routing_widths.append(int(routing_payload["routing_width"]))
                 if batch_idx == 0:
                     local_head = getattr(model, "local_head", None)
                     local_dataflow = None
@@ -476,6 +569,17 @@ def main() -> None:
                         "local_head_dataflow": local_dataflow,
                     }
                 for i in range(len(batch_y_np)):
+                    local_top1_index = -1
+                    local_top1_weight = 0.0
+                    local_routing_entropy = 0.0
+                    local_subproto_cos_gap = 0.0
+                    local_routing_width = 0
+                    if routing_payload is not None:
+                        local_top1_index = int(routing_payload["top1_index"][i])
+                        local_top1_weight = float(routing_payload["top1_weight"][i])
+                        local_routing_entropy = float(routing_payload["routing_entropy"][i])
+                        local_subproto_cos_gap = float(routing_payload["cos_top1_top2_gap"][i])
+                        local_routing_width = int(routing_payload["routing_width"])
                     stage_rows.append(
                         {
                             "sample_index": int(sample_offset + i),
@@ -489,6 +593,11 @@ def main() -> None:
                             "base_local_agree": int(base_pred[i] == local_pred[i]),
                             "base_final_agree": int(base_pred[i] == final_pred[i]),
                             "local_final_agree": int(local_pred[i] == final_pred[i]),
+                            "local_top1_subproto": int(local_top1_index),
+                            "local_top1_weight": float(local_top1_weight),
+                            "local_routing_entropy": float(local_routing_entropy),
+                            "local_subproto_cos_gap": float(local_subproto_cos_gap),
+                            "local_routing_width": int(local_routing_width),
                         }
                     )
                 sample_offset += len(batch_y_np)
@@ -539,6 +648,27 @@ def main() -> None:
             agreement_summary["gate_mean"] = float(gate_concat.mean())
             agreement_summary["gate_min"] = float(gate_concat.min())
             agreement_summary["gate_max"] = float(gate_concat.max())
+        if selected_top1_weight_all:
+            top1_indices = np.concatenate(selected_top1_index_all, axis=0)
+            top1_weights = np.concatenate(selected_top1_weight_all, axis=0)
+            routing_entropy = np.concatenate(selected_routing_entropy_all, axis=0)
+            cos_gap = np.concatenate(selected_cos_gap_all, axis=0)
+            routing_width = int(max(selected_routing_widths))
+            counts = np.bincount(top1_indices.clip(min=0), minlength=max(1, routing_width))
+            probs = counts.astype(np.float64) / max(1.0, float(counts.sum()))
+            occupancy_entropy = _normalized_entropy_from_probs(probs)
+            raw_entropy = float(-(probs[probs > 0] * np.log(probs[probs > 0])).sum()) if counts.sum() > 0 else 0.0
+            agreement_summary["same_weight_max_mean"] = float(top1_weights.mean())
+            agreement_summary["subproto_weight_entropy_mean"] = float(routing_entropy.mean())
+            agreement_summary["subproto_cos_top1_top2_gap_mean"] = float(cos_gap.mean())
+            agreement_summary["subproto_top1_occupancy_entropy"] = float(occupancy_entropy)
+            agreement_summary["subproto_usage_effective_count"] = float(np.exp(raw_entropy))
+            agreement_summary["subproto_top1_occupancy_counts"] = [int(v) for v in counts.tolist()]
+        local_head = getattr(model, "local_head", None)
+        if local_head is not None and hasattr(local_head, "export_learned_prototype_geometry_summary"):
+            learned_geometry = local_head.export_learned_prototype_geometry_summary()
+            if learned_geometry is not None:
+                agreement_summary.update({f"learned_{k}": v for k, v in learned_geometry.items()})
         if dataflow_first_batch_summary is None:
             dataflow_first_batch_summary = {"dataset": str(args.dataset), "arm": str(args.arm)}
         _export_dataflow_probe_artifacts(
@@ -549,6 +679,8 @@ def main() -> None:
         )
     if bool(args.closed_form_probe) and args.arm == "e2":
         _export_probe_artifacts(model, run_dir=run_dir)
+    if bool(args.tangent_probe) and args.arm == "e2":
+        _export_tangent_probe_artifacts(model, run_dir=run_dir)
     print(
         f"[done][{args.dataset}][{args.arm}] acc={test_acc:.4f} macro_f1={test_macro_f1:.4f} wallclock={wallclock:.1f}s",
         flush=True,

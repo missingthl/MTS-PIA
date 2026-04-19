@@ -5,6 +5,7 @@ import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Iterator, Iterable, Optional, Any
+from sklearn.model_selection import train_test_split
 
 @dataclass(frozen=True)
 class AeonFixedSplitSpec:
@@ -198,7 +199,44 @@ def load_trials_for_dataset(dataset_name: str) -> List[Trial]:
         trials.append(Trial(tid=f"{ds_key}_test_{i}", x=loader.test_x[i], y=int(loader.test_y[i]), split="test"))
     return trials
 
-def make_trial_split(trials: List[Trial], seed: int) -> Tuple[List[Trial], List[Trial], None]:
-    train = [t for t in trials if t.split == "train"]
+def make_trial_split(trials: List[Trial], seed: int, val_ratio: float = 0.2) -> Tuple[List[Trial], List[Trial], List[Trial]]:
+    """
+    Split trials into train, test, and validation sets.
+    Validation is stratified from the training split.
+    """
+    train_all = [t for t in trials if t.split == "train"]
     test = [t for t in trials if t.split == "test"]
-    return train, test, None
+    
+    if val_ratio <= 0:
+        return train_all, test, []
+        
+    y_train = np.array([t.y for t in train_all])
+    
+    # Stratified split safeguard: if any class has < 2 samples, we can't stratify easily with sklearn
+    unique_classes, counts = np.unique(y_train, return_counts=True)
+    if np.any(counts < 2):
+        print(f"Warning: Some classes have < 2 samples in train set. Falling back to non-stratified split for validation.")
+        stratify = None
+    else:
+        stratify = y_train
+
+    try:
+        idx_train, idx_val = train_test_split(
+            np.arange(len(train_all)), 
+            test_size=val_ratio, 
+            random_state=seed, 
+            stratify=stratify
+        )
+        train = [train_all[i] for i in idx_train]
+        val = [train_all[i] for i in idx_val]
+    except Exception as e:
+        print(f"Stratified split failed ({e}). Falling back to simple split.")
+        idx_train, idx_val = train_test_split(
+            np.arange(len(train_all)), 
+            test_size=val_ratio, 
+            random_state=seed
+        )
+        train = [train_all[i] for i in idx_train]
+        val = [train_all[i] for i in idx_val]
+        
+    return train, test, val

@@ -1,30 +1,20 @@
 # Scripts Index
 
-更新时间：2026-04-13
+更新时间：2026-04-18
 
-现在 `scripts/` 根目录只保留统一入口。
+现在 `scripts/` 根目录只保留统一入口，默认按“**ResNet1D 主线优先，Tensor 外部宿主其次**”来读。
 
-如果你只关心当前工程，先只记住四层：
-
-- [hosts](/home/THL/project/MTS-PIA/scripts/hosts)
-  二阶段宿主实验入口
-- [route_b](/home/THL/project/MTS-PIA/scripts/route_b)
-  一阶段与并行支线的结构证据 runner
-- [raw_baselines](/home/THL/project/MTS-PIA/scripts/raw_baselines)
-  raw / bridge / MiniROCKET 基线与宿主脚本
-- [support](/home/THL/project/MTS-PIA/scripts/support)
-  仍在被现役代码复用的共享工具
-- [legacy_phase](/home/THL/project/MTS-PIA/scripts/legacy_phase)
-  `phase9-16` 历史沉积层
-
-## 当前最该看的入口
+## 当前最短阅读顺序
 
 如果你现在只关心当前分类主线，请按这个顺序：
 
-1. [hosts/run_tensor_cspnet_local_closed_form_holdout.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py)
-2. [hosts/run_resnet1d_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py)
-3. [run_in_pia.sh](/home/THL/project/MTS-PIA/scripts/run_in_pia.sh)
-4. 其余目录按角色再进入，不要再从根目录平扫脚本文件名
+1. [hosts/run_resnet1d_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py)
+2. [hosts/run_resnet1d_dlcr_behavioral_matrix.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_dlcr_behavioral_matrix.py)
+3. [hosts/run_tsl_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tsl_local_closed_form_fixedsplit.py)
+4. [analysis/summarize_resnet1d_dlcr_behavioral_matrix.py](/home/THL/project/MTS-PIA/scripts/analysis/summarize_resnet1d_dlcr_behavioral_matrix.py)
+5. [run_subproto_temperature_sweep.sh](/home/THL/project/MTS-PIA/scripts/run_subproto_temperature_sweep.sh)
+6. [hosts/run_tensor_cspnet_local_closed_form_holdout.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py)
+7. [run_in_pia.sh](/home/THL/project/MTS-PIA/scripts/run_in_pia.sh)
 
 ## 目录说明
 
@@ -32,8 +22,19 @@
 
 当前二阶段宿主层。
 
-- `Tensor-CSPNet + E0/E1/E2`
 - `ResNet1D + E0/E1/E2`
+- `PatchTST / TimesNet + E0/E1/E2`
+- `Tensor-CSPNet + E0/E1/E2`
+- `MiniRocket + DLCR` 边界/诊断入口
+
+如果你只看当前主线，先看：
+- [run_resnet1d_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py)
+- [run_resnet1d_dlcr_behavioral_matrix.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_dlcr_behavioral_matrix.py)
+
+如果你要切换 `Time-Series-Library` 宿主：
+- [run_tsl_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tsl_local_closed_form_fixedsplit.py)
+- [run_patchtst_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_patchtst_local_closed_form_fixedsplit.py)
+- [run_timesnet_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_timesnet_local_closed_form_fixedsplit.py)
 
 ### `route_b`
 
@@ -90,9 +91,10 @@
 1. [README.md](/home/THL/project/MTS-PIA/README.md)
 2. [docs/CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
 3. [工程记录/分类/README.md](/home/THL/project/MTS-PIA/工程记录/分类/README.md)
-4. [scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py](/home/THL/project/MTS-PIA/scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py)
-5. 再按需要进入 `route_b / raw_baselines / support`
-6. 最后才进入其余辅助目录
+4. [scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py)
+5. [scripts/hosts/run_resnet1d_dlcr_behavioral_matrix.py](/home/THL/project/MTS-PIA/scripts/hosts/run_resnet1d_dlcr_behavioral_matrix.py)
+6. 再按需要进入 `route_b / raw_baselines / support`
+7. 最后才进入其余辅助目录
 
 ## 当前清理后的边界
 

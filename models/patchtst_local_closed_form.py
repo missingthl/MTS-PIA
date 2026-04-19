@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 
 from models.local_closed_form_residual_head import LocalClosedFormResidualHead
-from models.resnet1d_adapter import ResNet1DAdapter, ResNet1DForwardOutputs
+from models.patchtst_adapter import PatchTSTAdapter, PatchTSTForwardOutputs
 
 
 @dataclass
-class ResNet1DLocalClosedFormOutputs:
+class PatchTSTLocalClosedFormOutputs:
     sequence_features: torch.Tensor
     latent: torch.Tensor
     base_logit: torch.Tensor
@@ -20,11 +20,12 @@ class ResNet1DLocalClosedFormOutputs:
     beta: torch.Tensor
 
 
-class ResNet1DLocalClosedFormResidual(nn.Module):
+class PatchTSTLocalClosedFormResidual(nn.Module):
     def __init__(
         self,
         *,
         in_channels: int,
+        seq_len: int,
         num_classes: int,
         prototypes_per_class: int = 4,
         routing_temperature: float = 1.0,
@@ -46,15 +47,30 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         tangent_rank: int = 2,
         tangent_source: str = "subproto_offsets",
         readout_gate_mode: str = "none",
-        block_channels: tuple[int, int, int] = (64, 128, 128),
-        kernel_sizes: tuple[int, int, int] = (7, 5, 3),
+        d_model: int = 128,
+        d_ff: int = 256,
+        e_layers: int = 3,
+        n_heads: int = 8,
+        factor: int = 1,
+        dropout: float = 0.1,
+        activation: str = "gelu",
+        patch_len: int = 16,
+        patch_stride: int = 8,
     ) -> None:
         super().__init__()
-        self.adapter = ResNet1DAdapter(
+        self.adapter = PatchTSTAdapter(
             in_channels=int(in_channels),
+            seq_len=int(seq_len),
             num_classes=int(num_classes),
-            block_channels=block_channels,
-            kernel_sizes=kernel_sizes,
+            d_model=int(d_model),
+            d_ff=int(d_ff),
+            e_layers=int(e_layers),
+            n_heads=int(n_heads),
+            factor=int(factor),
+            dropout=float(dropout),
+            activation=str(activation),
+            patch_len=int(patch_len),
+            patch_stride=int(patch_stride),
         )
         self.local_head = LocalClosedFormResidualHead(
             feature_dim=self.adapter.feature_dim,
@@ -86,14 +102,8 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         elif self.readout_gate_mode != "none":
             raise ValueError(f"unsupported readout gate mode: {self.readout_gate_mode}")
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        *,
-        fusion_alpha: float = 1.0,
-        return_features: bool = False,
-    ):
-        base: ResNet1DForwardOutputs = self.adapter(x, return_features=True)
+    def forward(self, x: torch.Tensor, *, fusion_alpha: float = 1.0, return_features: bool = False):
+        base: PatchTSTForwardOutputs = self.adapter(x, return_features=True)
         local_input = base.latent.detach() if self.detach_local_input else base.latent
         local_closed_form_logit = self.local_head(local_input)
         alpha = torch.tensor(float(fusion_alpha), dtype=base.base_logit.dtype, device=base.base_logit.device)
@@ -105,7 +115,7 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         gated_local_logit = local_closed_form_logit if readout_gate is None else readout_gate * local_closed_form_logit
         final_logit = base.base_logit + alpha * self.beta * gated_local_logit
         if return_features:
-            return ResNet1DLocalClosedFormOutputs(
+            return PatchTSTLocalClosedFormOutputs(
                 sequence_features=base.sequence_features,
                 latent=base.latent,
                 base_logit=base.base_logit,

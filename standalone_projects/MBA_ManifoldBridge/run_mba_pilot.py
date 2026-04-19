@@ -1,9 +1,10 @@
 import os
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+if "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import sys
@@ -26,7 +27,10 @@ from core.curriculum import (
     build_curriculum_aug_candidates
 )
 from utils.datasets import load_trials_for_dataset, make_trial_split, AEON_FIXED_SPLIT_SPECS
-from utils.evaluators import build_model, fit_eval_minirocket, fit_eval_resnet1d
+from utils.evaluators import (
+    build_model, fit_eval_minirocket, fit_eval_resnet1d, 
+    fit_eval_patchtst, fit_eval_timesnet
+)
 
 
 @dataclass
@@ -39,6 +43,7 @@ class TrialRecord:
 
 
 def _build_trial_records(trials, spd_eps=1e-4):
+    if not trials: return [], None
     records = []; log_covs = []
     for t in trials:
         x = torch.from_numpy(t.x).double()
@@ -70,23 +75,42 @@ def run_experiment(dataset_name, args):
             "requested_k_dir": args.k_dir, "effective_k_dir": 0, "algo": args.algo, "model": args.model
         }]
 
+    # Load host defaults if requested
+    epochs = args.epochs
+    lr = args.lr
+    batch_size = args.batch_size
+    patience = args.patience
+    
+    if args.host_config != "none":
+        if args.host_config == "resnet1d_default":
+            epochs, lr, batch_size, patience = 30, 1e-3, 64, 10
+        elif args.host_config == "patchtst_default":
+            epochs, lr, batch_size, patience = 100, 5e-4, 64, 15
+        elif args.host_config == "timesnet_default":
+            epochs, lr, batch_size, patience = 100, 5e-4, 32, 15
+
     results = []
     seeds = [int(s) for s in args.seeds.split(",")]
     
     for seed in seeds:
         print(f"Seed {seed}...")
         try:
-            train_trials, test_trials, _ = make_trial_split(all_trials, seed=seed)
+            train_trials, test_trials, val_trials = make_trial_split(all_trials, seed=seed, val_ratio=args.val_ratio)
             train_recs, mean_log = _build_trial_records(train_trials)
             test_recs, _ = _build_trial_records(test_trials)
+            val_recs, _ = _build_trial_records(val_trials)
             
-            X_train_z = np.stack([r.z for r in train_recs])
-            y_train = np.array([r.y for r in train_recs])
-            X_test_z = np.stack([r.z for r in test_recs])
-            y_test = np.array([r.y for r in test_recs])
             X_train_raw = np.stack([r.x_raw for r in train_recs])
+            y_train = np.array([r.y for r in train_recs])
             X_test_raw = np.stack([r.x_raw for r in test_recs])
+            y_test = np.array([r.y for r in test_recs])
+            
+            X_val_raw, y_val = None, None
+            if val_recs:
+                X_val_raw = np.stack([r.x_raw for r in val_recs])
+                y_val = np.array([r.y for r in val_recs])
 
+            X_train_z = np.stack([r.z for r in train_recs])
             num_classes = len(np.unique(y_train))
             latent_dim = X_train_z.shape[1]
 
@@ -97,21 +121,29 @@ def run_experiment(dataset_name, args):
             else:
                 W, _ = build_pia_direction_bank(X_train_z, k_dir=args.k_dir, seed=seed)
 
-            # --- Dimension Contract Sync ---
             effective_k = W.shape[0]
             print(f"Requested K: {args.k_dir} | Effective K: {effective_k} | Classes: {num_classes}")
 
+            # Define training dispatcher
+            def _fit(X_tr, y_tr):
+                if args.model == "resnet1d":
+                    return fit_eval_resnet1d(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, 
+                                           epochs=epochs, lr=lr, batch_size=batch_size, patience=patience, device=args.device)
+                elif args.model == "patchtst":
+                    return fit_eval_patchtst(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, 
+                                           epochs=epochs, lr=lr, batch_size=batch_size, patience=patience, device=args.device)
+                elif args.model == "timesnet":
+                    return fit_eval_timesnet(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, 
+                                           epochs=epochs, lr=lr, batch_size=batch_size, patience=patience, device=args.device)
+                else:
+                    m = build_model(n_kernels=args.n_kernels, random_state=seed)
+                    return fit_eval_minirocket(m, X_tr, y_tr, X_test_raw, y_test)
+
             # 2. Baseline
             print("Fitting Baseline...")
-            if args.model == "resnet1d":
-                res_base = fit_eval_resnet1d(X_train_raw, y_train, X_test_raw, y_test, 
-                                            epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, device=args.device)
-            else:
-                model_base = build_model(n_kernels=args.n_kernels, random_state=seed)
-                res_base = fit_eval_minirocket(model_base, X_train_raw, y_train, X_test_raw, y_test)
+            res_base = _fit(X_train_raw, y_train)
             
             # 3. MBA Augmentation
-            # Use effective_k for budget and probs initialization to prevent module contract drift
             gamma_budget = np.full((effective_k,), args.pia_gamma)
             probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
             
@@ -136,12 +168,7 @@ def run_experiment(dataset_name, args):
                 X_mix, y_mix = X_train_raw, y_train
             
             print(f"Fitting MBA Model ({len(X_mix)} samples)...")
-            if args.model == "resnet1d":
-                res_mba = fit_eval_resnet1d(X_mix, y_mix, X_test_raw, y_test, 
-                                           epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, device=args.device)
-            else:
-                model_mba = build_model(n_kernels=args.n_kernels, random_state=seed)
-                res_mba = fit_eval_minirocket(model_mba, X_mix, y_mix, X_test_raw, y_test)
+            res_mba = _fit(X_mix, y_mix)
             
             summary = {
                 "dataset": dataset_name, "seed": seed, "status": "success", "fail_reason": "",
@@ -150,12 +177,19 @@ def run_experiment(dataset_name, args):
                 "aug_total_count": aug_meta.get("aug_total_count", 0),
                 "algo": args.algo, "model": args.model,
                 "base_f1": res_base["macro_f1"], "mba_f1": res_mba["macro_f1"],
-                "gain": res_mba["macro_f1"] - res_base["macro_f1"]
+                "gain": res_mba["macro_f1"] - res_base["macro_f1"],
+                "f1_gain_pct": (res_mba["macro_f1"] - res_base["macro_f1"]) / (res_base["macro_f1"] + 1e-7) * 100,
+                "base_stop_epoch": res_base.get("stop_epoch", 0),
+                "mba_stop_epoch": res_mba.get("stop_epoch", 0),
+                "base_best_val_f1": res_base.get("best_val_f1", 0),
+                "mba_best_val_f1": res_mba.get("best_val_f1", 0)
             }
-            print(f"Base: {summary['base_f1']:.4f} | MBA: {summary['mba_f1']:.4f} | Gain: {summary['gain']:.4f}")
+            print(f"Base: {summary['base_f1']:.4f} | MBA: {summary['mba_f1']:.4f} | Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)")
             results.append(summary)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"Error in {dataset_name} Seed {seed}: {e}")
             results.append({
                 "dataset": dataset_name, "seed": seed, "status": "failed", "fail_reason": str(e),
@@ -170,7 +204,8 @@ def main():
     parser.add_argument("--dataset", type=str, default="natops")
     parser.add_argument("--all-datasets", action="store_true")
     parser.add_argument("--algo", type=str, choices=["pia", "lraes"], default="lraes")
-    parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d"], default="minirocket")
+    parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
+    parser.add_argument("--host-config", type=str, choices=["none", "resnet1d_default", "patchtst_default", "timesnet_default"], default="none")
     parser.add_argument("--seeds", type=str, default="1,2,3")
     parser.add_argument("--k-dir", type=int, default=10)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
@@ -179,6 +214,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
     args = parser.parse_args()
@@ -187,7 +224,6 @@ def main():
     
     datasets = [args.dataset]
     if args.all_datasets:
-        # AEON_FIXED_SPLIT_SPECS already contains natops and har
         datasets = sorted(list(AEON_FIXED_SPLIT_SPECS.keys()))
     
     all_results = []
@@ -195,7 +231,6 @@ def main():
         try:
             res = run_experiment(ds, args)
             all_results.extend(res)
-            # Save intermediate
             pd.DataFrame(all_results).to_csv(f"{args.out_root}/sweep_results.csv", index=False)
         except Exception as e:
             print(f"Failed {ds}: {e}")

@@ -14,6 +14,10 @@
 4. [ASSISTANT_ENTRY.md](/home/THL/project/MTS-PIA/ASSISTANT_ENTRY.md)
 5. [工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
 
+运行资源与服务器隔离说明看：
+
+- [SERVER_RESOURCE_GUIDE.md](/home/THL/project/MTS-PIA/SERVER_RESOURCE_GUIDE.md)
+
 ## 当前官方口径
 
 当前分类工程有两条同级主线：
