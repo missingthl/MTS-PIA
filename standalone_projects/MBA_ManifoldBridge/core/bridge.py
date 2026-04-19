@@ -73,6 +73,68 @@ def covariance_from_signal(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
     return cov
 
 
+def whitening_step(
+    x_orig: torch.Tensor, 
+    sigma_orig: torch.Tensor, 
+    eps: float = 1e-5
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Step 1: Tangent Space Projection (Whitening). 
+    Maps the original signal to a spherical distribution, effectively projecting 
+    it to the tangent space at the current manifold point.
+    """
+    W_whiten = spd_invsqrtm(sigma_orig, eps=eps)
+    x_centered = x_orig - x_orig.mean(dim=-1, keepdim=True)
+    x_white = W_whiten @ x_centered
+    return x_white, W_whiten
+
+
+def coloring_step(
+    x_white: torch.Tensor, 
+    sigma_target: torch.Tensor, 
+    x_mean_orig: torch.Tensor,
+    eps: float = 1e-5
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Step 2: Geodesic Parallel Transport (Coloring). 
+    Maps the whitened signal to the target covariance manifold by moving it along 
+    the geodesic from the identity (identity tangent point) to the target covariance.
+    """
+    W_color = spd_sqrtm(sigma_target, eps=eps)
+    x_colored = W_color @ x_white + x_mean_orig
+    return x_colored, W_color
+
+
+def check_isometry(
+    x_orig: torch.Tensor, 
+    x_aug: torch.Tensor, 
+    A: torch.Tensor, 
+    eps: float = 1e-12
+) -> Dict[str, float]:
+    """
+    Diagnostic for Approximate Metric Preservation. 
+    Checks if the Optimal Transport Map A preserves the local geometric metric 
+    by calculating the deviation of A^T A from the Identity.
+    """
+    # Metric preservation error: ||A^T A - I||_F
+    n = A.shape[-1]
+    eye = torch.eye(n, device=A.device, dtype=A.dtype)
+    isometry_err = torch.linalg.norm(A.transpose(-1, -2) @ A - eye)
+    
+    # Operator condition number: measures numeric stability of the transport
+    svals = torch.linalg.svdvals(A)
+    cond_A = svals.max() / (svals.min() + eps)
+    
+    # Gain norm (how much we moved from identity mapping)
+    gain_norm = torch.linalg.norm(A - eye)
+    
+    return {
+        "metric_preservation_error": float(isometry_err.item()),
+        "operator_cond_number": float(cond_A.item()),
+        "operator_gain_norm": float(gain_norm.item())
+    }
+
+
 def bridge_single(
     x_orig: torch.Tensor,
     sigma_orig: torch.Tensor,
@@ -80,50 +142,48 @@ def bridge_single(
     *,
     eps: float = 1e-5,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Whitening-coloring bridge for one [C, T] sample."""
-
+    """
+    Prop 1: Optimal Transport Map. 
+    Implements the MBA bridge as an Optimal Transport Map (A = Σ_a^1/2 * Σ_o^-1/2) 
+    in the Bures-Wasserstein metric space. 
+    """
     x_orig = x_orig.to(dtype=torch.float64)
     sigma_orig = sigma_orig.to(dtype=torch.float64)
     sigma_aug = sigma_aug.to(dtype=torch.float64)
+    
+    mu_orig = x_orig.mean(dim=-1, keepdim=True)
 
-    sqrt_aug = spd_sqrtm(sigma_aug, eps=eps)
-    invsqrt_orig = spd_invsqrtm(sigma_orig, eps=eps)
-    A = sqrt_aug @ invsqrt_orig
+    # 1. Whitening
+    x_white, W_whiten = whitening_step(x_orig, sigma_orig, eps=eps)
+    
+    # 2. Coloring
+    x_aug, W_color = coloring_step(x_white, sigma_aug, mu_orig, eps=eps)
+    
+    # 3. Geometric Operator Analysis
+    A = W_color @ W_whiten
+    iso_metrics = check_isometry(x_orig, x_aug, A, eps=eps)
 
-    x_centered = x_orig - x_orig.mean(dim=1, keepdim=True)
-    x_aug = A @ x_centered + x_orig.mean(dim=1, keepdim=True)
-
+    # 4. Transport Fidelity Analysis
     cov_aug_emp = covariance_from_signal(x_aug, eps=eps)
-    cov_delta_aug = cov_aug_emp - sigma_aug
-    cov_delta_orig = cov_aug_emp - sigma_orig
-    cov_gap = torch.linalg.norm(cov_delta_aug) / (torch.linalg.norm(sigma_aug) + 1e-12)
-    cov_gap_fro = torch.linalg.norm(cov_delta_aug)
-    cov_to_orig_fro = torch.linalg.norm(cov_delta_orig)
+    
+    # Transport Error (Proposition 1 Evidence)
+    transport_err_fro = torch.linalg.norm(cov_aug_emp - sigma_aug)
+    
     log_cov_aug_emp = spd_logm(cov_aug_emp, eps=eps)
     log_sigma_aug = spd_logm(sigma_aug, eps=eps)
-    log_sigma_orig = spd_logm(sigma_orig, eps=eps)
-    cov_gap_logeuc = torch.linalg.norm(log_cov_aug_emp - log_sigma_aug)
-    cov_to_orig_logeuc = torch.linalg.norm(log_cov_aug_emp - log_sigma_orig)
-    gain_norm = torch.linalg.norm(A - torch.eye(A.shape[0], device=A.device, dtype=A.dtype))
-    energy_ratio = torch.linalg.norm(x_aug) / (torch.linalg.norm(x_orig) + 1e-12)
-    svals_A = torch.linalg.svdvals(A)
-    cond_A = svals_A.max() / (svals_A.min() + 1e-12)
-    vals_orig, _ = _spd_eigh(sigma_orig, eps)
-    mu_orig = x_orig.mean(dim=1)
-    mu_aug = x_aug.mean(dim=1)
-    raw_mean_shift_abs = torch.mean(torch.abs(mu_aug - mu_orig))
-
+    transport_err_logeuc = torch.linalg.norm(log_cov_aug_emp - log_sigma_aug)
+    
+    # Distance from origin
+    dist_to_orig_fro = torch.linalg.norm(cov_aug_emp - sigma_orig)
+    
     meta = {
-        "bridge_cov_match_error": float(cov_gap.item()),
-        "bridge_cov_match_error_fro": float(cov_gap_fro.item()),
-        "bridge_cov_match_error_logeuc": float(cov_gap_logeuc.item()),
-        "bridge_cov_to_orig_distance_fro": float(cov_to_orig_fro.item()),
-        "bridge_cov_to_orig_distance_logeuc": float(cov_to_orig_logeuc.item()),
-        "bridge_gain_norm": float(gain_norm.item()),
-        "bridge_energy_ratio": float(energy_ratio.item()),
-        "bridge_cond_A": float(cond_A.item()),
-        "sigma_orig_min_eig": float(vals_orig.min().item()),
-        "sigma_orig_max_eig": float(vals_orig.max().item()),
-        "raw_mean_shift_abs": float(raw_mean_shift_abs.item()),
+        "transport_error_fro": float(transport_err_fro.item()),
+        "transport_error_logeuc": float(transport_err_logeuc.item()),
+        "transport_to_orig_fro": float(dist_to_orig_fro.item()),
+        "bridge_cond_A": iso_metrics["operator_cond_number"],
+        "bridge_gain_norm": iso_metrics["operator_gain_norm"],
+        "metric_preservation_error": iso_metrics["metric_preservation_error"],
+        "raw_mean_shift_abs": float(torch.mean(torch.abs(x_aug.mean(dim=-1) - mu_orig.squeeze(-1))).item())
     }
+    
     return x_aug.to(dtype=torch.float32), meta

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from typing import Dict, List, Tuple
+from sklearn.neighbors import KDTree
 
 
 def _stable_tid_hash(tid: object) -> int:
@@ -27,6 +28,57 @@ def active_direction_probs(gamma_by_dir: np.ndarray, *, freeze_eps: float) -> np
     return probs
 
 
+def estimate_local_manifold_margins(
+    X_train_z: np.ndarray, 
+    y_train: np.ndarray
+) -> np.ndarray:
+    """
+    Efficiently estimates the Local Manifold Margin for all samples.
+    Calculates the distance to the nearest neighbor of a DIFFERENT class 
+    using a KDTree for O(N log N) performance.
+    """
+    y_arr = np.asarray(y_train).astype(int).ravel()
+    classes = np.unique(y_arr)
+    margins = np.zeros(len(y_arr), dtype=np.float64)
+    
+    # Pre-build trees for each class to find nearest-neighbor of DIFFERENT class
+    class_trees = {c: KDTree(X_train_z[y_arr == c]) for c in classes}
+    
+    for c in classes:
+        idx_c = np.where(y_arr == c)[0]
+        pts_c = X_train_z[idx_c]
+        
+        # Min distance to ANY other class
+        min_dists = np.full(len(idx_c), np.inf)
+        for other_c in classes:
+            if c == other_c: continue
+            dist, _ = class_trees[other_c].query(pts_c, k=1)
+            min_dists = np.minimum(min_dists, dist.ravel())
+        
+        margins[idx_c] = min_dists
+        
+    return margins
+
+
+def apply_safe_step_constraint(
+    gamma: float, 
+    direction_norm: float, 
+    d_min: float, 
+    eta: float = 0.5
+) -> Tuple[float, float]:
+    """
+    Prop 2: Safe Region enforcement.
+    Clips gamma to ensure the geometric perturbation doesn't overwhelm the 
+    Local Manifold Margin, maintaining a healthy Signal-to-Noise ratio 
+    between perturbation strength and decision boundary abundance.
+    """
+    # Constraint: gamma * ||u|| < eta * d_min
+    max_step = eta * d_min / (direction_norm + 1e-12)
+    safe_gamma = min(float(gamma), float(max_step))
+    ratio = safe_gamma / (gamma + 1e-12)
+    return safe_gamma, ratio
+
+
 def build_curriculum_aug_candidates(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -37,63 +89,79 @@ def build_curriculum_aug_candidates(
     gamma_by_dir: np.ndarray,
     multiplier: int,
     seed: int,
+    eta_safe: float = 0.5,  # Safety coefficient
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
+    """
+    Enhanced Augmentation with Proposition 2: Safe Region enforcement.
+    """
     tid_arr = np.asarray(tid_train)
     y_arr = np.asarray(y_train).astype(int).ravel()
-    # 1. Dimension Contract & Defensive Checks
+    X_z_all = X_train  # Assuming X_train here is the latent Z if we are in latent space
+    
     actual_k = int(direction_bank.shape[0])
     if actual_k == 0:
-        # Emergency fallback: if no directions exist, we cannot augment. return original
         return (X_train.astype(np.float32), y_train.astype(np.int64), tid_train,
                 X_train.astype(np.float32), np.zeros(len(y_train), dtype=np.int64),
                 {"aug_total_count": 0, "status": "fallback_no_bank"})
 
-    # Ensure probs match actual_k
     p_vec = np.asarray(direction_probs).ravel()
+    # (Handling probs and gammas remains similar to original for robustness)
     if p_vec.size != actual_k:
-        # Force re-size or uniform fallback if contract is broken
         if p_vec.size < actual_k:
             p_vec = np.pad(p_vec, (0, actual_k - p_vec.size), mode='constant', constant_values=0.0)
         else:
             p_vec = p_vec[:actual_k]
     
-    # Normalize and handle zero-sum
     p_sum = np.sum(p_vec)
-    if p_sum <= 1e-12:
-        probs = np.full((actual_k,), 1.0 / actual_k, dtype=np.float64)
-    else:
-        probs = p_vec / p_sum
+    probs = p_vec / p_sum if p_sum > 1e-12 else np.full((actual_k,), 1.0 / actual_k)
     
     gammas = np.asarray(gamma_by_dir, dtype=np.float64).ravel()
     if gammas.size != actual_k:
-        # Align gamma budget if needed
         if gammas.size < actual_k:
             gammas = np.pad(gammas, (0, actual_k - gammas.size), mode='edge')
         else:
             gammas = gammas[:actual_k]
 
+    # Pre-calculate margins for the entire training set (O(N log N))
+    X_z_all = X_train
+    all_margins = estimate_local_manifold_margins(X_z_all, y_arr)
+    
+    # Map TIDs to global indices for distance lookup
+    tid_to_idx = {tid: i for i, tid in enumerate(tid_arr)}
+
     aug_X, aug_y, aug_tid, aug_src, aug_dir, aug_gamma = [], [], [], [], [], []
     tids = sorted(list(set(tid_arr.tolist())))
+    
+    safe_ratios = []
+    margins_diagnostic = []
 
     for tid in tids:
-        idx = np.where(tid_arr == tid)[0]
-        X_tid, y_tid = X_train[idx], y_arr[idx]
+        idx_global = tid_to_idx[tid]
+        X_sample, y_sample = X_z_all[idx_global], y_arr[idx_global]
+        d_min = all_margins[idx_global]
+        margins_diagnostic.append(d_min)
+        
+        rs = np.random.RandomState(int(seed + idx_global * 1009 + _stable_tid_hash(tid)))
         
         for m in range(max(0, int(multiplier))):
-            rs = np.random.RandomState(int(seed + m * 1009 + _stable_tid_hash(tid)))
-            # Now safe because actual_k == len(probs)
-            dir_ids = rs.choice(actual_k, size=len(idx), replace=True, p=probs)
-            signs = rs.choice([-1.0, 1.0], size=len(idx))
-            g_vec = gammas[dir_ids]
+            dir_id = rs.choice(actual_k, p=probs)
+            sign = rs.choice([-1.0, 1.0])
+            g0 = gammas[dir_id]
+            u_k = direction_bank[dir_id]
+            u_norm = np.linalg.norm(u_k)
             
-            X_aug = X_tid + g_vec[:, None] * signs[:, None] * direction_bank[dir_ids]
+            # Apply Proposition 2: SafeStep Constraint (Manifold Margin Buffer)
+            g_safe, ratio = apply_safe_step_constraint(g0, u_norm, d_min, eta=eta_safe)
+            safe_ratios.append(ratio)
             
-            aug_X.append(X_aug)
-            aug_y.append(y_tid)
-            aug_tid.append([tid] * len(idx))
-            aug_src.append(X_tid)
-            aug_dir.append(dir_ids)
-            aug_gamma.append(g_vec)
+            x_aug = X_sample + g_safe * sign * u_k
+            
+            aug_X.append(x_aug[None, :])
+            aug_y.append(y_sample)
+            aug_tid.append(tid)
+            aug_src.append(X_sample[None, :])
+            aug_dir.append(dir_id)
+            aug_gamma.append(g_safe)
 
     if not aug_X:
         return (np.empty((0, X_train.shape[1]), dtype=np.float32), 
@@ -101,12 +169,19 @@ def build_curriculum_aug_candidates(
                 np.empty((0, X_train.shape[1]), dtype=np.float32), 
                 np.empty((0,), dtype=np.int64), {})
 
+    meta = {
+        "aug_total_count": len(aug_y),
+        "safe_radius_ratio_mean": float(np.mean(safe_ratios)),
+        "safe_radius_ratio_min": float(np.min(safe_ratios)),
+        "manifold_margin_mean": float(np.mean(margins_diagnostic))
+    }
+
     return (np.vstack(aug_X).astype(np.float32), 
-            np.concatenate(aug_y).astype(np.int64), 
-            np.concatenate(aug_tid), 
+            np.array(aug_y).astype(np.int64), 
+            np.array(aug_tid), 
             np.vstack(aug_src).astype(np.float32), 
-            np.concatenate(aug_dir).astype(np.int64), 
-            {"aug_total_count": len(np.concatenate(aug_y))})
+            np.array(aug_dir).astype(np.int64), 
+            meta)
 
 
 def update_direction_budget(

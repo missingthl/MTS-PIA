@@ -101,7 +101,8 @@ def fit_eval_pytorch_model(
     batch_size=64,
     patience=10,
     device="cuda",
-    use_cosine_annealing=False
+    use_cosine_annealing=False,
+    return_model_obj=False
 ) -> Dict[str, float]:
     dev = _get_dev(device)
     model.to(dev)
@@ -164,30 +165,33 @@ def fit_eval_pytorch_model(
         
     _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
     
-    return {
+    res = {
         "accuracy": t_acc,
         "macro_f1": t_f1,
         "best_val_f1": best_val_f1,
         "best_val_loss": best_val_loss,
-        "stop_epoch": stop_epoch
+        "stop_epoch": stop_epoch,
     }
+    if return_model_obj:
+        res["model_obj"] = model  # Return for theory probing
+    return res
 
-def fit_eval_resnet1d(X_train, y_train, X_val, y_val, X_test, y_test, epochs=30, lr=1e-3, batch_size=64, patience=10, device="cuda"):
+def fit_eval_resnet1d(X_train, y_train, X_val, y_val, X_test, y_test, epochs=30, lr=1e-3, batch_size=64, patience=10, device="cuda", return_model_obj=False):
     in_channels = X_train.shape[1]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = ResNet1DClassifier(in_channels, num_classes)
-    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device)
+    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, return_model_obj=return_model_obj)
 
-def fit_eval_patchtst(X_train, y_train, X_val, y_val, X_test, y_test, epochs=100, lr=5e-4, batch_size=64, patience=15, device="cuda"):
+def fit_eval_patchtst(X_train, y_train, X_val, y_val, X_test, y_test, epochs=100, lr=5e-4, batch_size=64, patience=15, device="cuda", return_model_obj=False):
     in_channels = X_train.shape[1]
     seq_len = X_train.shape[2]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = PatchTST(in_channels, seq_len, num_classes)
-    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, use_cosine_annealing=True)
+    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, use_cosine_annealing=True, return_model_obj=return_model_obj)
 
-def fit_eval_timesnet(X_train, y_train, X_val, y_val, X_test, y_test, epochs=100, lr=5e-4, batch_size=32, patience=15, device="cuda"):
+def fit_eval_timesnet(X_train, y_train, X_val, y_val, X_test, y_test, epochs=100, lr=5e-4, batch_size=32, patience=15, device="cuda", return_model_obj=False):
     in_channels = X_train.shape[1]
     seq_len = X_train.shape[2]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = TimesNet(in_channels, seq_len, num_classes)
-    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device)
+    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, return_model_obj=return_model_obj)
