@@ -61,6 +61,7 @@ env/
 # Keep code/docs tracked, but exclude local datasets and most vendored archives.
 data/
 archive/*
+!archive/README.md
 !archive/reference_code/
 archive/reference_code/*
 !archive/reference_code/Tensor-CSPNet-and-Graph-CSPNet/
@@ -73,6 +74,7 @@ archive/reference_code/Tensor-CSPNet-and-Graph-CSPNet/utils/*
 # Keep text summaries under out/_active for analysis, but exclude the bulk of
 # experiment artifacts and binary outputs.
 out/**
+!out/README.md
 !out/_active/
 !out/_active/**/
 !out/_active/**/*.md

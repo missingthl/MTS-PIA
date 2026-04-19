@@ -1,73 +1,60 @@
 # 分类工程记录
 
-更新时间：2026-04-17
+更新时间：2026-04-19
 
-这份目录只保留最小入口，并把每份入口文档的职责切开。
+这份目录现在只承担一件事：
+
+- 给当前分类工程提供**解释层入口**
+
+如果你是 agent，不要先从这里倒推历史；先接住主结果，再回来看这里。
 
 ## 推荐阅读顺序
 
-1. [00-入口/分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
-2. [00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
-3. [../../docs/CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
-4. [../../ASSISTANT_ENTRY.md](/home/THL/project/MTS-PIA/ASSISTANT_ENTRY.md)
+1. [../../docs/CURRENT_ENGINEERING_MANIFEST.json](../../docs/CURRENT_ENGINEERING_MANIFEST.json)
+2. [../../docs/CURRENT_ENGINEERING_MAP.md](../../docs/CURRENT_ENGINEERING_MAP.md)
+3. [00-入口/分类工程现状.md](00-入口/分类工程现状.md)
+4. [00-入口/分类调试记录.md](00-入口/分类调试记录.md)
+5. [../../ASSISTANT_ENTRY.md](../../ASSISTANT_ENTRY.md)
 
-## 当前分类工程的官方口径
+## 当前口径
 
-当前分类工程按双主线并列来读：
+- 默认主验证线：`ResNet1D + DLCR`
+- 外部宿主验证线：`Tensor-CSPNet + DLCR`
+- 已接入宿主线：`PatchTST / TimesNet + DLCR`
+- `MiniRocket + DLCR`：边界 / 诊断线
+- `MBA_ManifoldBridge`：standalone
 
-- `Tensor-CSPNet + DLCR`
-  - EEG / SPD 外部宿主验证线
-- `ResNet1D + DLCR`
-  - 通用 MTS 主验证线
-
-术语统一：
-
-- `E0 / E1 / E2` 叫**框架**
-- 各任务名称叫**数据集**
-
-## 各入口的职责
+## 这个目录里各入口的职责
 
 ### `00-入口/分类工程现状.md`
 
 唯一权威状态页，负责：
 
-- 当前双主线定义
-- 已核实的结果快照
-- 当前最优已核实配置
-- 当前未闭环的问题
+- 当前主线定义
+- 当前已核实结果快照
+- 当前未闭环问题
+- 当前不写进权威结论的边界
 
 ### `00-入口/分类调试记录.md`
 
-只负责记录：
+只负责：
 
-- 已完成诊断
-- 阶段性实验转折点
-- 失败分支和排障结论
-
-它不再承担“当前总览”职责。
+- 调试过程
+- 阶段性转折
+- 排障结论
 
 ### `01-阶段二-宿主实验`
 
-只保留宿主专项任务单。  
-其中 `Tensor-CSPNet` 任务单用于解释 Tensor 线本身，不再替代整个阶段二入口。
+宿主专项任务单与阶段记录。
 
 ### `02-阶段一-PIA-Operator`
 
-结构证据层。用于解释：
+历史结构证据层。默认不作为当前主结果入口。
 
-- 为什么 `same/opp` 成立
-- 为什么会转向 `local / residual / query-conditioned` 思路
+## 默认不从这里直接得出排名
 
-### `03-04`
+不要从这个目录里直接推出：
 
-动态支线和 SCP 支线保留，但不是默认阅读入口。
-
-## 当前默认不写进主线的内容
-
-以下内容当前保留，但不并入主线 ranking：
-
-- `MiniRocket + DLCR`
-  - 边界 / 诊断线
-- `MBA_ManifoldBridge`
-  - standalone 项目
-- 未跟踪的 `standalone_projects/RouteB_GeometricAugmentation/`
+- `MiniRocket` 已经是主结果线
+- `MBA` 已并入主线 ranking
+- 历史 `route_b` 结果仍然等价于当前主线

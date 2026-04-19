@@ -1,116 +1,183 @@
 # Current Engineering Map
 
-更新时间：2026-04-17
+更新时间：2026-04-19
 
-这份文件只回答两件事：
+这份文件只回答三件事：
 
-1. 当前仓库的官方主线是什么
-2. 目录和入口应该先看哪里
+1. 当前仓库默认应该先看什么
+2. 当前结果层有哪些已经闭环
+3. 哪些目录应该默认后放
 
-## 当前工程的四层结构
+## 1. 当前仓库的四层结构
 
-1. **分类二阶段外部宿主验证层**
-2. **分类一阶段结构证据层**
-3. **并行分类支线**
-4. **standalone 与历史层**
-
-其中当前活跃层是：
-
-- **分类二阶段外部宿主验证层**
-
-## 当前双主线
-
-当前分类二阶段不是单一宿主，而是双主线并列：
-
-- `Tensor-CSPNet + DLCR`
-  - EEG / SPD 外部宿主验证线
-  - 当前协议：`BCIC-IV-2a holdout`
-- `ResNet1D + DLCR`
-  - 通用 MTS 主验证线
-  - 当前协议：fixed-split 多数据集框架对比
-
-术语统一：
-
-- `E0 / E1 / E2` = **框架**
-- `NATOPS / FingerMovements / ...` = **数据集**
-
-## 当前最短阅读路径
-
-1. [工程记录/分类/00-入口/分类工程现状.md](../工程记录/分类/00-入口/分类工程现状.md)
-2. [工程记录/分类/00-入口/分类调试记录.md](../工程记录/分类/00-入口/分类调试记录.md)
-3. [ASSISTANT_ENTRY.md](../ASSISTANT_ENTRY.md)
-4. [工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](../工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
-
-## 当前已核实结果口径
-
-### `Tensor-CSPNet`
-
-- `BCIC-IV-2a holdout` 外部宿主复现已完成，平均准确率约 `0.7238`
-- 当前单 seed 比较：
-  - `E0 = 0.7103`
-  - `E1 = 0.7083`
-  - `E2 = 0.7018`
-- 当前读法：
-  - 宿主可靠
-  - `E2` 还没有在该宿主上稳定优于 `E0 / E1`
-
-### `ResNet1D`
-
-- `E2 tau=0.2 corrected` 已完成 21 个数据集的全量 sweep
-- 结合当前仓库里可直接核对的 `E0` 日志：
-  - `E2` 相对 `E0`：**15 胜 / 1 平 / 5 负**
-- 当前最值得记住的代表性提点：
-  - `NATOPS`: `0.9056 -> 0.9389`
-  - `FingerMovements`: `0.5200 -> 0.5800`
-  - `UWaveGestureLibrary`: `0.7594 -> 0.8313`
-  - `Heartbeat`: `0.3659 -> 0.5951`
-- 当前温度结论：
-  - 固定 `tau=0.2` 不能再写成统一最优默认值
-  - 已核实的四数据集扫描显示：
-    - `NATOPS`: `tau=0.5` 最优
-    - `FingerMovements`: `tau=0.2` 最优
-    - `SelfRegulationSCP1`: `tau=0.5` 最优
-    - `UWaveGestureLibrary`: `tau=1.0` 最优
-
-## 边界线与 standalone
-
-- `MiniRocket + DLCR`
-  - 当前定位：**边界 / 诊断线**
-  - 已完成 4 个数据集的 frozen-feature 诊断
-  - 但当前主仓库中的官方 MiniRocket 全量汇总工件并不完整，因此不把它写成闭环主结论
-
-- `MBA_ManifoldBridge`
-  - 当前定位：**独立 standalone 项目**
-  - 保留其内部实验报告，但不并入当前主仓库分类主线 ranking
-
-## 目录怎么读
-
-优先进入：
+### A. 当前代码层
 
 - `models/`
 - `scripts/`
+
+### B. 当前结果层
+
+- `out/_active/`
+
+### C. 工程解释层
+
 - `docs/`
 - `工程记录/`
-- `out/`
 
-按需进入：
+### D. 后放层
 
-- `route_b_unified/`
-  - 当你需要追一阶段结构证据时再看
 - `archive/`
-  - 当你需要看上游参考实现时再看
 - `standalone_projects/`
-  - 当你专门切到独立项目时再看
+- `route_b_unified/`
+- `PIA/`
+- `manifold_raw/`
 
-## 当前不再建议的读法
+## 2. 默认阅读顺序
 
-不要再把当前仓库理解成：
+1. [CURRENT_ENGINEERING_MANIFEST.json](CURRENT_ENGINEERING_MANIFEST.json)
+2. [../ASSISTANT_ENTRY.md](../ASSISTANT_ENTRY.md)
+3. [../工程记录/分类/00-入口/分类工程现状.md](../工程记录/分类/00-入口/分类工程现状.md)
+4. [../out/_active/README.md](../out/_active/README.md)
+5. [../models/README.md](../models/README.md)
+6. [../scripts/README.md](../scripts/README.md)
 
-- 把 `Tensor-CSPNet` 当成单一主线
-- `ResNet1D` 只是预备代码
-- 把 `MiniRocket` 的全量 SOTA 对照视为已在当前主仓库里完整沉淀
-- `MBA` 已经并入主仓库分类主线
+## 3. 当前默认主线与宿主层
 
-当前更准确的总读法是：
+### 默认主验证线
 
-**双主线并列，`ResNet1D` 是当前通用 MTS 主结果入口，`Tensor-CSPNet` 是 EEG/SPD 外部宿主验证入口；边界线和 standalone 保留，但不混入主线 ranking。**
+- `ResNet1D + DLCR`
+
+当前已经闭环的主结果层：
+
+- 行为变量正式矩阵
+- `tangent probe` 全量谱证据
+- `center_tangent(k=4)` 全量正式对照
+
+### 外部宿主验证线
+
+- `Tensor-CSPNet + DLCR`
+
+当前角色：
+
+- EEG / SPD 外部宿主验证
+- 不是默认主结果入口
+
+### 已接入但未形成主结果层的宿主
+
+- `PatchTST + DLCR`
+- `TimesNet + DLCR`
+
+当前角色：
+
+- 代码接入已完成
+- 还没有 21 数据集级别的主结果层
+
+## 4. 当前结果层分布
+
+### 4.1 行为变量正式矩阵
+
+目录：
+
+- [../out/_active/verify_resnet1d_dlcr_behavioral_matrix_20260418](../out/_active/verify_resnet1d_dlcr_behavioral_matrix_20260418)
+
+状态：
+
+- `21` 数据集
+- `126` 条条件
+- 已完成
+
+主要回答：
+
+- `center_only` 是否值得长期保留
+- `center_subproto` 是否真的带来额外结构收益
+- `subproto_temperature` 是否是数据集相关变量
+
+### 4.2 `tangent probe`
+
+目录：
+
+- [../out/_active/verify_resnet1d_tangent_probe_20260418](../out/_active/verify_resnet1d_tangent_probe_20260418)
+
+状态：
+
+- `21` 数据集
+- 已完成
+
+主要回答：
+
+- 当前子原型偏移谱是否支持低秩切空间读法
+
+当前稳妥结论：
+
+- `rank95_mean = 4.0`
+- 更像接近满秩 `4` 维，而不是明显低秩
+
+### 4.3 `center_tangent(k=4)` 全量对照
+
+目录：
+
+- [../out/_active/verify_resnet1d_center_tangent_fullscale_20260419](../out/_active/verify_resnet1d_center_tangent_fullscale_20260419)
+
+状态：
+
+- `21` 数据集
+- 已完成
+
+主要回答：
+
+- `center_tangent(k=4)` 是否已经足够强，可以升格成统一默认主线
+
+当前稳妥结论：
+
+- 它不是无效分支
+- 但还不是统一默认主线
+
+### 4.4 `Tensor-CSPNet + DLCR`
+
+目录：
+
+- [../out/_active/verify_tensor_cspnet_local_closed_form_holdout_20260412](../out/_active/verify_tensor_cspnet_local_closed_form_holdout_20260412)
+
+状态：
+
+- 外部宿主验证已完成
+
+当前稳妥结论：
+
+- 宿主可靠
+- `E2` 尚未在该宿主上建立稳定优势
+
+## 5. 当前辅助层
+
+这些目录重要，但不是默认第一阅读层：
+
+- [../out/_active/verify_resnet1d_subproto_temp_sweep_20260414](../out/_active/verify_resnet1d_subproto_temp_sweep_20260414)
+- [../out/_active/verify_resnet1d_dataflow_probe_20260414](../out/_active/verify_resnet1d_dataflow_probe_20260414)
+- [../out/_active/verify_e2_tau02_fullscale_20260414](../out/_active/verify_e2_tau02_fullscale_20260414)
+- [../out/_active/verify_3baseline_minirocket_20260414](../out/_active/verify_3baseline_minirocket_20260414)
+
+## 6. 默认后放区
+
+### 历史结构证据层
+
+- `verify_route_b_*`
+- `verify_axis_pullback_*`
+- `verify_pia_core_*`
+- `route_b_dynamic_*`
+- `verify_logeuclidean_*`
+
+这些目录当前仍保留在仓库里，但不应作为默认结果入口。
+
+### 本地临时层
+
+- `out/_active/_tmp*`
+- `out/_active/_scratch`
+
+### standalone
+
+- `standalone_projects/MBA_ManifoldBridge`
+- 其他 `standalone_projects/*`
+
+## 7. 当前最简总读法
+
+**先从 `ResNet1D` 的行为矩阵、probe、center_tangent 全量对照接管当前主线；再看 `Tensor-CSPNet` 外部宿主验证；最后才按需回到辅助层、历史层和 standalone。**

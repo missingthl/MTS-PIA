@@ -1,98 +1,114 @@
 # MTS-PIA Workspace
 
-更新时间：2026-04-17
+更新时间：2026-04-19
 
-这个仓库现在应该按“**双主线并列 + 证据分层**”来读，而不是按单一历史主线来读。
+这个仓库现在应该按“**当前工程状态**”来读，而不是按历史阶段线索倒推。
 
-## 当前最短入口
+默认读法是：
 
-如果你想最快接住当前工程，只看下面 5 份：
+- 先接住 **当前主验证线**
+- 再看 **外部宿主验证线**
+- 最后再按需回到历史结构证据、standalone 和 archive
 
-1. [docs/CURRENT_ENGINEERING_MAP.md](/home/THL/project/MTS-PIA/docs/CURRENT_ENGINEERING_MAP.md)
-2. [工程记录/分类/00-入口/分类工程现状.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类工程现状.md)
-3. [工程记录/分类/00-入口/分类调试记录.md](/home/THL/project/MTS-PIA/工程记录/分类/00-入口/分类调试记录.md)
-4. [ASSISTANT_ENTRY.md](/home/THL/project/MTS-PIA/ASSISTANT_ENTRY.md)
-5. [工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md](/home/THL/project/MTS-PIA/工程记录/分类/01-阶段二-宿主实验/Tensor-CSPNet-端到端局部闭式残差层实现任务单.md)
+## 最短入口
+
+如果你想最快接住当前仓库，只看下面 5 份：
+
+1. [docs/CURRENT_ENGINEERING_MANIFEST.json](docs/CURRENT_ENGINEERING_MANIFEST.json)
+2. [docs/CURRENT_ENGINEERING_MAP.md](docs/CURRENT_ENGINEERING_MAP.md)
+3. [ASSISTANT_ENTRY.md](ASSISTANT_ENTRY.md)
+4. [工程记录/分类/00-入口/分类工程现状.md](工程记录/分类/00-入口/分类工程现状.md)
+5. [out/_active/README.md](out/_active/README.md)
 
 运行资源与服务器隔离说明看：
 
-- [SERVER_RESOURCE_GUIDE.md](/home/THL/project/MTS-PIA/SERVER_RESOURCE_GUIDE.md)
+- [SERVER_RESOURCE_GUIDE.md](SERVER_RESOURCE_GUIDE.md)
 
-## 当前官方口径
+## 当前默认阅读口径
 
-当前分类工程有两条同级主线：
+### 1. 默认主验证线
+
+- `ResNet1D + DLCR`
+
+这是当前默认先读的线。当前最重要的三层结果都已经齐了：
+
+- 行为变量正式矩阵：
+  - [verify_resnet1d_dlcr_behavioral_matrix_20260418](out/_active/verify_resnet1d_dlcr_behavioral_matrix_20260418)
+- `tangent probe` 全量谱证据：
+  - [verify_resnet1d_tangent_probe_20260418](out/_active/verify_resnet1d_tangent_probe_20260418)
+- `center_tangent(k=4)` 全量正式对照：
+  - [verify_resnet1d_center_tangent_fullscale_20260419](out/_active/verify_resnet1d_center_tangent_fullscale_20260419)
+
+### 2. 外部宿主验证线
 
 - `Tensor-CSPNet + DLCR`
-  - EEG / SPD 外部宿主验证线
-  - 当前协议是 `BCIC-IV-2a holdout`
-- `ResNet1D + DLCR`
-  - 通用 MTS 主验证线
-  - 当前协议是 fixed-split 多数据集框架对比
 
-这里的术语统一为：
+这是 EEG / SPD 外部宿主验证线，不是废线，但不是当前默认先读的通用 MTS 主线。
 
-- `E0 / E1 / E2` 叫**框架**
-- `NATOPS / FingerMovements / ...` 叫**数据集**
+结果入口：
 
-## 当前已核实的主结果
+- [verify_tensor_cspnet_local_closed_form_holdout_20260412](out/_active/verify_tensor_cspnet_local_closed_form_holdout_20260412)
 
-### `Tensor-CSPNet`
+### 3. 已接入但尚未形成主结果层的宿主
 
-- 外部宿主复现已完成，`BCIC-IV-2a holdout` 平均准确率约 `0.7238`
-- 当前单 seed 对比读法：
-  - `E0 = 0.7103`
-  - `E1 = 0.7083`
-  - `E2 = 0.7018`
-- 当前结论：
+- `PatchTST + DLCR`
+- `TimesNet + DLCR`
+
+它们的代码接入已经完成，但当前 GitHub 里还没有对应的全量正式主结果层。
+
+## 当前最重要的已核实结论
+
+### `ResNet1D + DLCR`
+
+- `center_only vs E0`：`8 胜 / 2 平 / 11 负`
+- `best center_subproto vs E0`：`14 胜 / 1 平 / 6 负`
+- `best center_subproto vs center_only`：`14 胜 / 4 平 / 3 负`
+- `center_tangent(k=4) vs E0`：`11 胜 / 1 平 / 9 负`
+- `center_tangent(k=4) vs best center_subproto`：`5 胜 / 3 平 / 13 负`
+- `tangent probe` 21 数据集上 `rank95_mean` 全部为 `4.0`
+
+当前稳妥口径：
+
+- `center_only` 是必须保留的强基线
+- `center_subproto` 是当前最稳的增强主分支
+- `center_tangent(k=4)` 已证明自己不是无效分支，但还不是统一默认主线
+- `subproto_temperature` 是真实行为变量，但明显数据集相关
+
+### `Tensor-CSPNet + DLCR`
+
+- `BCIC-IV-2a holdout` 外部宿主复现已完成
+- 当前公开读法仍是：
   - 宿主可靠
-  - `E2` 还没有在该宿主上建立优势
+  - `E2` 尚未在该宿主上建立稳定优势
 
-### `ResNet1D`
+## 目录怎么读
 
-- `E2 tau=0.2 corrected` 已完成 21 个数据集的全量 sweep
-- 结合当前仓库里可直接核对的 `E0` 日志：
-  - `E2` 相对 `E0`：**15 个数据集提点 / 1 个打平 / 5 个回落**
-- 代表性结果：
-  - `NATOPS`: `0.9056 -> 0.9389`
-  - `FingerMovements`: `0.5200 -> 0.5800`
-  - `UWaveGestureLibrary`: `0.7594 -> 0.8313`
-  - `Heartbeat`: `0.3659 -> 0.5951`
-- 当前温度结论已经更新：
-  - `tau=0.2` 不是统一最优默认值
-  - 四数据集温度扫描显示：
-    - `NATOPS`: `tau=0.5` 最优
-    - `FingerMovements`: `tau=0.2` 最优
-    - `SelfRegulationSCP1`: `tau=0.5` 最优
-    - `UWaveGestureLibrary`: `tau=1.0` 最优
-
-## 当前边界与独立项目
-
-- `MiniRocket + DLCR`
-  - 当前定位为**边界 / 诊断线**
-  - 已完成 4 个数据集的 frozen-feature 诊断
-  - 但当前仓库里的官方 MiniRocket 全量汇总工件还不完整，所以不把它写成已闭环主结论
-
-- `MBA_ManifoldBridge`
-  - 当前定位为**独立 standalone 项目**
-  - 不并入当前主仓库分类主线 ranking
-
-## 当前怎么读目录
-
-当前优先看的目录：
+默认优先进入：
 
 - `models/`
 - `scripts/`
 - `docs/`
 - `工程记录/`
-- `out/`
+- `out/_active/`
 
-默认不建议先从这些地方入手：
+默认后读或跳过：
 
 - `archive/`
 - `standalone_projects/`
-- `route_b_unified/`（除非你是在追一阶段证据）
+- `route_b_unified/`
+- `PIA/`
+- `manifold_raw/`
+- `out/_active/` 里的 `_tmp* / _scratch / 旧 route_b 目录`
 
-## 当前最需要注意的事
+## 当前这份仓库不该再怎么读
 
-这轮整理后的公开口径只写**已核实主结果**。  
-任何无法由当前仓库中 `summary.json / history.csv / log / report` 直接支撑的说法，都不再作为权威入口结论。
+不要再把当前仓库理解成：
+
+- 仍以 `route_b` 为默认主线
+- 只有 `tau=0.2 corrected` 这一轮旧 sweep，没有新的行为变量矩阵
+- 只有 `tangent probe` 有 21 数据集，而 `center_tangent` 没有
+- `MBA` 已并入当前主仓库主线 ranking
+
+当前更准确的总读法是：
+
+**`ResNet1D + DLCR` 是默认主验证线；`Tensor-CSPNet + DLCR` 是外部宿主验证线；`PatchTST / TimesNet` 已完成宿主接入；主结果先看行为矩阵、probe 和 center_tangent 全量对照。**

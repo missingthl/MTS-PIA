@@ -1,167 +1,97 @@
 # Active Output Layer
 
-更新时间：2026-03-29
+更新时间：2026-04-19
 
-这里现在只放“当前还在推进的分类主线结果”。
+这里现在按“四层”来读：
 
-## 1. PIA Core current line
+1. 当前主结果层
+2. 当前辅助诊断层
+3. 历史结果层
+4. 本地临时层
 
-### Package 0：PIA Core Minimal Chain
+如果你是 agent，默认只需要接住第 1 层和第 2 层。
 
-- [route_b_pia_core_minimal_chain_20260327_formal](/home/THL/project/MTS-PIA/out/route_b_pia_core_minimal_chain_20260327_formal)
+## 1. 当前主结果层
 
-### Package 1：Augment Admission & Composition
+### 1.1 `ResNet1D + DLCR` 行为变量正式矩阵
 
-- [route_b_pia_core_admission_control_20260327_formal](/home/THL/project/MTS-PIA/out/route_b_pia_core_admission_control_20260327_formal)
+- [verify_resnet1d_dlcr_behavioral_matrix_20260418](verify_resnet1d_dlcr_behavioral_matrix_20260418)
 
-### Package 2：Operator Control Refinement
+当前权威入口：
 
-- [route_b_pia_core_axis_refine_20260327_formal](/home/THL/project/MTS-PIA/out/route_b_pia_core_axis_refine_20260327_formal)
+- [verify_resnet1d_dlcr_behavioral_matrix_20260418/ResNet1D_DLCR_behavioral_matrix_stage_report_20260418.md](verify_resnet1d_dlcr_behavioral_matrix_20260418/ResNet1D_DLCR_behavioral_matrix_stage_report_20260418.md)
+- [verify_resnet1d_dlcr_behavioral_matrix_20260418/behavioral_results_table.csv](verify_resnet1d_dlcr_behavioral_matrix_20260418/behavioral_results_table.csv)
+- [verify_resnet1d_dlcr_behavioral_matrix_20260418/behavioral_mechanism_table.csv](verify_resnet1d_dlcr_behavioral_matrix_20260418/behavioral_mechanism_table.csv)
 
-### Package 2B：Axis-2 × Pullback Closure Round
+这是当前 `ResNet1D + DLCR` 的默认主结果入口。
 
-- [route_b_pia_core_axis_pullback_refine_20260328_formal](/home/THL/project/MTS-PIA/out/route_b_pia_core_axis_pullback_refine_20260328_formal)
+### 1.2 `tangent probe`
 
-### Path A：Dynamic Risk-Aware Axis-2 Scaling
+- [verify_resnet1d_tangent_probe_20260418](verify_resnet1d_tangent_probe_20260418)
 
-- [route_b_pia_core_risk_aware_axis2_20260328_formal](/home/THL/project/MTS-PIA/out/route_b_pia_core_risk_aware_axis2_20260328_formal)
+当前权威入口：
 
-## 2. 当前判断
+- [verify_resnet1d_tangent_probe_20260418/ResNet1D_tangent_probe_stage_report_20260418.md](verify_resnet1d_tangent_probe_20260418/ResNet1D_tangent_probe_stage_report_20260418.md)
+- [verify_resnet1d_tangent_probe_20260418/tangent_probe_dataset_table.csv](verify_resnet1d_tangent_probe_20260418/tangent_probe_dataset_table.csv)
 
-- `PIA Core` 主链已经成立
-- 第一包 `admission` 结论为：
-  - `not yet useful`
-- 第二包 `axis refine` 结论为：
-  - 第二轴是主风险源之一
-  - refined `k=2` 比粗粒度 `k=2` 更接近共同候选点
-- 第二包收口轮 `axis-2 × pullback` 结论为：
-  - 比上一轮更接近共同候选点
-  - `NATOPS` 正区仍保住
-  - `SCP1` 副作用继续减轻
-  - 但统一强点仍未形成
-- 路径 A `risk-aware axis-2` 结论为：
-  - `SCP1` 相对 `base pia` 继续改善
-  - 但没有优于当前静态第二轴挡位方案
-  - `NATOPS` 也没有保住静态最优
+这是当前的谱证据层，已经是 `21 / 21` 全数据集结果。
 
-## 2A. 并行 no-bridge 双流分类 smoke
+### 1.3 `center_tangent(k=4)` 全量正式对照
 
-- [verify_route_b_dual_stream_no_bridge_combined_20260329](/home/THL/project/MTS-PIA/out/_active/verify_route_b_dual_stream_no_bridge_combined_20260329)
+- [verify_resnet1d_center_tangent_fullscale_20260419](verify_resnet1d_center_tangent_fullscale_20260419)
 
-当前判断：
+当前权威入口：
 
-- 分支已实现并跑通双站 smoke
-- `NATOPS` 当前 smoke 里 `manifold_only` 最强
-- `SelfRegulationSCP1` 当前 smoke 里 `spatial_only` 最强
-- `dual_stream` 已闭环，但还没有超过最强单流
+- [verify_resnet1d_center_tangent_fullscale_20260419/ResNet1D_center_tangent_fullscale_stage_report_20260419.md](verify_resnet1d_center_tangent_fullscale_20260419/ResNet1D_center_tangent_fullscale_stage_report_20260419.md)
+- [verify_resnet1d_center_tangent_fullscale_20260419/center_tangent_comparison_table.csv](verify_resnet1d_center_tangent_fullscale_20260419/center_tangent_comparison_table.csv)
 
-## 2B. 新表示路径 T0：dynamic manifold classification smoke
+这是当前的正式性能层，已经是 `21 / 21` 全数据集结果。
 
-- [verify_route_b_dynamic_manifold_classification_20260329](/home/THL/project/MTS-PIA/out/_active/verify_route_b_dynamic_manifold_classification_20260329)
-- [route_b_dynamic_manifold_classification_20260329_formal](/home/THL/project/MTS-PIA/out/route_b_dynamic_manifold_classification_20260329_formal)
+### 1.4 `Tensor-CSPNet + DLCR`
 
-当前判断：
+- [verify_tensor_cspnet_local_closed_form_holdout_20260412](verify_tensor_cspnet_local_closed_form_holdout_20260412)
 
-- 这条线是静态 SPD 单点主线冻结后的新表示路径 T0
-- 当前 `3 seeds` formal 已完成：
-  - `static_linear`
-  - `dynamic_meanpool`
-  - `dynamic_gru`
-- `NATOPS`
-  - `dynamic_gru = 0.7940 +/- 0.0103`
-  - 已优于 `static_linear = 0.7276 +/- 0.0231`
-  - 也高于 `raw + MiniROCKET = 0.7329 +/- 0.0142`
-- `SelfRegulationSCP1`
-  - `dynamic_gru = 0.6604 +/- 0.0131`
-  - 已优于 `static_linear = 0.5171 +/- 0.0120`
-  - 但仍低于 `raw + MiniROCKET = 0.6872 +/- 0.0059`
-- 两站共同正信号：
-  - `GRU > mean-pool`
-  - 轨迹顺序信息本身有价值
+当前角色：
 
-## 2C. trajectory-aware operator T2a formal
+- 外部宿主验证线
+- 不是当前默认主结果入口
 
-- [route_b_trajectory_pia_t2a_20260329_formal](/home/THL/project/MTS-PIA/out/route_b_trajectory_pia_t2a_20260329_formal)
+## 2. 当前辅助诊断层
 
-当前判断：
+这些结果重要，但不是默认第一阅读层：
 
-- 这是 trajectory branch 上的第一版全局共享 basis operator
-- 主比较：
-  - `baseline`
-  - `operator_unsmoothed`
-  - `operator_smoothed`
-- `NATOPS`
-  - `operator_smoothed = 0.8118 +/- 0.0090`
-  - 高于 `baseline = 0.7940 +/- 0.0103`
-  - 当前 `T2a` 在该数据集上明确成立
-- `SelfRegulationSCP1`
-  - `operator_unsmoothed = 0.6615 +/- 0.0072`
-  - 仅边际高于 `baseline = 0.6604 +/- 0.0131`
-  - 平滑未显示必要性
-- 当前总判断：
-  - `T2a` 已值得保留
-  - 但当前还不适合直接跳到 `T2b`
+- [verify_resnet1d_subproto_temp_sweep_20260414](verify_resnet1d_subproto_temp_sweep_20260414)
+- [verify_resnet1d_dataflow_probe_20260414](verify_resnet1d_dataflow_probe_20260414)
+- [verify_e2_tau02_fullscale_20260414](verify_e2_tau02_fullscale_20260414)
+- [verify_3baseline_minirocket_20260414](verify_3baseline_minirocket_20260414)
 
-## 2D. trajectory-aware operator T2b-0
+## 3. 历史结果层
 
-- [verify_route_b_trajectory_pia_t2b0_20260329](/home/THL/project/MTS-PIA/out/_active/verify_route_b_trajectory_pia_t2b0_20260329)
-- [route_b_trajectory_pia_t2b0_20260329_formal](/home/THL/project/MTS-PIA/out/route_b_trajectory_pia_t2b0_20260329_formal)
+下面这些目录仍保留在仓库里，但不再作为默认结果入口：
 
-当前判断：
+- `verify_route_b_*`
+- `verify_axis_pullback_*`
+- `verify_pia_core_*`
+- `route_b_dynamic_*`
+- `verify_logeuclidean_*`
 
-- 这条线当前不是完整局部动力学系统，而是：
-  - `fixed-rule local saliency probe`
-- 主比较：
-  - `baseline`
-  - `t2a_default`
-  - `t2b_saliency`
-  - `t2b_randomized`
-- `NATOPS`
-  - `t2b_saliency = 0.8204 +/- 0.0014`
-  - 已高于 `t2a_default = 0.8182 +/- 0.0041`
-  - 也高于 `t2b_randomized = 0.8182 +/- 0.0041`
-- `SelfRegulationSCP1`
-  - `t2b_saliency = 0.6641 +/- 0.0086`
-  - 尚未正式高于 `t2a_default = 0.6641 +/- 0.0086`
+如果不是专门回溯历史结构证据，默认跳过它们。
 
-## 2E. dynamic feedback re-basis T3
+## 4. 本地临时层
 
-- [verify_route_b_dynamic_feedback_rebasis_t3_20260329](/home/THL/project/MTS-PIA/out/_active/verify_route_b_dynamic_feedback_rebasis_t3_20260329)
-- [route_b_dynamic_feedback_rebasis_t3_20260329_formal](/home/THL/project/MTS-PIA/out/route_b_dynamic_feedback_rebasis_t3_20260329_formal)
+默认跳过：
 
-当前判断：
+- `_tmp*`
+- `_scratch`
 
-- 这条线当前不是完整动态闭环，而是：
-  - `dynamic feedback re-basis probe`
-- 主比较：
-  - `baseline`
-  - `t2a_default`
-  - `t3_rebasis`
-- `NATOPS`
-  - `t3_rebasis = 0.8279 +/- 0.0061`
-  - 已高于 `t2a_default = 0.8182 +/- 0.0041`
-  - 且 basis 发生了非平凡旋转
-- `SelfRegulationSCP1`
-  - `t3_rebasis = 0.6628 +/- 0.0092`
-  - 尚未高于 `t2a_default = 0.6641 +/- 0.0086`
-  - feedback pool 虽稳定存在，但 basis 基本不动
-  - 但已略高于 `t2b_randomized = 0.6629 +/- 0.0098`
-- 当前最稳妥的口径：
-  - `T2b-0` 已成立为下一阶段框架 probe
-  - 但还不能把它写成完整局部动力学框架已正式站稳
+另外要注意：
 
-## 3. 当前不再放在 active 的线
+- 当前一些深层原始运行树，例如 `e0/`、`e2/` 下的逐 run 目录，主要是本地 raw artifact
+- GitHub 和 agent 默认应该先读上层的 `md / csv / json` 汇总文件，而不是直接扎进深层逐 run 目录
 
-下面这些结果仍然有效，但不再属于“当前活跃主线”：
+## 5. 最短阅读顺序
 
-- `Route B legacy bridge`
-- `LRAES + curriculum`
-- `route_b_unified` shell
-- `Freeze`
-
-它们现在应从：
-
-- [out/_formal/README.md](/home/THL/project/MTS-PIA/out/_formal/README.md)
-- [out/README.md](/home/THL/project/MTS-PIA/out/README.md)
-
-进入，而不是再从 active 层进入。
+1. [verify_resnet1d_dlcr_behavioral_matrix_20260418/ResNet1D_DLCR_behavioral_matrix_stage_report_20260418.md](verify_resnet1d_dlcr_behavioral_matrix_20260418/ResNet1D_DLCR_behavioral_matrix_stage_report_20260418.md)
+2. [verify_resnet1d_tangent_probe_20260418/ResNet1D_tangent_probe_stage_report_20260418.md](verify_resnet1d_tangent_probe_20260418/ResNet1D_tangent_probe_stage_report_20260418.md)
+3. [verify_resnet1d_center_tangent_fullscale_20260419/ResNet1D_center_tangent_fullscale_stage_report_20260419.md](verify_resnet1d_center_tangent_fullscale_20260419/ResNet1D_center_tangent_fullscale_stage_report_20260419.md)
+4. [verify_tensor_cspnet_local_closed_form_holdout_20260412](verify_tensor_cspnet_local_closed_form_holdout_20260412)

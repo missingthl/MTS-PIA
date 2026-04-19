@@ -1,0 +1,93 @@
+{
+  "updated_at": "2026-04-19",
+  "default_reading_order": [
+    "docs/CURRENT_ENGINEERING_MANIFEST.json",
+    "docs/CURRENT_ENGINEERING_MAP.md",
+    "ASSISTANT_ENTRY.md",
+    "工程记录/分类/00-入口/分类工程现状.md",
+    "out/_active/README.md",
+    "models/README.md",
+    "scripts/README.md"
+  ],
+  "current_default_result_line": {
+    "name": "ResNet1D + DLCR",
+    "status": "active_default",
+    "current_result_dirs": [
+      {
+        "id": "behavioral_matrix",
+        "path": "out/_active/verify_resnet1d_dlcr_behavioral_matrix_20260418",
+        "status": "full_dataset_complete",
+        "primary_files": [
+          "ResNet1D_DLCR_behavioral_matrix_stage_report_20260418.md",
+          "behavioral_results_table.csv",
+          "behavioral_mechanism_table.csv"
+        ]
+      },
+      {
+        "id": "tangent_probe",
+        "path": "out/_active/verify_resnet1d_tangent_probe_20260418",
+        "status": "full_dataset_complete",
+        "primary_files": [
+          "ResNet1D_tangent_probe_stage_report_20260418.md",
+          "tangent_probe_dataset_table.csv",
+          "tangent_probe_class_table.csv"
+        ]
+      },
+      {
+        "id": "center_tangent_fullscale",
+        "path": "out/_active/verify_resnet1d_center_tangent_fullscale_20260419",
+        "status": "full_dataset_complete",
+        "primary_files": [
+          "ResNet1D_center_tangent_fullscale_stage_report_20260419.md",
+          "center_tangent_comparison_table.csv"
+        ]
+      }
+    ]
+  },
+  "external_validation_line": {
+    "name": "Tensor-CSPNet + DLCR",
+    "status": "external_host_validation",
+    "path": "out/_active/verify_tensor_cspnet_local_closed_form_holdout_20260412"
+  },
+  "connected_hosts_without_main_result_layer": [
+    "PatchTST + DLCR",
+    "TimesNet + DLCR"
+  ],
+  "supporting_result_dirs": [
+    "out/_active/verify_resnet1d_subproto_temp_sweep_20260414",
+    "out/_active/verify_resnet1d_dataflow_probe_20260414",
+    "out/_active/verify_e2_tau02_fullscale_20260414",
+    "out/_active/verify_3baseline_minirocket_20260414"
+  ],
+  "code_entrypoints": {
+    "models": [
+      "models/local_closed_form_residual_head.py",
+      "models/resnet1d_local_closed_form.py",
+      "models/patchtst_local_closed_form.py",
+      "models/timesnet_local_closed_form.py",
+      "models/tensor_cspnet_adapter.py"
+    ],
+    "scripts": [
+      "scripts/hosts/run_resnet1d_local_closed_form_fixedsplit.py",
+      "scripts/hosts/run_resnet1d_dlcr_behavioral_matrix.py",
+      "scripts/hosts/run_resnet1d_tangent_probe_matrix.py",
+      "scripts/hosts/run_resnet1d_center_tangent_fullscale.py",
+      "scripts/hosts/run_tsl_local_closed_form_fixedsplit.py",
+      "scripts/hosts/run_tensor_cspnet_local_closed_form_holdout.py"
+    ]
+  },
+  "read_later_or_skip_by_default": [
+    "archive/",
+    "standalone_projects/",
+    "route_b_unified/",
+    "PIA/",
+    "manifold_raw/",
+    "out/_active/_tmp*",
+    "out/_active/_scratch",
+    "out/_active/verify_route_b_*",
+    "out/_active/verify_axis_pullback_*",
+    "out/_active/verify_pia_core_*",
+    "out/_active/route_b_dynamic_*",
+    "out/_active/verify_logeuclidean_*"
+  ]
+}
