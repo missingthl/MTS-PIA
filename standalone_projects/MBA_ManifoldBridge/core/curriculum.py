@@ -151,7 +151,11 @@ def build_curriculum_aug_candidates(
             u_norm = np.linalg.norm(u_k)
             
             # Apply Proposition 2: SafeStep Constraint (Manifold Margin Buffer)
-            g_safe, ratio = apply_safe_step_constraint(g0, u_norm, d_min, eta=eta_safe)
+            if eta_safe is not None:
+                g_safe, ratio = apply_safe_step_constraint(g0, u_norm, d_min, eta=eta_safe)
+            else:
+                g_safe, ratio = g0, 1.0
+            
             safe_ratios.append(ratio)
             
             x_aug = X_sample + g_safe * sign * u_k

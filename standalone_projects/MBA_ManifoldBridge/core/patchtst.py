@@ -156,21 +156,8 @@ class PatchTST(nn.Module):
         )
 
         # 3. Head
-        self.head_nf = d_model * int((seq_len - patch_len) / stride + 2)
-        
-        self.bottleneck = nn.Identity()
-        final_dim = self.head_nf * in_channels
-        if bottleneck_dim is not None:
-            self.bottleneck = nn.Sequential(
-                nn.Linear(final_dim, bottleneck_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
-            )
-            final_dim = bottleneck_dim
-            
-        self.flatten = nn.Flatten(start_dim=-2)
         self.dropout = nn.Dropout(dropout)
-        self.projection = nn.Linear(final_dim, num_classes)
+        self.projection = nn.Linear(in_channels * d_model, num_classes)
 
     def forward(self, x):
         # x: [B, C, T]
@@ -190,11 +177,10 @@ class PatchTST(nn.Module):
         enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
         enc_out = enc_out.permute(0, 1, 3, 2) # [B, C, d_model, patch_num]
 
-        # Classification Head
-        output = self.flatten(enc_out) # [B, C, d_model*patch_num]
+        # Classification Head: GAP over patch dimension
+        # enc_out: [B, C, d_model, patch_num]
+        output = torch.mean(enc_out, dim=-1) # [B, C, d_model]
         output = self.dropout(output)
-        output = output.reshape(output.shape[0], -1) # [B, C*d_model*patch_num]
-        
-        output = self.bottleneck(output)
+        output = output.reshape(output.shape[0], -1) # [B, C * d_model]
         output = self.projection(output)
         return output

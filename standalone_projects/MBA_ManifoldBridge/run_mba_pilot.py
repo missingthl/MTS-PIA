@@ -156,11 +156,12 @@ def run_experiment(dataset_name, args):
             probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
             
             # Use safety coefficient eta=0.5 (Proposition 2)
+            eta_val = 0.5 if not args.disable_safe_step else None
             z_aug, y_aug, tid_aug, z_src, dir_ids, aug_meta = build_curriculum_aug_candidates(
                 X_train_z, y_train, np.array([r.tid for r in train_recs]),
                 direction_bank=W, direction_probs=probs, gamma_by_dir=gamma_budget, 
                 multiplier=args.multiplier, seed=seed + 42,
-                eta_safe=0.5
+                eta_safe=eta_val
             )
             
             aug_trials = []
@@ -183,19 +184,20 @@ def run_experiment(dataset_name, args):
             alignment_metrics = {"host_geom_cosine_mean": 0.0, "host_conflict_rate": 0.0}
             if args.theory_diagnostics and args.model != "minirocket" and "model_obj" in res_base:
                 print("Running Theory Diagnostics (Host Alignment Probe)...")
-                aligns = []
-                probe_idx = np.random.choice(len(aug_trials), min(20, len(aug_trials)), replace=False)
-                for i in probe_idx:
-                    src = tid_to_rec[tid_aug[i]]
-                    x_o = torch.from_numpy(src.x_raw).unsqueeze(0).float()
-                    y_o = torch.tensor([src.y]).long()
-                    x_a = torch.from_numpy(aug_trials[i]["x"]).unsqueeze(0).float()
+                with torch.enable_grad():
+                    aligns = []
+                    probe_idx = np.random.choice(len(aug_trials), min(20, len(aug_trials)), replace=False)
+                    for i in probe_idx:
+                        src = tid_to_rec[tid_aug[i]]
+                        x_o = torch.from_numpy(src.x_raw).unsqueeze(0).float()
+                        y_o = torch.tensor([src.y]).long()
+                        x_a = torch.from_numpy(aug_trials[i]["x"]).unsqueeze(0).float()
+                        
+                        probe = compute_gradient_alignment(res_base["model_obj"], x_o, y_o, x_a, device=args.device)
+                        aligns.append(probe)
                     
-                    probe = compute_gradient_alignment(res_base["model_obj"], x_o, y_o, x_a, device=args.device)
-                    aligns.append(probe)
-                
-                alignment_metrics["host_geom_cosine_mean"] = float(np.mean([p["alignment_cosine"] for p in aligns]))
-                alignment_metrics["host_conflict_rate"] = float(np.mean([p["is_conflict"] for p in aligns]))
+                    alignment_metrics["host_geom_cosine_mean"] = float(np.mean([p["alignment_cosine"] for p in aligns]))
+                    alignment_metrics["host_conflict_rate"] = float(np.mean([p["is_conflict"] for p in aligns]))
 
             print(f"Fitting MBA Model ({len(X_mix)} samples)...")
             res_mba = _fit(X_mix, y_mix, is_baseline=False)
@@ -262,7 +264,8 @@ def main():
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--theory-diagnostics", action="store_true", help="Enable heavy theoretical probes (alignment, etc)")
+    parser.add_argument("--theory-diagnostics", action="store_true", help="Enable heavy theoretical metrics (host alignment, etc)")
+    parser.add_argument("--disable-safe-step", action="store_true", help="Ablation: Disable Safe-Step constraint")
     parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
     args = parser.parse_args()
 

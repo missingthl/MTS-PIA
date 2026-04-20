@@ -98,12 +98,12 @@ class TimesBlock(nn.Module):
         for i in range(self.k):
             period = period_list[i]
             # padding
-            if self.seq_len % period != 0:
-                length = (self.seq_len // period + 1) * period
-                padding = torch.zeros([x.shape[0], (length - self.seq_len), x.shape[2]], device=x.device)
+            if T % period != 0:
+                length = (T // period + 1) * period
+                padding = torch.zeros([x.shape[0], (length - T), x.shape[2]], device=x.device)
                 out = torch.cat([x, padding], dim=1)
             else:
-                length = self.seq_len
+                length = T
                 out = x
             # reshape
             out = out.reshape(B, length // period, period, N).permute(0, 3, 1, 2).contiguous()
@@ -111,7 +111,7 @@ class TimesBlock(nn.Module):
             out = self.conv(out)
             # reshape back
             out = out.permute(0, 2, 3, 1).reshape(B, -1, N)
-            res.append(out[:, :self.seq_len, :])
+            res.append(out[:, :T, :])
         res = torch.stack(res, dim=-1)
         # adaptive aggregation
         period_weight = F.softmax(period_weight, dim=1)
@@ -133,7 +133,7 @@ class TimesNet(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model)
         self.act = F.gelu
         self.dropout = nn.Dropout(dropout)
-        self.projection = nn.Linear(d_model * seq_len, num_classes)
+        self.projection = nn.Linear(d_model, num_classes)
 
     def forward(self, x):
         # x: [B, C, T]
@@ -155,6 +155,8 @@ class TimesNet(nn.Module):
         # Output Head
         output = self.act(enc_out)
         output = self.dropout(output)
-        output = output.reshape(output.shape[0], -1) # [B, T*d_model]
+        
+        # Global Average Pooling over Time dimension
+        output = torch.mean(output, dim=1) # [B, d_model]
         output = self.projection(output)
         return output
