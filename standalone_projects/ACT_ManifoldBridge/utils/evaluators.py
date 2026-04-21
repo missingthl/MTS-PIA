@@ -340,6 +340,43 @@ def fit_eval_resnet1d_acl(
     return res
 
 
+def fit_eval_resnet1d_continue_ce(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    *,
+    init_state_dict: Dict[str, torch.Tensor],
+    epochs: int = 20,
+    lr: float = 1e-3,
+    batch_size: int = 64,
+    patience: int = 10,
+    device: str = "cuda",
+    return_model_obj: bool = False,
+) -> Dict[str, float]:
+    in_channels = X_train.shape[1]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    model = ResNet1DClassifier(in_channels, num_classes)
+    model.load_state_dict(copy.deepcopy(init_state_dict))
+    return fit_eval_pytorch_model(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=device,
+        return_model_obj=return_model_obj,
+    )
+
+
 def _compute_acl_supcon_loss(
     model: nn.Module,
     anchor_features: torch.Tensor,

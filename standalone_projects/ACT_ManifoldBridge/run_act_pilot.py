@@ -37,6 +37,7 @@ from host_alignment_probe import (
 from utils.datasets import load_trials_for_dataset, make_trial_split, AEON_FIXED_SPLIT_SPECS
 from utils.evaluators import (
     build_model, fit_eval_minirocket, fit_eval_resnet1d, fit_eval_resnet1d_acl,
+    fit_eval_resnet1d_continue_ce,
     fit_eval_patchtst, fit_eval_timesnet, _get_dev
 )
 
@@ -291,6 +292,32 @@ def _run_gcg_acl_pipeline(
     warmup_model = res_warmup["model_obj"]
     warmup_state = {k: v.detach().cpu().clone() for k, v in warmup_model.state_dict().items()}
 
+    if acl_epochs > 0:
+        print(f"Matched-Budget CE Baseline: continue CE for epochs={acl_epochs}")
+        res_base = fit_eval_resnet1d_continue_ce(
+            X_train_raw,
+            y_train,
+            X_val_raw,
+            y_val,
+            X_test_raw,
+            y_test,
+            init_state_dict=warmup_state,
+            epochs=acl_epochs,
+            lr=lr,
+            batch_size=batch_size,
+            patience=patience,
+            device=args.device,
+            return_model_obj=False,
+        )
+    else:
+        res_base = {
+            "accuracy": res_warmup["accuracy"],
+            "macro_f1": res_warmup["macro_f1"],
+            "best_val_f1": res_warmup.get("best_val_f1", 0.0),
+            "best_val_loss": res_warmup.get("best_val_loss", float("inf")),
+            "stop_epoch": 0,
+        }
+
     print("Phase B Candidate Build: generating class-conditioned basis...")
     class_basis_bank, basis_meta = build_lraes_class_basis_bank(
         X_train_z,
@@ -415,8 +442,9 @@ def _run_gcg_acl_pipeline(
     ).mean().to_dict() if scored_rows else {}
 
     return {
-        "res_base": res_warmup,
+        "res_base": res_base,
         "res_act": res_acl,
+        "res_warmup": res_warmup,
         "avg_bridge": avg_bridge,
         "safe_radius_ratio_mean": candidate_meta.get("safe_radius_ratio_mean", 1.0),
         "manifold_margin_mean": candidate_meta.get("manifold_margin_mean", 0.0),
@@ -521,6 +549,7 @@ def run_experiment(dataset_name, args):
 
             res_base = pipeline_out["res_base"]
             res_act = pipeline_out["res_act"]
+            res_warmup = pipeline_out.get("res_warmup")
             avg_bridge = pipeline_out.get("avg_bridge", {})
 
             summary = {
@@ -528,6 +557,7 @@ def run_experiment(dataset_name, args):
                 "algo": args.algo, "model": args.model, "pipeline": args.pipeline,
                 "base_f1": res_base["macro_f1"], "act_f1": res_act["macro_f1"],
                 "gain": res_act["macro_f1"] - res_base["macro_f1"],
+                "warmup_f1": res_warmup["macro_f1"] if res_warmup is not None else np.nan,
                 
                 # Prop 1: Transport Fidelity
                 "transport_error_fro_mean": avg_bridge.get("transport_error_fro", 0),
@@ -545,9 +575,11 @@ def run_experiment(dataset_name, args):
                 
                 "base_stop_epoch": res_base.get("stop_epoch", 0),
                 "act_stop_epoch": res_act.get("stop_epoch", 0),
+                "warmup_stop_epoch": res_warmup.get("stop_epoch", 0) if res_warmup is not None else np.nan,
                 "f1_gain_pct": (res_act["macro_f1"] - res_base["macro_f1"]) / (res_base["macro_f1"] + 1e-7) * 100,
                 "base_best_val_f1": res_base.get("best_val_f1", 0),
                 "act_best_val_f1": res_act.get("best_val_f1", 0),
+                "warmup_best_val_f1": res_warmup.get("best_val_f1", 0) if res_warmup is not None else np.nan,
                 "selected_anchor_count": pipeline_out.get("selected_anchor_count", 0),
                 "selected_positive_count": pipeline_out.get("selected_positive_count", 0),
                 "candidate_total_count": pipeline_out.get("candidate_total_count", 0),
@@ -557,6 +589,8 @@ def run_experiment(dataset_name, args):
                 "acl_last_supcon_loss": res_act.get("last_supcon_loss", 0.0),
             }
             print(f"Base: {summary['base_f1']:.4f} | ACT: {summary['act_f1']:.4f} | Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)")
+            if res_warmup is not None:
+                print(f"Warm-up reference: {summary['warmup_f1']:.4f}")
             results.append(summary)
 
             # Optional: Save visualization data
