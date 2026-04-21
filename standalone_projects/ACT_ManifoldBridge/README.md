@@ -1,44 +1,106 @@
-# ACT: Augmented Covariance Transport (Reference Protocol v1)
+# ACT_ManifoldBridge
 
-This repository contains the official implementation of **Augmented Covariance Transport (ACT)**, a framework for geometric data augmentation via the SPD Manifold Bridge. This version serves as the **ACT v1 Reference Protocol**.
+`ACT_ManifoldBridge` is organized around a two-layer view of augmentation for multivariate time series:
 
-## 🚀 Theoretical Narrative: Manifold Transversality
-ACT reimagines data augmentation as a **preconditioning problem** in the latent geometric space. A key finding of the Reference Protocol is that ACT candidates exhibit a **Conflict Rate $\approx 0.5$**, implying they are **Transversal** to the current optimization path. 
+- `MBA-Core`: the primary geometric generator.
+- `ACT-Lite`: the minimal host-response feedback layer.
+- `ACT-Heavy`: the historical exploratory ACL protocol retained for analysis, not as the default path.
 
-- **ACT-Theory (Pure ACL)**: Acts as lateral representation regularization.
-- **ACT-Perform (Hybrid ACL)**: Injects semantic anchors to shape decision boundaries.
+## Core Narrative
 
-## 📐 Mathematical Formulation
+### MBA-Core
 
-### 1. Sample Representation (Manifold Embedding)
-Trials $x \in \mathbb{R}^{C \times T}$ are mapped to the SPD tangent space through matrix logarithms:
-$$z(x) = \text{vec}_{utri}(\log \Sigma(x) - \bar{L})$$
+`MBA-Core` is the method body of the repository. It keeps the clean geometric chain:
 
-### 2. Class-Conditioned LRAES Basis
-The class-conditional basis $U_c$ resolves the "expansion-risk" trade-off via generalized eigenvalue decomposition:
-$$M_c = (S_{\text{expand},c} + \lambda I) - \beta(S_{\text{risk},c} + \lambda I)$$
-$$U_c = [u_{c,1}, \dots, u_{c,K}] \leftarrow \text{top-K eigenvectors of } M_c$$
+`x -> z(x) -> z_cand -> x_cand`
 
-### 3. Geometric Bridge
-Candidates in the tangent space $\Delta z_{i,m}$ are realized back to raw signals via the Whitening-Coloring Bridge $B$:
-$$x_{i,m}^{\text{cand}} = B(x_i, \Sigma_i, \Sigma_{i,m}^{\text{cand}})$$
+In code, this means:
 
-### 4. ACL Scoring (Hard Positive Mining)
-We score candidates based on alignment $\Phi$, entropy shift $H$, and manifold fidelity $\tau$:
-$$s_{\text{hp}} = \text{Normalize}(\alpha \Phi + (1-\alpha) H) \cdot \exp(-\tau \cdot \mathcal{D}_{\text{LogEuc}})$$
+- trial records are embedded as static SPD / Log-Euclidean points
+- local directions come from `PIA` or `LRAES`
+- candidate points are generated in latent space
+- `bridge_single()` realizes candidates back into raw signals
 
----
+This is the default protocol exposed through:
 
-## ⚖️ Dual-Track Objectives
-1.  **Hybrid Mode (ACT-Perform)**: $\mathcal{L}_{\text{hybrid}} = \mathcal{L}_{\text{CE}}^{\text{orig}} + \mathcal{L}_{\text{CE}}^{\text{aug}} + \lambda_{\text{acl}}\mathcal{L}_{\text{SupCon}}$
-2.  **Pure Mode (ACT-Theory)**: $\mathcal{L}_{\text{pure}} = \mathcal{L}_{\text{CE}}^{\text{orig}} + \lambda_{\text{acl}}\mathcal{L}_{\text{SupCon}}$
-
-## 📂 Project Structure
-- `run_act_pilot.py`: Main entry for both tracks.
-- `core/`: Core geometry engine (Bridge, PIA, LRAES).
-- `scripts/`: Analytical tools for v2 taxonomy and failure taxonomy auditing.
-
-## ⚡ Quick Start
 ```bash
-python run_act_pilot.py --all-datasets --seeds 1,2,3 --pipeline gcg_acl --acl-aug-ce-mode selected
+python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset natops --pipeline mba --algo lraes --model resnet1d
+```
+
+### ACT-Lite
+
+`ACT-Lite` does not replace the generator. It only controls how much the host should use each MBA candidate during training.
+
+For each augmented sample `x_cand`, the current host computes a true-class margin:
+
+`margin(x_cand) = logit_y - max_{c!=y} logit_c`
+
+The augmentation utilization weight is then:
+
+`w_aug = sigmoid(margin / temperature)`
+
+Training stays in the plain classification regime:
+
+`L = L_ce(orig) + lambda_aug * mean(w_aug * CE(x_cand, y))`
+
+This path is exposed through:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset natops --pipeline mba_feedback --algo lraes --model resnet1d
+```
+
+Current scope:
+
+- `mba_feedback` supports `ResNet1D`
+- no projection head in the main path
+- no SupCon in the main path
+- no selected-positive admission logic in the main path
+
+### ACT-Heavy
+
+`gcg_acl` is kept as the historical exploratory protocol for contrastive candidate selection and ACL-style utilization. It remains runnable for auditing and retrospective comparison, but it is not the default experimental narrative.
+
+## Project Structure
+
+- [run_act_pilot.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/run_act_pilot.py): protocol entrypoint for `mba`, `mba_feedback`, and `gcg_acl`
+- [core/pia.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core/pia.py): direction-bank construction
+- [core/curriculum.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core/curriculum.py): latent candidate generation
+- [core/bridge.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core/bridge.py): whitening-coloring bridge
+- [act_lite_feedback.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/act_lite_feedback.py): minimal margin-based feedback utilities
+- [utils/evaluators.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/utils/evaluators.py): host training and evaluation
+
+## Practical Notes
+
+- `mba` remains the default CLI pipeline.
+- `mba_feedback` keeps the original supervision stream intact and adds only a weighted augmentation loss branch.
+- in `mba_feedback`, augmented batches are forwarded with frozen batch-stat updates so BatchNorm statistics continue to be driven by the original supervision stream only.
+- frozen ACL result packages under `results/acl_small_matrix_v1` and its follow-up directories are retained as historical reference and are not rewritten by the refactor.
+
+## Quick Start
+
+Run the baseline geometric generator:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset basicmotions --pipeline mba --algo lraes --model resnet1d \
+  --seeds 1 --epochs 30 --device cuda
+```
+
+Run the minimal feedback version:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset basicmotions --pipeline mba_feedback --algo lraes --model resnet1d \
+  --seeds 1 --epochs 30 --feedback-margin-temperature 1.0 \
+  --feedback-aug-weight 1.0 --device cuda
+```
+
+Run the historical ACL protocol:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset basicmotions --pipeline gcg_acl --algo lraes --model resnet1d \
+  --seeds 1 --epochs 30 --acl-warmup-epochs 10 --device cuda
 ```

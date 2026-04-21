@@ -14,10 +14,11 @@ import pandas as pd
 import json
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 # Local imports
 from core.bridge import bridge_single, logvec_to_spd
+from core.resnet1d import ResNet1DClassifier
 from core.pia import (
     FisherPIAConfig, LRAESConfig, 
     compute_fisher_pia_terms, build_lraes_direction_bank, build_lraes_class_basis_bank, build_pia_direction_bank
@@ -38,6 +39,7 @@ from utils.datasets import load_trials_for_dataset, make_trial_split, AEON_FIXED
 from utils.evaluators import (
     build_model, fit_eval_minirocket, fit_eval_resnet1d, fit_eval_resnet1d_acl,
     fit_eval_resnet1d_continue_ce,
+    fit_eval_resnet1d_weighted_aug_ce,
     fit_eval_patchtst, fit_eval_timesnet, _get_dev
 )
 
@@ -112,24 +114,52 @@ def _build_selected_positive_map(selected_rows: List[Dict[str, object]]) -> Dict
     return positive_map
 
 
-def _run_mba_pipeline(
+def _fit_host_model(
     *,
     args,
-    seed: int,
-    dataset_name: str,
-    X_train_raw: np.ndarray,
-    y_train: np.ndarray,
-    X_val_raw: np.ndarray | None,
-    y_val: np.ndarray | None,
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
     X_test_raw: np.ndarray,
     y_test: np.ndarray,
-    X_train_z: np.ndarray,
-    train_recs: List[TrialRecord],
-    mean_log: np.ndarray,
     epochs: int,
     lr: float,
     batch_size: int,
     patience: int,
+    return_model_obj: bool = False,
+    loader_seed: Optional[int] = None,
+) -> Dict[str, object]:
+    kwargs = {
+        "epochs": epochs,
+        "lr": lr,
+        "batch_size": batch_size,
+        "patience": patience,
+        "device": args.device,
+        "return_model_obj": return_model_obj,
+    }
+    if args.model == "resnet1d":
+        kwargs["loader_seed"] = loader_seed
+        return fit_eval_resnet1d(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
+    if args.model == "patchtst":
+        kwargs["loader_seed"] = loader_seed
+        return fit_eval_patchtst(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
+    if args.model == "timesnet":
+        kwargs["loader_seed"] = loader_seed
+        return fit_eval_timesnet(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
+
+    m = build_model(n_kernels=args.n_kernels, random_state=loader_seed or 42)
+    return fit_eval_minirocket(m, X_tr, y_tr, X_test_raw, y_test)
+
+
+def _build_mba_realized_augmentations(
+    *,
+    args,
+    seed: int,
+    X_train_z: np.ndarray,
+    y_train: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
 ) -> Dict[str, object]:
     if args.algo == "lraes":
         W, _ = build_lraes_direction_bank(
@@ -145,33 +175,10 @@ def _run_mba_pipeline(
     effective_k = W.shape[0]
     print(f"Requested K: {args.k_dir} | Effective K: {effective_k} | Classes: {len(np.unique(y_train))}")
 
-    def _fit(X_tr, y_tr, is_baseline=False):
-        return_model = args.theory_diagnostics and is_baseline
-        kwargs = {
-            "epochs": epochs,
-            "lr": lr,
-            "batch_size": batch_size,
-            "patience": patience,
-            "device": args.device,
-            "return_model_obj": return_model,
-        }
-        if args.model == "resnet1d":
-            return fit_eval_resnet1d(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
-        if args.model == "patchtst":
-            return fit_eval_patchtst(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
-        if args.model == "timesnet":
-            return fit_eval_timesnet(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
-
-        m = build_model(n_kernels=args.n_kernels, random_state=seed)
-        return fit_eval_minirocket(m, X_tr, y_tr, X_test_raw, y_test)
-
-    print("Fitting Baseline...")
-    res_base = _fit(X_train_raw, y_train, is_baseline=True)
-
     gamma_budget = np.full((effective_k,), args.pia_gamma)
     probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
     eta_val = 0.5 if not args.disable_safe_step else None
-    z_aug, y_aug, tid_aug, z_src, dir_ids, aug_meta = build_curriculum_aug_candidates(
+    z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
         X_train_z,
         y_train,
         np.array([r.tid for r in train_recs]),
@@ -194,50 +201,248 @@ def _run_mba_pipeline(
             torch.from_numpy(src.sigma_orig),
             torch.from_numpy(sigma_aug),
         )
-        aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i])})
+        aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
         bridge_metrics.append(meta_b)
 
-    if len(aug_trials) > 0:
-        X_mix = np.concatenate([X_train_raw, np.stack([t["x"] for t in aug_trials])])
-        y_mix = np.concatenate([y_train, np.array([t["y"] for t in aug_trials])])
+    X_aug_raw = np.stack([t["x"] for t in aug_trials]) if aug_trials else None
+    y_aug_np = np.array([t["y"] for t in aug_trials], dtype=np.int64) if aug_trials else None
+    avg_bridge = pd.DataFrame(bridge_metrics).mean().to_dict() if bridge_metrics else {}
+    return {
+        "effective_k": effective_k,
+        "z_aug": z_aug,
+        "y_aug": y_aug,
+        "tid_aug": tid_aug,
+        "aug_trials": aug_trials,
+        "X_aug_raw": X_aug_raw,
+        "y_aug_np": y_aug_np,
+        "tid_to_rec": tid_to_rec,
+        "avg_bridge": avg_bridge,
+        "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
+        "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
+    }
+
+
+def _run_analysis_probe(
+    *,
+    args,
+    model_obj,
+    tid_aug: np.ndarray,
+    aug_trials: List[Dict[str, object]],
+    tid_to_rec: Dict[str, TrialRecord],
+) -> Dict[str, float]:
+    alignment_metrics = {"host_geom_cosine_mean": 0.0, "host_conflict_rate": 0.0}
+    if not args.theory_diagnostics or args.model == "minirocket" or model_obj is None or not aug_trials:
+        return alignment_metrics
+
+    print("Running Theory Diagnostics (Host Alignment Probe)...")
+    with torch.enable_grad():
+        aligns = []
+        probe_idx = np.random.choice(len(aug_trials), min(20, len(aug_trials)), replace=False)
+        for i in probe_idx:
+            src = tid_to_rec[tid_aug[i]]
+            x_o = torch.from_numpy(src.x_raw).unsqueeze(0).float()
+            y_o = torch.tensor([src.y]).long()
+            x_a = torch.from_numpy(aug_trials[i]["x"]).unsqueeze(0).float()
+
+            probe = compute_gradient_alignment(model_obj, x_o, y_o, x_a, device=args.device)
+            aligns.append(probe)
+
+        if aligns:
+            alignment_metrics["host_geom_cosine_mean"] = float(np.mean([p["alignment_cosine"] for p in aligns]))
+            alignment_metrics["host_conflict_rate"] = float(np.mean([p["is_conflict"] for p in aligns]))
+    return alignment_metrics
+
+
+def _run_mba_pipeline(
+    *,
+    args,
+    seed: int,
+    dataset_name: str,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: np.ndarray | None,
+    y_val: np.ndarray | None,
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    aug_out = _build_mba_realized_augmentations(
+        args=args,
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+    )
+
+    print("Fitting Baseline...")
+    res_base = _fit_host_model(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=args.theory_diagnostics,
+    )
+
+    if aug_out["aug_trials"]:
+        X_mix = np.concatenate([X_train_raw, aug_out["X_aug_raw"]])
+        y_mix = np.concatenate([y_train, aug_out["y_aug_np"]])
     else:
         X_mix, y_mix = X_train_raw, y_train
 
-    alignment_metrics = {"host_geom_cosine_mean": 0.0, "host_conflict_rate": 0.0}
-    if args.theory_diagnostics and args.model != "minirocket" and "model_obj" in res_base:
-        print("Running Theory Diagnostics (Host Alignment Probe)...")
-        with torch.enable_grad():
-            aligns = []
-            probe_idx = np.random.choice(len(aug_trials), min(20, len(aug_trials)), replace=False)
-            for i in probe_idx:
-                src = tid_to_rec[tid_aug[i]]
-                x_o = torch.from_numpy(src.x_raw).unsqueeze(0).float()
-                y_o = torch.tensor([src.y]).long()
-                x_a = torch.from_numpy(aug_trials[i]["x"]).unsqueeze(0).float()
-
-                probe = compute_gradient_alignment(res_base["model_obj"], x_o, y_o, x_a, device=args.device)
-                aligns.append(probe)
-
-            alignment_metrics["host_geom_cosine_mean"] = float(np.mean([p["alignment_cosine"] for p in aligns])) if aligns else 0.0
-            alignment_metrics["host_conflict_rate"] = float(np.mean([p["is_conflict"] for p in aligns])) if aligns else 0.0
+    alignment_metrics = _run_analysis_probe(
+        args=args,
+        model_obj=res_base.get("model_obj"),
+        tid_aug=aug_out["tid_aug"],
+        aug_trials=aug_out["aug_trials"],
+        tid_to_rec=aug_out["tid_to_rec"],
+    )
 
     print(f"Fitting ACT Model ({len(X_mix)} samples)...")
-    res_act = _fit(X_mix, y_mix, is_baseline=False)
-    avg_bridge = pd.DataFrame(bridge_metrics).mean().to_dict() if bridge_metrics else {}
+    res_act = _fit_host_model(
+        args=args,
+        X_tr=X_mix,
+        y_tr=y_mix,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=False,
+    )
 
     return {
         "res_base": res_base,
         "res_act": res_act,
-        "avg_bridge": avg_bridge,
-        "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
-        "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
+        "avg_bridge": aug_out["avg_bridge"],
+        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
+        "manifold_margin_mean": aug_out["manifold_margin_mean"],
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
         "viz_payload": {
-            "Z_aug": z_aug,
-            "y_aug": y_aug,
-            "X_aug_raw": np.stack([t["x"] for t in aug_trials[:20]]) if aug_trials else None,
+            "Z_aug": aug_out["z_aug"],
+            "y_aug": aug_out["y_aug"],
+            "X_aug_raw": np.stack([t["x"] for t in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
         },
+    }
+
+
+def _run_mba_feedback_pipeline(
+    *,
+    args,
+    seed: int,
+    dataset_name: str,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: np.ndarray | None,
+    y_val: np.ndarray | None,
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    if args.model != "resnet1d":
+        raise ValueError("mba_feedback pipeline currently supports only model=resnet1d")
+
+    aug_out = _build_mba_realized_augmentations(
+        args=args,
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+    )
+
+    in_channels = X_train_raw.shape[1]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(seed))
+        init_model = ResNet1DClassifier(in_channels, num_classes)
+    init_state = {k: v.detach().cpu().clone() for k, v in init_model.state_dict().items()}
+
+    print("Fitting Matched-Budget CE Baseline...")
+    res_base = fit_eval_resnet1d_continue_ce(
+        X_train_raw,
+        y_train,
+        X_val_raw,
+        y_val,
+        X_test_raw,
+        y_test,
+        init_state_dict=init_state,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=args.device,
+        return_model_obj=args.theory_diagnostics,
+        loader_seed=seed,
+    )
+
+    print(f"Fitting ACT-Lite Model ({len(X_train_raw)} orig + {0 if aug_out['X_aug_raw'] is None else len(aug_out['X_aug_raw'])} aug)...")
+    res_act = fit_eval_resnet1d_weighted_aug_ce(
+        X_train_raw,
+        y_train,
+        aug_out["X_aug_raw"],
+        aug_out["y_aug_np"],
+        X_val_raw,
+        y_val,
+        X_test_raw,
+        y_test,
+        init_state_dict=init_state,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=args.device,
+        feedback_margin_temperature=args.feedback_margin_temperature,
+        feedback_aug_weight=args.feedback_aug_weight,
+        loader_seed=seed,
+        return_model_obj=False,
+    )
+
+    alignment_metrics = _run_analysis_probe(
+        args=args,
+        model_obj=res_base.get("model_obj"),
+        tid_aug=aug_out["tid_aug"],
+        aug_trials=aug_out["aug_trials"],
+        tid_to_rec=aug_out["tid_to_rec"],
+    )
+
+    return {
+        "res_base": res_base,
+        "res_act": res_act,
+        "avg_bridge": aug_out["avg_bridge"],
+        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
+        "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
+        "host_conflict_rate": alignment_metrics["host_conflict_rate"],
+        "feedback_weight_mean": res_act.get("feedback_weight_mean", 0.0),
+        "feedback_weight_std": res_act.get("feedback_weight_std", 0.0),
+        "feedback_reject_frac": res_act.get("feedback_reject_frac", 0.0),
+        "last_orig_ce_loss": res_act.get("last_orig_ce_loss", 0.0),
+        "last_weighted_aug_ce_loss": res_act.get("last_weighted_aug_ce_loss", 0.0),
+        "last_aug_margin_mean": res_act.get("last_aug_margin_mean", 0.0),
     }
 
 
@@ -540,6 +745,25 @@ def run_experiment(dataset_name, args):
                     batch_size=batch_size,
                     patience=patience,
                 )
+            elif args.pipeline == "mba_feedback":
+                pipeline_out = _run_mba_feedback_pipeline(
+                    args=args,
+                    seed=seed,
+                    dataset_name=dataset_name,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                )
             else:
                 pipeline_out = _run_mba_pipeline(
                     args=args,
@@ -603,6 +827,12 @@ def run_experiment(dataset_name, args):
                 "zero_weight_fraction": pipeline_out.get("zero_weight_fraction", 0.0),
                 "acl_last_ce_loss": res_act.get("last_ce_loss", 0.0),
                 "acl_last_supcon_loss": res_act.get("last_supcon_loss", 0.0),
+                "feedback_weight_mean": pipeline_out.get("feedback_weight_mean", res_act.get("feedback_weight_mean", 0.0)),
+                "feedback_weight_std": pipeline_out.get("feedback_weight_std", res_act.get("feedback_weight_std", 0.0)),
+                "feedback_reject_frac": pipeline_out.get("feedback_reject_frac", res_act.get("feedback_reject_frac", 0.0)),
+                "last_orig_ce_loss": pipeline_out.get("last_orig_ce_loss", res_act.get("last_orig_ce_loss", 0.0)),
+                "last_weighted_aug_ce_loss": pipeline_out.get("last_weighted_aug_ce_loss", res_act.get("last_weighted_aug_ce_loss", 0.0)),
+                "last_aug_margin_mean": pipeline_out.get("last_aug_margin_mean", res_act.get("last_aug_margin_mean", 0.0)),
             }
             print(f"Base: {summary['base_f1']:.4f} | ACT: {summary['act_f1']:.4f} | Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)")
             if res_warmup is not None:
@@ -638,10 +868,10 @@ def run_experiment(dataset_name, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ACT Full-Scale sweep")
+    parser = argparse.ArgumentParser(description="ACT_ManifoldBridge protocol runner")
     parser.add_argument("--dataset", type=str, default="natops")
     parser.add_argument("--all-datasets", action="store_true")
-    parser.add_argument("--pipeline", type=str, choices=["mba", "gcg_acl"], default="mba")
+    parser.add_argument("--pipeline", type=str, choices=["mba", "mba_feedback", "gcg_acl"], default="mba")
     parser.add_argument("--algo", type=str, choices=["pia", "lraes"], default="lraes")
     parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
     parser.add_argument("--host-config", type=str, choices=["none", "resnet1d_default", "patchtst_default", "timesnet_default"], default="none")
@@ -669,6 +899,8 @@ def main():
                         help="Pure ACL (none) vs Hybrid ACL (selected)")
     parser.add_argument("--acl-soft-gating", action="store_true", help="Enable Alignment-Guided Soft CE Gating")
     parser.add_argument("--acl-gating-tau", type=float, default=0.0, help="Tau threshold for soft gating")
+    parser.add_argument("--feedback-margin-temperature", type=float, default=1.0)
+    parser.add_argument("--feedback-aug-weight", type=float, default=1.0)
     parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
     args = parser.parse_args()
 

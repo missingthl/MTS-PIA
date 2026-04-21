@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from aeon.classification.convolution_based import MultiRocketHydraClassifier
 
 # Local imports
+from act_lite_feedback import compute_margin_feedback
 from core.resnet1d import ResNet1DClassifier
 from core.patchtst import PatchTST
 from core.timesnet import TimesNet
@@ -83,6 +85,42 @@ class IndexedTensorDataset(Dataset):
     def __getitem__(self, idx: int):
         return self.X[idx], self.y[idx], int(idx)
 
+
+def _make_tensor_loader(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    indexed: bool = False,
+    seed: Optional[int] = None,
+) -> DataLoader:
+    if indexed:
+        dataset = IndexedTensorDataset(X, y)
+    else:
+        dataset = TensorDataset(torch.from_numpy(X).float(), torch.from_numpy(y).long())
+
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+    }
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(int(seed))
+        kwargs["generator"] = generator
+    return DataLoader(dataset, **kwargs)
+
+
+@contextmanager
+def _temporary_eval_mode(model: nn.Module):
+    was_training = model.training
+    model.eval()
+    try:
+        yield
+    finally:
+        if was_training:
+            model.train()
+
 def _evaluate(model, loader, dev, criterion):
     model.eval()
     all_preds = []
@@ -149,22 +187,39 @@ def fit_eval_pytorch_model(
     patience=10,
     device="cuda",
     use_cosine_annealing=False,
-    return_model_obj=False
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
 ) -> Dict[str, float]:
     dev = _get_dev(device)
     model.to(dev)
-    
-    train_ds = TensorDataset(torch.from_numpy(X_train).float(), torch.from_numpy(y_train).long())
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    
+
+    train_loader = _make_tensor_loader(
+        X_train,
+        y_train,
+        batch_size=batch_size,
+        shuffle=True,
+        indexed=False,
+        seed=loader_seed,
+    )
+
     val_loader = None
     if X_val is not None:
-        val_ds = TensorDataset(torch.from_numpy(X_val).float(), torch.from_numpy(y_val).long())
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    
-    test_ds = TensorDataset(torch.from_numpy(X_test).float(), torch.from_numpy(y_test).long())
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    
+        val_loader = _make_tensor_loader(
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            shuffle=False,
+            indexed=False,
+        )
+
+    test_loader = _make_tensor_loader(
+        X_test,
+        y_test,
+        batch_size=batch_size,
+        shuffle=False,
+        indexed=False,
+    )
+
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
     
@@ -246,6 +301,7 @@ def fit_eval_resnet1d_acl(
     soft_gating: bool = False,
     gating_tau: float = 0.0,
     return_model_obj: bool = False,
+    loader_seed: Optional[int] = None,
 ) -> Dict[str, float]:
     in_channels = X_train.shape[1]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
@@ -255,16 +311,32 @@ def fit_eval_resnet1d_acl(
     dev = _get_dev(device)
     model.to(dev)
 
-    train_ds = IndexedTensorDataset(X_train, y_train)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    train_loader = _make_tensor_loader(
+        X_train,
+        y_train,
+        batch_size=batch_size,
+        shuffle=True,
+        indexed=True,
+        seed=loader_seed,
+    )
 
     val_loader = None
     if X_val is not None:
-        val_ds = TensorDataset(torch.from_numpy(X_val).float(), torch.from_numpy(y_val).long())
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        val_loader = _make_tensor_loader(
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            shuffle=False,
+            indexed=False,
+        )
 
-    test_ds = TensorDataset(torch.from_numpy(X_test).float(), torch.from_numpy(y_test).long())
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+    test_loader = _make_tensor_loader(
+        X_test,
+        y_test,
+        batch_size=batch_size,
+        shuffle=False,
+        indexed=False,
+    )
 
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
@@ -394,6 +466,7 @@ def fit_eval_resnet1d_continue_ce(
     patience: int = 10,
     device: str = "cuda",
     return_model_obj: bool = False,
+    loader_seed: Optional[int] = None,
 ) -> Dict[str, float]:
     in_channels = X_train.shape[1]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
@@ -413,7 +486,194 @@ def fit_eval_resnet1d_continue_ce(
         patience=patience,
         device=device,
         return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
     )
+
+
+def fit_eval_resnet1d_weighted_aug_ce(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_aug: Optional[np.ndarray],
+    y_aug: Optional[np.ndarray],
+    X_val: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    *,
+    init_state_dict: Dict[str, torch.Tensor],
+    epochs: int = 30,
+    lr: float = 1e-3,
+    batch_size: int = 64,
+    patience: int = 10,
+    device: str = "cuda",
+    feedback_margin_temperature: float = 1.0,
+    feedback_aug_weight: float = 1.0,
+    loader_seed: Optional[int] = None,
+    return_model_obj: bool = False,
+) -> Dict[str, float]:
+    in_channels = X_train.shape[1]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    model = ResNet1DClassifier(in_channels, num_classes)
+    model.load_state_dict(copy.deepcopy(init_state_dict))
+
+    dev = _get_dev(device)
+    model.to(dev)
+
+    orig_loader = _make_tensor_loader(
+        X_train,
+        y_train,
+        batch_size=batch_size,
+        shuffle=True,
+        indexed=True,
+        seed=loader_seed,
+    )
+
+    aug_loader = None
+    if X_aug is not None and y_aug is not None and len(X_aug) > 0:
+        aug_seed = None if loader_seed is None else int(loader_seed) + 100_000
+        aug_loader = _make_tensor_loader(
+            X_aug,
+            y_aug,
+            batch_size=batch_size,
+            shuffle=True,
+            indexed=False,
+            seed=aug_seed,
+        )
+
+    val_loader = None
+    if X_val is not None:
+        val_loader = _make_tensor_loader(
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            shuffle=False,
+            indexed=False,
+        )
+
+    test_loader = _make_tensor_loader(
+        X_test,
+        y_test,
+        batch_size=batch_size,
+        shuffle=False,
+        indexed=False,
+    )
+
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss()
+    early_stopping = EarlyStopping(patience=patience, mode="max")
+
+    best_val_f1 = 0.0
+    best_val_loss = float("inf")
+    stop_epoch = epochs
+    last_orig_ce_loss = 0.0
+    last_weighted_aug_ce_loss = 0.0
+    feedback_weight_mean = 0.0
+    feedback_weight_std = 0.0
+    feedback_reject_frac = 0.0
+    last_aug_margin_mean = 0.0
+
+    for epoch in range(max(0, int(epochs))):
+        model.train()
+        running_orig_loss = 0.0
+        running_aug_loss = 0.0
+        batch_count = 0
+        epoch_weights: List[np.ndarray] = []
+        epoch_margins: List[np.ndarray] = []
+        aug_iter = iter(aug_loader) if aug_loader is not None else None
+
+        for bx, by, _ in orig_loader:
+            bx = bx.to(dev, non_blocking=True)
+            by = by.to(dev, non_blocking=True)
+
+            optimizer.zero_grad()
+            orig_features = model.encode(bx)
+            orig_logits = model.classify(orig_features)
+            loss_orig = criterion(orig_logits, by)
+            loss_aug = torch.tensor(0.0, device=dev)
+
+            if aug_iter is not None:
+                try:
+                    ax, ay = next(aug_iter)
+                except StopIteration:
+                    aug_iter = iter(aug_loader)
+                    ax, ay = next(aug_iter)
+
+                ax = ax.to(dev, non_blocking=True)
+                ay = ay.to(dev, non_blocking=True)
+
+                # Keep BN statistics tied to the original supervision stream only.
+                with _temporary_eval_mode(model):
+                    aug_features = model.encode(ax)
+                    aug_logits = model.classify(aug_features)
+
+                aug_margins, aug_weights = compute_margin_feedback(
+                    aug_logits,
+                    ay,
+                    temperature=feedback_margin_temperature,
+                )
+                raw_aug_ce = F.cross_entropy(aug_logits, ay, reduction="none")
+                loss_aug = float(feedback_aug_weight) * (aug_weights * raw_aug_ce).mean()
+
+                epoch_weights.append(aug_weights.detach().cpu().numpy())
+                epoch_margins.append(aug_margins.detach().cpu().numpy())
+
+            loss = loss_orig + loss_aug
+            loss.backward()
+            optimizer.step()
+
+            running_orig_loss += float(loss_orig.item())
+            running_aug_loss += float(loss_aug.item())
+            batch_count += 1
+
+        last_orig_ce_loss = running_orig_loss / max(1, batch_count)
+        last_weighted_aug_ce_loss = running_aug_loss / max(1, batch_count)
+
+        if epoch_weights:
+            flat_weights = np.concatenate(epoch_weights)
+            flat_margins = np.concatenate(epoch_margins)
+            feedback_weight_mean = float(np.mean(flat_weights))
+            feedback_weight_std = float(np.std(flat_weights))
+            feedback_reject_frac = float(np.mean(flat_weights <= 0.5))
+            last_aug_margin_mean = float(np.mean(flat_margins))
+        else:
+            feedback_weight_mean = 0.0
+            feedback_weight_std = 0.0
+            feedback_reject_frac = 0.0
+            last_aug_margin_mean = 0.0
+
+        if val_loader:
+            v_loss, _, v_f1 = _evaluate(model, val_loader, dev, criterion)
+            if v_f1 > best_val_f1:
+                best_val_f1 = v_f1
+                best_val_loss = v_loss
+
+            early_stopping(v_f1, model)
+            if early_stopping.early_stop:
+                stop_epoch = epoch + 1
+                break
+        else:
+            stop_epoch = epoch + 1
+
+    if early_stopping.best_model_state:
+        model.load_state_dict(early_stopping.best_model_state)
+
+    _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
+    res = {
+        "accuracy": t_acc,
+        "macro_f1": t_f1,
+        "best_val_f1": best_val_f1,
+        "best_val_loss": best_val_loss,
+        "stop_epoch": stop_epoch,
+        "feedback_weight_mean": float(feedback_weight_mean),
+        "feedback_weight_std": float(feedback_weight_std),
+        "feedback_reject_frac": float(feedback_reject_frac),
+        "last_orig_ce_loss": float(last_orig_ce_loss),
+        "last_weighted_aug_ce_loss": float(last_weighted_aug_ce_loss),
+        "last_aug_margin_mean": float(last_aug_margin_mean),
+    }
+    if return_model_obj:
+        res["model_obj"] = model
+    return res
 
 
 def _compute_acl_supcon_loss(
@@ -481,22 +741,110 @@ def _compute_acl_supcon_loss(
     )
     return supcon_loss, (pos_features, pos_labels, aug_weights_t)
 
-def fit_eval_resnet1d(X_train, y_train, X_val, y_val, X_test, y_test, epochs=30, lr=1e-3, batch_size=64, patience=10, device="cuda", return_model_obj=False):
+def fit_eval_resnet1d(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=30,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
     in_channels = X_train.shape[1]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = ResNet1DClassifier(in_channels, num_classes)
-    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, return_model_obj=return_model_obj)
+    return fit_eval_pytorch_model(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs,
+        lr,
+        batch_size,
+        patience,
+        device,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
 
-def fit_eval_patchtst(X_train, y_train, X_val, y_val, X_test, y_test, epochs=100, lr=5e-4, batch_size=64, patience=15, device="cuda", return_model_obj=False):
+def fit_eval_patchtst(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=5e-4,
+    batch_size=64,
+    patience=15,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
     in_channels = X_train.shape[1]
     seq_len = X_train.shape[2]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = PatchTST(in_channels, seq_len, num_classes)
-    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, use_cosine_annealing=True, return_model_obj=return_model_obj)
+    return fit_eval_pytorch_model(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs,
+        lr,
+        batch_size,
+        patience,
+        device,
+        use_cosine_annealing=True,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
 
-def fit_eval_timesnet(X_train, y_train, X_val, y_val, X_test, y_test, epochs=100, lr=5e-4, batch_size=32, patience=15, device="cuda", return_model_obj=False):
+def fit_eval_timesnet(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=5e-4,
+    batch_size=32,
+    patience=15,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
     in_channels = X_train.shape[1]
     seq_len = X_train.shape[2]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = TimesNet(in_channels, seq_len, num_classes)
-    return fit_eval_pytorch_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, lr, batch_size, patience, device, return_model_obj=return_model_obj)
+    return fit_eval_pytorch_model(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs,
+        lr,
+        batch_size,
+        patience,
+        device,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
