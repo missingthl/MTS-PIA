@@ -394,9 +394,16 @@ def _run_gcg_acl_pipeline(
     )
     candidate_csv, selected_csv = _save_acl_audits(args.out_root, dataset_name, seed, scored_rows, selected_rows)
     selected_positive_map = _build_selected_positive_map(selected_rows)
+    
+    # Build alignment map for soft gating
+    selected_alignment_map: Dict[int, List[float]] = {}
+    for row in selected_rows:
+        anchor_idx = int(row["anchor_index"])
+        align_score = float(row.get("alignment_cosine", 1.0))
+        selected_alignment_map.setdefault(anchor_idx, []).append(align_score)
 
     if acl_epochs > 0:
-        print(f"Phase C ACL Fine Alignment: epochs={acl_epochs} | selected anchors={len(selected_positive_map)}")
+        print(f"Phase C ACL Fine Alignment: epochs={acl_epochs} | selected anchors={len(selected_positive_map)} | soft-gating={args.acl_soft_gating}")
         res_acl = fit_eval_resnet1d_acl(
             X_train_raw,
             y_train,
@@ -414,6 +421,9 @@ def _run_gcg_acl_pipeline(
             acl_temperature=args.acl_temperature,
             acl_loss_weight=args.acl_loss_weight,
             aug_ce_mode=args.acl_aug_ce_mode,
+            selected_alignment_map=selected_alignment_map,
+            soft_gating=args.acl_soft_gating,
+            gating_tau=args.acl_gating_tau,
             return_model_obj=False,
         )
     else:
@@ -459,6 +469,8 @@ def _run_gcg_acl_pipeline(
         "candidate_csv": candidate_csv,
         "selected_csv": selected_csv,
         "basis_meta": basis_meta,
+        "mean_aug_ce_weight": res_acl.get("mean_aug_ce_weight", 1.0),
+        "zero_weight_fraction": res_acl.get("zero_weight_fraction", 0.0),
     }
 
 
@@ -587,6 +599,8 @@ def run_experiment(dataset_name, args):
                 "candidate_total_count": pipeline_out.get("candidate_total_count", 0),
                 "hard_positive_score_mean": pipeline_out.get("hard_positive_score_mean", 0.0),
                 "fidelity_score_mean": pipeline_out.get("fidelity_score_mean", 0.0),
+                "mean_aug_ce_weight": pipeline_out.get("mean_aug_ce_weight", 1.0),
+                "zero_weight_fraction": pipeline_out.get("zero_weight_fraction", 0.0),
                 "acl_last_ce_loss": res_act.get("last_ce_loss", 0.0),
                 "acl_last_supcon_loss": res_act.get("last_supcon_loss", 0.0),
             }
@@ -653,6 +667,8 @@ def main():
     parser.add_argument("--acl-positives-per-anchor", type=int, choices=[1, 2], default=1)
     parser.add_argument("--acl-aug-ce-mode", type=str, choices=["none", "selected"], default="selected", 
                         help="Pure ACL (none) vs Hybrid ACL (selected)")
+    parser.add_argument("--acl-soft-gating", action="store_true", help="Enable Alignment-Guided Soft CE Gating")
+    parser.add_argument("--acl-gating-tau", type=float, default=0.0, help="Tau threshold for soft gating")
     parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
     args = parser.parse_args()
 

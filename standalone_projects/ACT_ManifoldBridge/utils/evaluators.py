@@ -242,6 +242,9 @@ def fit_eval_resnet1d_acl(
     acl_temperature: float = 0.07,
     acl_loss_weight: float = 0.2,
     aug_ce_mode: str = "selected",
+    selected_alignment_map: Optional[Dict[int, List[float]]] = None,
+    soft_gating: bool = False,
+    gating_tau: float = 0.0,
     return_model_obj: bool = False,
 ) -> Dict[str, float]:
     in_channels = X_train.shape[1]
@@ -272,6 +275,9 @@ def fit_eval_resnet1d_acl(
     stop_epoch = epochs
     last_supcon_loss = 0.0
     last_ce_loss = 0.0
+    running_gating_weight = 0.0
+    running_zero_weight_count = 0
+    total_aug_samples = 0
 
     for epoch in range(max(0, int(epochs))):
         model.train()
@@ -298,14 +304,29 @@ def fit_eval_resnet1d_acl(
                 selected_positive_map,
                 dev,
                 temperature=acl_temperature,
+                selected_alignment_map=selected_alignment_map,
             )
             
             loss_cls_aug = torch.tensor(0.0, device=dev)
             if aug_info is not None and aug_ce_mode == "selected":
-                # aug_info: (aug_features, aug_labels)
-                aug_feat, aug_lab = aug_info
+                # aug_info: (aug_features, aug_labels, Optional[aug_weights])
+                aug_feat, aug_lab, aug_weights = aug_info
                 aug_logits = model.classify(aug_feat)
-                loss_cls_aug = criterion(aug_logits, aug_lab)
+                
+                if soft_gating and aug_weights is not None:
+                    # Apply alignment-guided soft gating: w = max(0, (a - tau)/(1 - tau))
+                    w = torch.clamp((aug_weights - gating_tau) / (1.0 - gating_tau + 1e-8), min=0.0, max=1.0)
+                    
+                    # Log metrics
+                    running_gating_weight += float(w.sum().item())
+                    running_zero_weight_count += int((w <= 1e-5).sum().item())
+                    total_aug_samples += int(w.shape[0])
+                    
+                    # Sample-wise weighted CE
+                    raw_ce = F.cross_entropy(aug_logits, aug_lab, reduction='none')
+                    loss_cls_aug = (raw_ce * w).mean()
+                else:
+                    loss_cls_aug = criterion(aug_logits, aug_lab)
 
             # Combined Loss: CE(orig) + [CE(aug) if selected] + alpha * SupCon(orig, aug)
             loss_cls = loss_cls_orig + loss_cls_aug
@@ -348,6 +369,8 @@ def fit_eval_resnet1d_acl(
         "last_supcon_loss": float(last_supcon_loss),
         "selected_anchor_count": int(sum(1 for v in selected_positive_map.values() if v)),
         "selected_positive_count": int(sum(len(v) for v in selected_positive_map.values())),
+        "mean_aug_ce_weight": float(running_gating_weight / max(1, total_aug_samples)) if soft_gating else 1.0,
+        "zero_weight_fraction": float(running_zero_weight_count / max(1, total_aug_samples)) if soft_gating else 0.0,
     }
     if return_model_obj:
         res["model_obj"] = model
@@ -400,23 +423,34 @@ def _compute_acl_supcon_loss(
     dev: torch.device,
     *,
     temperature: float,
-) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+    selected_alignment_map: Optional[Dict[int, List[float]]] = None,
+) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]]:
     """
-    Returns (supcon_loss, (aug_enc_features, aug_labels))
+    Returns (supcon_loss, (aug_enc_features, aug_labels, Optional[aug_weights]))
     """
     selected_local_idx: List[int] = []
     positive_arrays: List[np.ndarray] = []
     positive_labels: List[int] = []
+    positive_weights: List[float] = []
 
     for local_idx, anchor_idx in enumerate(anchor_indices):
         pos_list = selected_positive_map.get(int(anchor_idx), [])
         if not pos_list:
             continue
+        
+        weight_list = None
+        if selected_alignment_map is not None:
+            weight_list = selected_alignment_map.get(int(anchor_idx), [])
+
         selected_local_idx.append(int(local_idx))
         label_val = int(anchor_labels[local_idx].item())
-        for pos_x in pos_list:
+        for i, pos_x in enumerate(pos_list):
             positive_arrays.append(np.asarray(pos_x, dtype=np.float32))
             positive_labels.append(label_val)
+            if weight_list is not None and i < len(weight_list):
+                positive_weights.append(float(weight_list[i]))
+            else:
+                positive_weights.append(1.0)
 
     if not selected_local_idx or not positive_arrays:
         return anchor_features.new_zeros(()), None
@@ -428,6 +462,10 @@ def _compute_acl_supcon_loss(
     pos_features = model.encode(x_pos)
     pos_proj = model.project(pos_features)
     pos_labels = torch.tensor(positive_labels, device=dev, dtype=torch.long)
+    
+    aug_weights_t = None
+    if positive_weights:
+        aug_weights_t = torch.tensor(positive_weights, device=dev, dtype=torch.float)
 
     supcon_features = torch.cat([anchor_proj, pos_proj], dim=0)
     supcon_labels = torch.cat([anchor_sup_labels, pos_labels], dim=0)
@@ -437,7 +475,7 @@ def _compute_acl_supcon_loss(
         supcon_labels,
         temperature=temperature,
     )
-    return supcon_loss, (pos_features, pos_labels)
+    return supcon_loss, (pos_features, pos_labels, aug_weights_t)
 
 def fit_eval_resnet1d(X_train, y_train, X_val, y_val, X_test, y_test, epochs=30, lr=1e-3, batch_size=64, patience=10, device="cuda", return_model_obj=False):
     in_channels = X_train.shape[1]
