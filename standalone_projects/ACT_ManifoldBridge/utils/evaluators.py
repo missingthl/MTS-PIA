@@ -241,6 +241,7 @@ def fit_eval_resnet1d_acl(
     device: str = "cuda",
     acl_temperature: float = 0.07,
     acl_loss_weight: float = 0.2,
+    aug_ce_mode: str = "selected",
     return_model_obj: bool = False,
 ) -> Dict[str, float]:
     in_channels = X_train.shape[1]
@@ -300,13 +301,13 @@ def fit_eval_resnet1d_acl(
             )
             
             loss_cls_aug = torch.tensor(0.0, device=dev)
-            if aug_info is not None:
+            if aug_info is not None and aug_ce_mode == "selected":
                 # aug_info: (aug_features, aug_labels)
                 aug_feat, aug_lab = aug_info
                 aug_logits = model.classify(aug_feat)
                 loss_cls_aug = criterion(aug_logits, aug_lab)
 
-            # Combined Loss: CE(orig) + CE(aug) + alpha * SupCon(orig, aug)
+            # Combined Loss: CE(orig) + [CE(aug) if selected] + alpha * SupCon(orig, aug)
             loss_cls = loss_cls_orig + loss_cls_aug
             loss = loss_cls + float(acl_loss_weight) * loss_supcon
             

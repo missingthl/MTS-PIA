@@ -413,6 +413,7 @@ def _run_gcg_acl_pipeline(
             device=args.device,
             acl_temperature=args.acl_temperature,
             acl_loss_weight=args.acl_loss_weight,
+            aug_ce_mode=args.acl_aug_ce_mode,
             return_model_obj=False,
         )
     else:
@@ -555,6 +556,7 @@ def run_experiment(dataset_name, args):
             summary = {
                 "dataset": dataset_name, "seed": seed, "status": "success", 
                 "algo": args.algo, "model": args.model, "pipeline": args.pipeline,
+                "acl_aug_ce_mode": args.acl_aug_ce_mode if args.pipeline == "gcg_acl" else "n/a",
                 "base_f1": res_base["macro_f1"], "act_f1": res_act["macro_f1"],
                 "gain": res_act["macro_f1"] - res_base["macro_f1"],
                 "warmup_f1": res_warmup["macro_f1"] if res_warmup is not None else np.nan,
@@ -649,6 +651,8 @@ def main():
     parser.add_argument("--acl-loss-weight", type=float, default=0.2)
     parser.add_argument("--acl-alignment-weight", type=float, default=0.7)
     parser.add_argument("--acl-positives-per-anchor", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--acl-aug-ce-mode", type=str, choices=["none", "selected"], default="selected", 
+                        help="Pure ACL (none) vs Hybrid ACL (selected)")
     parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
     args = parser.parse_args()
 
