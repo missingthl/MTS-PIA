@@ -23,9 +23,11 @@ from core.pia import (
     FisherPIAConfig, LRAESConfig, 
     compute_fisher_pia_terms, build_lraes_direction_bank, build_lraes_class_basis_bank, build_pia_direction_bank
 )
+from act_lite_feedback import compute_margin_feedback
 from core.curriculum import (
     active_direction_probs, 
     build_curriculum_aug_candidates,
+    build_step_tier_aug_candidates,
     build_acl_candidate_pool,
     apply_safe_step_constraint
 )
@@ -75,6 +77,18 @@ def _build_trial_records(trials, spd_eps=1e-4):
     return final_records, mean_log
 
 
+def _parse_step_tier_ratios(raw: str) -> Tuple[float, ...]:
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    if not parts:
+        raise ValueError("mba_step_tier_ratios must contain at least one ratio")
+    ratios = tuple(float(p) for p in parts)
+    if any(r < 0.0 or r > 1.0 for r in ratios):
+        raise ValueError("mba_step_tier_ratios values must lie in [0, 1]")
+    if tuple(sorted(ratios)) != ratios:
+        raise ValueError("mba_step_tier_ratios must be sorted in non-decreasing order")
+    return ratios
+
+
 def _save_acl_audits(out_root: str, dataset_name: str, seed: int, candidate_rows: List[Dict[str, object]], selected_rows: List[Dict[str, object]]):
     audit_dir = os.path.join(out_root, "audit")
     os.makedirs(audit_dir, exist_ok=True)
@@ -105,6 +119,91 @@ def _materialize_audit_row(row: Dict[str, object]) -> Dict[str, object]:
     return out
 
 
+def _save_step_tier_audits(
+    out_root: str,
+    dataset_name: str,
+    seed: int,
+    candidate_rows: List[Dict[str, object]],
+) -> Dict[str, str]:
+    audit_dir = os.path.join(out_root, "audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    candidate_df = pd.DataFrame([_materialize_audit_row(r) for r in candidate_rows])
+    candidate_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_widened_candidates.csv")
+    candidate_df.to_csv(candidate_path, index=False)
+
+    tier_summary_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_tier_summary.csv")
+    ray_summary_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_ray_summary.csv")
+
+    if candidate_df.empty:
+        pd.DataFrame([{"dataset": dataset_name, "seed": seed}]).to_csv(tier_summary_path, index=False)
+        pd.DataFrame([{"dataset": dataset_name, "seed": seed}]).to_csv(ray_summary_path, index=False)
+        return {
+            "candidate_audit_csv": candidate_path,
+            "tier_summary_csv": tier_summary_path,
+            "ray_summary_csv": ray_summary_path,
+        }
+
+    numeric_cols = [
+        "tier_ratio",
+        "safe_upper_bound",
+        "gamma_used",
+        "safe_radius_ratio",
+        "transport_error_logeuc",
+        "margin_aug",
+        "feedback_weight",
+        "alignment_cosine",
+    ]
+    for col in numeric_cols:
+        if col in candidate_df.columns:
+            candidate_df[col] = pd.to_numeric(candidate_df[col], errors="coerce")
+
+    tier_order = [label for label in ["small", "mid", "edge"] if label in set(candidate_df.get("tier_label", []))]
+    if not tier_order:
+        tier_order = [str(v) for v in candidate_df["tier_label"].dropna().unique().tolist()]
+
+    tier_summary_row: Dict[str, object] = {
+        "dataset": dataset_name,
+        "seed": int(seed),
+        "candidate_total_count": int(len(candidate_df)),
+        "step_tier_count": int(candidate_df["tier_label"].nunique()) if "tier_label" in candidate_df.columns else 0,
+    }
+    for label in tier_order:
+        tier_df = candidate_df[candidate_df["tier_label"] == label]
+        weights = pd.to_numeric(tier_df.get("feedback_weight"), errors="coerce")
+        tier_summary_row[f"E_w_{label}"] = float(weights.mean()) if len(weights) else np.nan
+        tier_summary_row[f"admission_{label}"] = float((weights > 0.5).mean()) if len(weights) else np.nan
+        tier_summary_row[f"tier_margin_mean_{label}"] = float(pd.to_numeric(tier_df.get("margin_aug"), errors="coerce").mean()) if len(tier_df) else np.nan
+        tier_summary_row[f"tier_transport_error_logeuc_mean_{label}"] = float(pd.to_numeric(tier_df.get("transport_error_logeuc"), errors="coerce").mean()) if len(tier_df) else np.nan
+        tier_summary_row[f"tier_alignment_cosine_mean_{label}"] = float(pd.to_numeric(tier_df.get("alignment_cosine"), errors="coerce").mean()) if len(tier_df) else np.nan
+        tier_summary_row[f"tier_count_{label}"] = int(len(tier_df))
+    pd.DataFrame([tier_summary_row]).to_csv(tier_summary_path, index=False)
+
+    ray_rows: List[Dict[str, object]] = []
+    if "ray_id" in candidate_df.columns:
+        for ray_id, ray_df in candidate_df.groupby("ray_id", sort=True):
+            row: Dict[str, object] = {
+                "dataset": dataset_name,
+                "seed": int(seed),
+                "ray_id": int(ray_id),
+            }
+            for base_col in ["anchor_index", "direction_id", "sign"]:
+                if base_col in ray_df.columns:
+                    vals = ray_df[base_col].dropna().tolist()
+                    row[base_col] = vals[0] if vals else np.nan
+            for label in tier_order:
+                tier_df = ray_df[ray_df["tier_label"] == label]
+                row[f"feedback_weight_{label}"] = float(pd.to_numeric(tier_df.get("feedback_weight"), errors="coerce").mean()) if len(tier_df) else np.nan
+                row[f"alignment_cosine_{label}"] = float(pd.to_numeric(tier_df.get("alignment_cosine"), errors="coerce").mean()) if len(tier_df) else np.nan
+                row[f"transport_error_logeuc_{label}"] = float(pd.to_numeric(tier_df.get("transport_error_logeuc"), errors="coerce").mean()) if len(tier_df) else np.nan
+            ray_rows.append(row)
+    pd.DataFrame(ray_rows if ray_rows else [{"dataset": dataset_name, "seed": int(seed)}]).to_csv(ray_summary_path, index=False)
+    return {
+        "candidate_audit_csv": candidate_path,
+        "tier_summary_csv": tier_summary_path,
+        "ray_summary_csv": ray_summary_path,
+    }
+
+
 def _build_selected_positive_map(selected_rows: List[Dict[str, object]]) -> Dict[int, List[np.ndarray]]:
     positive_map: Dict[int, List[np.ndarray]] = {}
     for row in selected_rows:
@@ -112,6 +211,97 @@ def _build_selected_positive_map(selected_rows: List[Dict[str, object]]) -> Dict
         x_cand = np.asarray(row["x_cand"], dtype=np.float32)
         positive_map.setdefault(anchor_idx, []).append(x_cand)
     return positive_map
+
+
+def _is_finite_scalar(value: object) -> bool:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return False
+    return np.isfinite(out)
+
+
+def _attach_training_feedback_to_candidate_rows(
+    candidate_rows: List[Dict[str, object]],
+    res_act: Dict[str, object],
+) -> None:
+    weights = np.asarray(res_act.get("aug_feedback_weight_by_sample", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+    margins = np.asarray(res_act.get("aug_margin_by_sample", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+    seen = np.asarray(res_act.get("aug_seen_count_by_sample", np.zeros((0,), dtype=np.int64)), dtype=np.int64)
+    if weights.size != len(candidate_rows) or margins.size != len(candidate_rows) or seen.size != len(candidate_rows):
+        return
+    for idx, row in enumerate(candidate_rows):
+        row["feedback_weight"] = float(weights[idx]) if np.isfinite(weights[idx]) else np.nan
+        row["margin_aug"] = float(margins[idx]) if np.isfinite(margins[idx]) else np.nan
+        row["aug_seen_count"] = int(seen[idx])
+
+
+def _enrich_mba_candidate_rows_with_probe(
+    *,
+    args,
+    model_obj,
+    candidate_rows: List[Dict[str, object]],
+    tid_to_rec: Dict[str, TrialRecord],
+    feedback_margin_temperature: float,
+    feedback_margin_polarity: str,
+) -> None:
+    if model_obj is None or not candidate_rows:
+        for row in candidate_rows:
+            row.setdefault("alignment_cosine", np.nan)
+            row.setdefault("is_conflict", np.nan)
+            row.setdefault("margin_aug", np.nan)
+            row.setdefault("feedback_weight", np.nan)
+        return
+
+    dev = _get_dev(args.device)
+    model = model_obj.to(dev)
+    model.eval()
+    chunk_size = 32
+
+    for start in range(0, len(candidate_rows), chunk_size):
+        chunk = candidate_rows[start : start + chunk_size]
+        if not chunk:
+            continue
+        x_orig_batch = torch.from_numpy(np.stack([tid_to_rec[row["tid"]].x_raw for row in chunk])).float()
+        x_cand_batch = torch.from_numpy(np.stack([np.asarray(row["x_cand"], dtype=np.float32) for row in chunk])).float()
+        y_batch = torch.from_numpy(np.asarray([int(row["y"]) for row in chunk], dtype=np.int64))
+
+        usefulness = (
+            compute_candidate_usefulness_batch(
+                model,
+                x_orig_batch,
+                y_batch,
+                x_cand_batch,
+                device=args.device,
+            )
+            if args.theory_diagnostics
+            else [{} for _ in chunk]
+        )
+
+        with torch.no_grad():
+            logits = model(x_cand_batch.to(dev))
+            margins, weights = compute_margin_feedback(
+                logits,
+                y_batch.to(dev),
+                temperature=feedback_margin_temperature,
+                polarity=feedback_margin_polarity,
+            )
+        margins_np = margins.detach().cpu().numpy()
+        weights_np = weights.detach().cpu().numpy()
+
+        for row, metrics, margin_aug, feedback_weight in zip(chunk, usefulness, margins_np, weights_np):
+            if args.theory_diagnostics:
+                row["alignment_cosine"] = float(metrics.get("alignment_cosine", np.nan))
+                row["is_conflict"] = float(metrics.get("is_conflict", np.nan))
+                row["entropy_orig"] = float(metrics.get("entropy_orig", np.nan))
+                row["entropy_aug"] = float(metrics.get("entropy_aug", np.nan))
+                row["entropy_shift"] = float(metrics.get("entropy_shift", np.nan))
+            row.setdefault("probe_margin_aug", float(margin_aug))
+            row.setdefault("probe_feedback_weight", float(feedback_weight))
+            if not _is_finite_scalar(row.get("margin_aug")):
+                row["margin_aug"] = float(margin_aug)
+            if not _is_finite_scalar(row.get("feedback_weight")):
+                row["feedback_weight"] = float(feedback_weight)
 
 
 def _fit_host_model(
@@ -178,31 +368,78 @@ def _build_mba_realized_augmentations(
     gamma_budget = np.full((effective_k,), args.pia_gamma)
     probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
     eta_val = 0.5 if not args.disable_safe_step else None
-    z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
-        X_train_z,
-        y_train,
-        np.array([r.tid for r in train_recs]),
-        direction_bank=W,
-        direction_probs=probs,
-        gamma_by_dir=gamma_budget,
-        multiplier=args.multiplier,
-        seed=seed + 42,
-        eta_safe=eta_val,
-    )
-
-    aug_trials = []
-    bridge_metrics = []
+    tid_train = np.array([r.tid for r in train_recs])
+    aug_trials: List[Dict[str, object]] = []
+    bridge_metrics: List[Dict[str, object]] = []
     tid_to_rec = {r.tid: r for r in train_recs}
-    for i in range(len(z_aug)):
-        src = tid_to_rec[tid_aug[i]]
-        sigma_aug = logvec_to_spd(z_aug[i], mean_log)
-        x_aug, meta_b = bridge_single(
-            torch.from_numpy(src.x_raw),
-            torch.from_numpy(src.sigma_orig),
-            torch.from_numpy(sigma_aug),
+    candidate_rows: List[Dict[str, object]] = []
+
+    if args.mba_candidate_mode == "step_tiers":
+        step_candidates, aug_meta = build_step_tier_aug_candidates(
+            X_train_z,
+            y_train,
+            tid_train,
+            direction_bank=W,
+            direction_probs=probs,
+            gamma_by_dir=gamma_budget,
+            seed=seed + 42,
+            tier_ratios=tuple(args.mba_step_tier_ratios),
+            eta_safe=eta_val,
         )
-        aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
-        bridge_metrics.append(meta_b)
+        z_aug = np.stack([np.asarray(row["z_cand"], dtype=np.float32) for row in step_candidates]) if step_candidates else np.empty((0, X_train_z.shape[1]), dtype=np.float32)
+        y_aug = np.asarray([int(row["y"]) for row in step_candidates], dtype=np.int64) if step_candidates else np.empty((0,), dtype=np.int64)
+        tid_aug = np.asarray([row["tid"] for row in step_candidates], dtype=object) if step_candidates else np.empty((0,), dtype=object)
+
+        for aug_index, row in enumerate(step_candidates):
+            src = tid_to_rec[row["tid"]]
+            sigma_aug = logvec_to_spd(np.asarray(row["z_cand"], dtype=np.float32), mean_log)
+            x_aug, meta_b = bridge_single(
+                torch.from_numpy(src.x_raw),
+                torch.from_numpy(src.sigma_orig),
+                torch.from_numpy(sigma_aug),
+            )
+            enriched = dict(row)
+            enriched["x_cand"] = x_aug.numpy()
+            enriched["aug_index"] = int(aug_index)
+            enriched.update({
+                "transport_error_fro": float(meta_b.get("transport_error_fro", 0.0)),
+                "transport_error_logeuc": float(meta_b.get("transport_error_logeuc", 0.0)),
+                "bridge_cond_A": float(meta_b.get("bridge_cond_A", 0.0)),
+                "metric_preservation_error": float(meta_b.get("metric_preservation_error", 0.0)),
+            })
+            candidate_rows.append(enriched)
+            aug_trials.append({
+                "x": x_aug.numpy(),
+                "y": int(row["y"]),
+                "tid": row["tid"],
+                "candidate_index": int(aug_index),
+                "tier_label": row.get("tier_label", ""),
+                "ray_id": row.get("ray_id"),
+            })
+            bridge_metrics.append(meta_b)
+    else:
+        z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
+            X_train_z,
+            y_train,
+            tid_train,
+            direction_bank=W,
+            direction_probs=probs,
+            gamma_by_dir=gamma_budget,
+            multiplier=args.multiplier,
+            seed=seed + 42,
+            eta_safe=eta_val,
+        )
+
+        for i in range(len(z_aug)):
+            src = tid_to_rec[tid_aug[i]]
+            sigma_aug = logvec_to_spd(z_aug[i], mean_log)
+            x_aug, meta_b = bridge_single(
+                torch.from_numpy(src.x_raw),
+                torch.from_numpy(src.sigma_orig),
+                torch.from_numpy(sigma_aug),
+            )
+            aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
+            bridge_metrics.append(meta_b)
 
     X_aug_raw = np.stack([t["x"] for t in aug_trials]) if aug_trials else None
     y_aug_np = np.array([t["y"] for t in aug_trials], dtype=np.int64) if aug_trials else None
@@ -219,6 +456,11 @@ def _build_mba_realized_augmentations(
         "avg_bridge": avg_bridge,
         "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
         "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
+        "candidate_rows": candidate_rows,
+        "candidate_total_count": int(aug_meta.get("candidate_total_count", len(candidate_rows) if candidate_rows else len(aug_trials))),
+        "aug_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
+        "step_tier_count": int(aug_meta.get("step_tier_count", 0)),
+        "tier_labels": list(aug_meta.get("tier_labels", [])),
     }
 
 
@@ -310,6 +552,25 @@ def _run_mba_pipeline(
         aug_trials=aug_out["aug_trials"],
         tid_to_rec=aug_out["tid_to_rec"],
     )
+    step_tier_audits: Dict[str, str] = {}
+    if args.mba_candidate_mode == "step_tiers":
+        _enrich_mba_candidate_rows_with_probe(
+            args=args,
+            model_obj=res_base.get("model_obj"),
+            candidate_rows=aug_out["candidate_rows"],
+            tid_to_rec=aug_out["tid_to_rec"],
+            feedback_margin_temperature=args.feedback_margin_temperature,
+            feedback_margin_polarity=args.feedback_margin_polarity,
+        )
+        step_tier_audits = _save_step_tier_audits(
+            args.out_root,
+            dataset_name,
+            seed,
+            aug_out["candidate_rows"],
+        )
+        if aug_out["candidate_rows"] and args.theory_diagnostics:
+            alignment_metrics["host_geom_cosine_mean"] = float(np.nanmean([float(r.get("alignment_cosine", np.nan)) for r in aug_out["candidate_rows"]]))
+            alignment_metrics["host_conflict_rate"] = float(np.nanmean([1.0 if float(r.get("alignment_cosine", 0.0)) < 0 else 0.0 for r in aug_out["candidate_rows"]]))
 
     print(f"Fitting ACT Model ({len(X_mix)} samples)...")
     res_act = _fit_host_model(
@@ -335,6 +596,12 @@ def _run_mba_pipeline(
         "manifold_margin_mean": aug_out["manifold_margin_mean"],
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
+        "candidate_total_count": aug_out.get("candidate_total_count", 0),
+        "aug_total_count": aug_out.get("aug_total_count", 0),
+        "step_tier_count": aug_out.get("step_tier_count", 0),
+        "candidate_audit_csv": step_tier_audits.get("candidate_audit_csv", ""),
+        "tier_summary_csv": step_tier_audits.get("tier_summary_csv", ""),
+        "ray_summary_csv": step_tier_audits.get("ray_summary_csv", ""),
         "viz_payload": {
             "Z_aug": aug_out["z_aug"],
             "y_aug": aug_out["y_aug"],
@@ -416,6 +683,7 @@ def _run_mba_feedback_pipeline(
         patience=patience,
         device=args.device,
         feedback_margin_temperature=args.feedback_margin_temperature,
+        feedback_margin_polarity=args.feedback_margin_polarity,
         feedback_aug_weight=args.feedback_aug_weight,
         loader_seed=seed,
         return_model_obj=False,
@@ -428,6 +696,26 @@ def _run_mba_feedback_pipeline(
         aug_trials=aug_out["aug_trials"],
         tid_to_rec=aug_out["tid_to_rec"],
     )
+    step_tier_audits: Dict[str, str] = {}
+    if args.mba_candidate_mode == "step_tiers":
+        _attach_training_feedback_to_candidate_rows(aug_out["candidate_rows"], res_act)
+        _enrich_mba_candidate_rows_with_probe(
+            args=args,
+            model_obj=res_base.get("model_obj"),
+            candidate_rows=aug_out["candidate_rows"],
+            tid_to_rec=aug_out["tid_to_rec"],
+            feedback_margin_temperature=args.feedback_margin_temperature,
+            feedback_margin_polarity=args.feedback_margin_polarity,
+        )
+        step_tier_audits = _save_step_tier_audits(
+            args.out_root,
+            dataset_name,
+            seed,
+            aug_out["candidate_rows"],
+        )
+        if aug_out["candidate_rows"] and args.theory_diagnostics:
+            alignment_metrics["host_geom_cosine_mean"] = float(np.nanmean([float(r.get("alignment_cosine", np.nan)) for r in aug_out["candidate_rows"]]))
+            alignment_metrics["host_conflict_rate"] = float(np.nanmean([1.0 if float(r.get("alignment_cosine", 0.0)) < 0 else 0.0 for r in aug_out["candidate_rows"]]))
 
     return {
         "res_base": res_base,
@@ -443,6 +731,12 @@ def _run_mba_feedback_pipeline(
         "last_orig_ce_loss": res_act.get("last_orig_ce_loss", 0.0),
         "last_weighted_aug_ce_loss": res_act.get("last_weighted_aug_ce_loss", 0.0),
         "last_aug_margin_mean": res_act.get("last_aug_margin_mean", 0.0),
+        "candidate_total_count": aug_out.get("candidate_total_count", 0),
+        "aug_total_count": aug_out.get("aug_total_count", 0),
+        "step_tier_count": aug_out.get("step_tier_count", 0),
+        "candidate_audit_csv": step_tier_audits.get("candidate_audit_csv", ""),
+        "tier_summary_csv": step_tier_audits.get("tier_summary_csv", ""),
+        "ray_summary_csv": step_tier_audits.get("ray_summary_csv", ""),
     }
 
 
@@ -792,6 +1086,9 @@ def run_experiment(dataset_name, args):
             summary = {
                 "dataset": dataset_name, "seed": seed, "status": "success", 
                 "algo": args.algo, "model": args.model, "pipeline": args.pipeline,
+                "mba_candidate_mode": args.mba_candidate_mode,
+                "mba_step_tier_ratios": ",".join(f"{r:.6g}" for r in args.mba_step_tier_ratios),
+                "feedback_margin_polarity": args.feedback_margin_polarity,
                 "acl_aug_ce_mode": args.acl_aug_ce_mode if args.pipeline == "gcg_acl" else "n/a",
                 "base_f1": res_base["macro_f1"], "act_f1": res_act["macro_f1"],
                 "gain": res_act["macro_f1"] - res_base["macro_f1"],
@@ -821,6 +1118,8 @@ def run_experiment(dataset_name, args):
                 "selected_anchor_count": pipeline_out.get("selected_anchor_count", 0),
                 "selected_positive_count": pipeline_out.get("selected_positive_count", 0),
                 "candidate_total_count": pipeline_out.get("candidate_total_count", 0),
+                "aug_total_count": pipeline_out.get("aug_total_count", 0),
+                "step_tier_count": pipeline_out.get("step_tier_count", 0),
                 "hard_positive_score_mean": pipeline_out.get("hard_positive_score_mean", 0.0),
                 "fidelity_score_mean": pipeline_out.get("fidelity_score_mean", 0.0),
                 "mean_aug_ce_weight": pipeline_out.get("mean_aug_ce_weight", 1.0),
@@ -833,6 +1132,9 @@ def run_experiment(dataset_name, args):
                 "last_orig_ce_loss": pipeline_out.get("last_orig_ce_loss", res_act.get("last_orig_ce_loss", 0.0)),
                 "last_weighted_aug_ce_loss": pipeline_out.get("last_weighted_aug_ce_loss", res_act.get("last_weighted_aug_ce_loss", 0.0)),
                 "last_aug_margin_mean": pipeline_out.get("last_aug_margin_mean", res_act.get("last_aug_margin_mean", 0.0)),
+                "candidate_audit_csv": pipeline_out.get("candidate_audit_csv", ""),
+                "tier_summary_csv": pipeline_out.get("tier_summary_csv", ""),
+                "ray_summary_csv": pipeline_out.get("ray_summary_csv", ""),
             }
             print(f"Base: {summary['base_f1']:.4f} | ACT: {summary['act_f1']:.4f} | Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)")
             if res_warmup is not None:
@@ -879,6 +1181,8 @@ def main():
     parser.add_argument("--k-dir", type=int, default=10)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
     parser.add_argument("--multiplier", type=int, default=1)
+    parser.add_argument("--mba-candidate-mode", type=str, choices=["core", "step_tiers"], default="core")
+    parser.add_argument("--mba-step-tier-ratios", type=str, default="0.25,0.5,0.9")
     parser.add_argument("--n-kernels", type=int, default=10000)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -900,9 +1204,13 @@ def main():
     parser.add_argument("--acl-soft-gating", action="store_true", help="Enable Alignment-Guided Soft CE Gating")
     parser.add_argument("--acl-gating-tau", type=float, default=0.0, help="Tau threshold for soft gating")
     parser.add_argument("--feedback-margin-temperature", type=float, default=1.0)
+    parser.add_argument("--feedback-margin-polarity", type=str, choices=["easy", "hard"], default="easy")
     parser.add_argument("--feedback-aug-weight", type=float, default=1.0)
     parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
     args = parser.parse_args()
+    args.mba_step_tier_ratios = _parse_step_tier_ratios(args.mba_step_tier_ratios)
+    if args.mba_candidate_mode == "step_tiers" and int(args.multiplier) != 1:
+        raise ValueError("step_tiers mode requires --multiplier 1; widen the candidate space via tier ratios instead")
 
     os.makedirs(args.out_root, exist_ok=True)
     

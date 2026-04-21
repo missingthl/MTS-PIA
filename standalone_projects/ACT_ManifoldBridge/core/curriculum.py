@@ -188,6 +188,120 @@ def build_curriculum_aug_candidates(
             meta)
 
 
+def build_step_tier_aug_candidates(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    tid_train: np.ndarray,
+    *,
+    direction_bank: np.ndarray,
+    direction_probs: np.ndarray,
+    gamma_by_dir: np.ndarray,
+    seed: int,
+    tier_ratios: Tuple[float, ...],
+    eta_safe: float | None = 0.5,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    """
+    Build one atomic ray per anchor, then emit ordered small/mid/edge candidates
+    along that same ray. This widens the candidate space only along perturbation
+    magnitude while holding direction and sign fixed.
+    """
+    tid_arr = np.asarray(tid_train)
+    y_arr = np.asarray(y_train).astype(int).ravel()
+    X_z_all = np.asarray(X_train, dtype=np.float64)
+
+    actual_k = int(direction_bank.shape[0])
+    if actual_k == 0:
+        return [], {"aug_total_count": 0, "status": "fallback_no_bank"}
+
+    p_vec = np.asarray(direction_probs, dtype=np.float64).ravel()
+    if p_vec.size != actual_k:
+        if p_vec.size < actual_k:
+            p_vec = np.pad(p_vec, (0, actual_k - p_vec.size), mode="constant", constant_values=0.0)
+        else:
+            p_vec = p_vec[:actual_k]
+    p_sum = np.sum(p_vec)
+    probs = p_vec / p_sum if p_sum > 1e-12 else np.full((actual_k,), 1.0 / actual_k, dtype=np.float64)
+
+    gammas = np.asarray(gamma_by_dir, dtype=np.float64).ravel()
+    if gammas.size != actual_k:
+        if gammas.size < actual_k:
+            gammas = np.pad(gammas, (0, actual_k - gammas.size), mode="edge")
+        else:
+            gammas = gammas[:actual_k]
+
+    ratios = tuple(float(r) for r in tier_ratios)
+    if not ratios:
+        raise ValueError("step-tier generation requires at least one tier ratio")
+    if len(ratios) == 3:
+        tier_labels = ("small", "mid", "edge")
+    else:
+        tier_labels = tuple(f"tier_{idx}" for idx in range(len(ratios)))
+
+    margins = estimate_local_manifold_margins(X_z_all, y_arr)
+    candidates: List[Dict[str, object]] = []
+    safe_ratios = []
+    margin_values = []
+
+    for anchor_idx, tid in enumerate(tid_arr):
+        X_sample = X_z_all[anchor_idx]
+        y_sample = int(y_arr[anchor_idx])
+        d_min = float(margins[anchor_idx])
+        margin_values.append(d_min)
+
+        rs = np.random.RandomState(int(seed + anchor_idx * 1009 + _stable_tid_hash(tid)))
+        dir_id = int(rs.choice(actual_k, p=probs))
+        sign = float(rs.choice([-1.0, 1.0]))
+        u_k = np.asarray(direction_bank[dir_id], dtype=np.float64)
+        u_norm = float(np.linalg.norm(u_k))
+
+        if eta_safe is not None:
+            safe_upper_bound, _ = apply_safe_step_constraint(1.0, u_norm, d_min, eta=eta_safe)
+        else:
+            safe_upper_bound = float(max(gammas[dir_id], 1e-12))
+        safe_upper_bound = max(float(safe_upper_bound), 0.0)
+
+        ray_id = int(anchor_idx)
+        for tier_idx, tier_ratio in enumerate(ratios):
+            tier_label = tier_labels[tier_idx]
+            gamma_used = float(np.clip(tier_ratio, 0.0, 1.0)) * safe_upper_bound
+            delta_z = sign * gamma_used * u_k
+            delta_norm = float(np.linalg.norm(delta_z))
+            z_cand = X_sample + delta_z
+            safe_ratio = gamma_used / (safe_upper_bound + 1e-12) if safe_upper_bound > 0.0 else 0.0
+            safe_ratios.append(float(safe_ratio))
+
+            candidates.append({
+                "anchor_index": int(anchor_idx),
+                "candidate_local_index": int(tier_idx),
+                "tid": tid,
+                "y": y_sample,
+                "z_src": X_sample.astype(np.float32),
+                "z_cand": z_cand.astype(np.float32),
+                "delta_norm_raw": delta_norm,
+                "delta_norm_safe": delta_norm,
+                "safe_radius_ratio": float(safe_ratio),
+                "manifold_margin": d_min,
+                "direction_id": int(dir_id),
+                "sign": float(sign),
+                "ray_id": int(ray_id),
+                "tier_label": str(tier_label),
+                "tier_ratio": float(tier_ratio),
+                "safe_upper_bound": float(safe_upper_bound),
+                "gamma_used": float(gamma_used),
+            })
+
+    meta = {
+        "aug_total_count": len(candidates),
+        "candidate_total_count": len(candidates),
+        "safe_radius_ratio_mean": float(np.mean(safe_ratios)) if safe_ratios else 1.0,
+        "safe_radius_ratio_min": float(np.min(safe_ratios)) if safe_ratios else 1.0,
+        "manifold_margin_mean": float(np.mean(margin_values)) if margin_values else 0.0,
+        "step_tier_count": len(ratios),
+        "tier_labels": list(tier_labels),
+    }
+    return candidates, meta
+
+
 def build_acl_candidate_pool(
     X_train: np.ndarray,
     y_train: np.ndarray,

@@ -54,9 +54,30 @@ python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
 Current scope:
 
 - `mba_feedback` supports `ResNet1D`
+- supports `easy` and `hard` margin polarity via `--feedback-margin-polarity`
 - no projection head in the main path
 - no SupCon in the main path
 - no selected-positive admission logic in the main path
+
+### MBA Step-Tier Widening
+
+`MBA-Core` now also supports an opt-in widened candidate mode that keeps the sampled direction fixed and emits ordered `small / mid / edge` candidates along the same ray.
+
+This is exposed through:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset natops --pipeline mba_feedback --algo lraes --model resnet1d \
+  --mba-candidate-mode step_tiers --mba-step-tier-ratios 0.25,0.5,0.9 \
+  --feedback-margin-polarity hard --theory-diagnostics
+```
+
+Notes:
+
+- `step_tiers` widens only perturbation magnitude, not direction coverage
+- all three tier points share the same sampled direction and sign
+- `--multiplier` must remain `1` in `step_tiers` mode
+- widened runs write candidate, tier, and ray audit CSVs under `audit/`
 
 ### ACT-Heavy
 
@@ -76,6 +97,7 @@ Current scope:
 - `mba` remains the default CLI pipeline.
 - `mba_feedback` keeps the original supervision stream intact and adds only a weighted augmentation loss branch.
 - in `mba_feedback`, augmented batches are forwarded with frozen batch-stat updates so BatchNorm statistics continue to be driven by the original supervision stream only.
+- `mba` and `mba_feedback` support `--mba-candidate-mode {core,step_tiers}`.
 - frozen ACL result packages under `results/acl_small_matrix_v1` and its follow-up directories are retained as historical reference and are not rewritten by the refactor.
 
 ## Quick Start
@@ -95,6 +117,13 @@ python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
   --dataset basicmotions --pipeline mba_feedback --algo lraes --model resnet1d \
   --seeds 1 --epochs 30 --feedback-margin-temperature 1.0 \
   --feedback-aug-weight 1.0 --device cuda
+```
+
+Run the widened small-matrix workflow:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/scripts/run_mba_step_tier_widening.py \
+  --mode all --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
 Run the historical ACL protocol:

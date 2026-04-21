@@ -21,9 +21,20 @@ def compute_true_class_margin(logits: torch.Tensor, labels: torch.Tensor) -> tor
     return true_logits - hardest_negative
 
 
-def margin_to_feedback_weight(margins: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+def margin_to_feedback_weight(
+    margins: torch.Tensor,
+    temperature: float = 1.0,
+    *,
+    polarity: str = "easy",
+) -> torch.Tensor:
     tau = max(float(temperature), 1e-6)
-    return torch.sigmoid(margins / tau).detach()
+    if polarity == "easy":
+        scaled = margins / tau
+    elif polarity == "hard":
+        scaled = -margins / tau
+    else:
+        raise ValueError(f"Unsupported feedback polarity: {polarity}")
+    return torch.sigmoid(scaled).detach()
 
 
 def compute_margin_feedback(
@@ -31,7 +42,8 @@ def compute_margin_feedback(
     labels: torch.Tensor,
     *,
     temperature: float = 1.0,
+    polarity: str = "easy",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     margins = compute_true_class_margin(logits, labels)
-    weights = margin_to_feedback_weight(margins, temperature=temperature)
+    weights = margin_to_feedback_weight(margins, temperature=temperature, polarity=polarity)
     return margins, weights

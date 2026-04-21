@@ -507,6 +507,7 @@ def fit_eval_resnet1d_weighted_aug_ce(
     patience: int = 10,
     device: str = "cuda",
     feedback_margin_temperature: float = 1.0,
+    feedback_margin_polarity: str = "easy",
     feedback_aug_weight: float = 1.0,
     loader_seed: Optional[int] = None,
     return_model_obj: bool = False,
@@ -529,14 +530,20 @@ def fit_eval_resnet1d_weighted_aug_ce(
     )
 
     aug_loader = None
+    aug_weight_sum = np.zeros((0,), dtype=np.float64)
+    aug_margin_sum = np.zeros((0,), dtype=np.float64)
+    aug_seen_count = np.zeros((0,), dtype=np.int64)
     if X_aug is not None and y_aug is not None and len(X_aug) > 0:
+        aug_weight_sum = np.zeros((len(X_aug),), dtype=np.float64)
+        aug_margin_sum = np.zeros((len(X_aug),), dtype=np.float64)
+        aug_seen_count = np.zeros((len(X_aug),), dtype=np.int64)
         aug_seed = None if loader_seed is None else int(loader_seed) + 100_000
         aug_loader = _make_tensor_loader(
             X_aug,
             y_aug,
             batch_size=batch_size,
             shuffle=True,
-            indexed=False,
+            indexed=True,
             seed=aug_seed,
         )
 
@@ -593,13 +600,14 @@ def fit_eval_resnet1d_weighted_aug_ce(
 
             if aug_iter is not None:
                 try:
-                    ax, ay = next(aug_iter)
+                    ax, ay, aidx = next(aug_iter)
                 except StopIteration:
                     aug_iter = iter(aug_loader)
-                    ax, ay = next(aug_iter)
+                    ax, ay, aidx = next(aug_iter)
 
                 ax = ax.to(dev, non_blocking=True)
                 ay = ay.to(dev, non_blocking=True)
+                aidx_np = aidx.detach().cpu().numpy().astype(np.int64, copy=False)
 
                 # Keep BN statistics tied to the original supervision stream only.
                 with _temporary_eval_mode(model):
@@ -610,12 +618,16 @@ def fit_eval_resnet1d_weighted_aug_ce(
                     aug_logits,
                     ay,
                     temperature=feedback_margin_temperature,
+                    polarity=feedback_margin_polarity,
                 )
                 raw_aug_ce = F.cross_entropy(aug_logits, ay, reduction="none")
                 loss_aug = float(feedback_aug_weight) * (aug_weights * raw_aug_ce).mean()
 
                 epoch_weights.append(aug_weights.detach().cpu().numpy())
                 epoch_margins.append(aug_margins.detach().cpu().numpy())
+                aug_weight_sum[aidx_np] += aug_weights.detach().cpu().numpy().astype(np.float64, copy=False)
+                aug_margin_sum[aidx_np] += aug_margins.detach().cpu().numpy().astype(np.float64, copy=False)
+                aug_seen_count[aidx_np] += 1
 
             loss = loss_orig + loss_aug
             loss.backward()
@@ -658,6 +670,20 @@ def fit_eval_resnet1d_weighted_aug_ce(
         model.load_state_dict(early_stopping.best_model_state)
 
     _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
+    aug_feedback_weight_by_sample = np.divide(
+        aug_weight_sum,
+        np.maximum(aug_seen_count, 1),
+        dtype=np.float64,
+    ) if aug_weight_sum.size else np.zeros((0,), dtype=np.float64)
+    aug_margin_by_sample = np.divide(
+        aug_margin_sum,
+        np.maximum(aug_seen_count, 1),
+        dtype=np.float64,
+    ) if aug_margin_sum.size else np.zeros((0,), dtype=np.float64)
+    if aug_seen_count.size:
+        unseen = aug_seen_count <= 0
+        aug_feedback_weight_by_sample[unseen] = np.nan
+        aug_margin_by_sample[unseen] = np.nan
     res = {
         "accuracy": t_acc,
         "macro_f1": t_f1,
@@ -670,6 +696,9 @@ def fit_eval_resnet1d_weighted_aug_ce(
         "last_orig_ce_loss": float(last_orig_ce_loss),
         "last_weighted_aug_ce_loss": float(last_weighted_aug_ce_loss),
         "last_aug_margin_mean": float(last_aug_margin_mean),
+        "aug_feedback_weight_by_sample": aug_feedback_weight_by_sample,
+        "aug_margin_by_sample": aug_margin_by_sample,
+        "aug_seen_count_by_sample": aug_seen_count,
     }
     if return_model_obj:
         res["model_obj"] = model
