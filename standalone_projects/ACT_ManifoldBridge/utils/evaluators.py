@@ -295,7 +295,7 @@ def fit_eval_resnet1d_acl(
             logits = model.classify(anchor_features)
             loss_cls_orig = criterion(logits, by)
             
-            # Re-calculating using optimized loss function that also returns augmented logits/labels
+            # Combined Feedback Control: Apply gating to both CE and SupCon to prevent decoupling
             loss_supcon, aug_info = _compute_acl_supcon_loss(
                 model,
                 anchor_features,
@@ -305,6 +305,8 @@ def fit_eval_resnet1d_acl(
                 dev,
                 temperature=acl_temperature,
                 selected_alignment_map=selected_alignment_map,
+                soft_gating=soft_gating,
+                gating_tau=gating_tau,
             )
             
             loss_cls_aug = torch.tensor(0.0, device=dev)
@@ -424,6 +426,8 @@ def _compute_acl_supcon_loss(
     *,
     temperature: float,
     selected_alignment_map: Optional[Dict[int, List[float]]] = None,
+    soft_gating: bool = False,
+    gating_tau: float = 0.0,
 ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]]:
     """
     Returns (supcon_loss, (aug_enc_features, aug_labels, Optional[aug_weights]))
