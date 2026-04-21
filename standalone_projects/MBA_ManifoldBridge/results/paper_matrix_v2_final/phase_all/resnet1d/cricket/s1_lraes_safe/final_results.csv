@@ -1,2 +1,0 @@
-dataset,seed,status,algo,model,base_f1,mba_f1,gain,transport_error_fro_mean,transport_error_logeuc_mean,bridge_cond_A_mean,metric_preservation_error_mean,safe_radius_ratio_mean,manifold_margin_mean,host_geom_cosine_mean,host_conflict_rate,base_stop_epoch,mba_stop_epoch,f1_gain_pct,base_best_val_f1,mba_best_val_f1
-cricket,1,success,lraes,resnet1d,1.0,0.9415695415695416,-0.058430458430458354,0.0002216682146189861,0.013049496404732555,1.1159265215759973,0.17304047917396115,0.9999999999899996,2.0181944375652288,-0.0040203673706855625,0.55,30,30,-5.843045258741309,1.0,1.0

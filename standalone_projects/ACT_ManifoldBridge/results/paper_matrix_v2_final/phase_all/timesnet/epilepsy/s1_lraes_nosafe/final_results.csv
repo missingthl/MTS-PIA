@@ -1,0 +1,2 @@
+dataset,seed,status,algo,model,base_f1,act_f1,gain,transport_error_fro_mean,transport_error_logeuc_mean,bridge_cond_A_mean,metric_preservation_error_mean,safe_radius_ratio_mean,manifold_margin_mean,host_geom_cosine_mean,host_conflict_rate,base_stop_epoch,act_stop_epoch,f1_gain_pct,base_best_val_f1,act_best_val_f1
+epilepsy,1,success,lraes,timesnet,0.7513673307562692,0.7935353803237467,0.04216804956747755,0.00015818758558292415,0.00411282114978771,1.0728224991707784,0.12391743755026098,1.0,1.4579571049529365,0.0193839515093714,0.5,50,75,5.612174262735132,0.9666666666666667,1.0

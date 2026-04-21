@@ -1,0 +1,2 @@
+dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,num_classes,latent_dim,train_size,aug_total_count,algo,model,base_f1,act_f1,gain,f1_gain_pct,base_stop_epoch,act_stop_epoch,base_best_val_f1,act_best_val_f1
+natops,1,success,,10,10,6,300,144,144,lraes,patchtst,0.7144597288058577,0.6949654064573418,-0.01949432234851589,-2.728540018981689,22,31,0.7788045288045288,0.7714646464646465

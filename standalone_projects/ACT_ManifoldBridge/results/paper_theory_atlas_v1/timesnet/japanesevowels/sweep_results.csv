@@ -1,0 +1,2 @@
+dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,algo,model
+japanesevowels,1,failed,"shape '[32, 1, 29, 32]' is invalid for input of size 32768",10,0,lraes,timesnet

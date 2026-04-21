@@ -1,0 +1,4 @@
+dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,num_classes,latent_dim,train_size,aug_total_count,algo,model,base_f1,act_f1,gain,f1_gain_pct,base_stop_epoch,act_stop_epoch,base_best_val_f1,act_best_val_f1
+atrialfibrillation,1,success,,10,9,3,3,12,12,lraes,patchtst,0.4349206349206349,0.28654970760233917,-0.1483709273182957,-34.11447544467401,100,100,0.16666666666666666,0.16666666666666666
+atrialfibrillation,2,success,,10,9,3,3,12,12,lraes,patchtst,0.38888888888888884,0.3277777777777778,-0.06111111111111106,-15.714281673470415,18,32,0.5555555555555555,1.0
+atrialfibrillation,3,success,,10,9,3,3,12,12,lraes,patchtst,0.37566137566137564,0.20000000000000004,-0.1756613756613756,-46.76055093275473,100,19,0.16666666666666666,0.16666666666666666

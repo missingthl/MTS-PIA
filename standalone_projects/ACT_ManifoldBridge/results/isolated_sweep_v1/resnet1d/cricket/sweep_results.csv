@@ -1,0 +1,4 @@
+dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,num_classes,latent_dim,train_size,aug_total_count,algo,model,base_f1,act_f1,gain,f1_gain_pct,base_stop_epoch,act_stop_epoch,base_best_val_f1,act_best_val_f1
+cricket,1,success,,10,10,12,21,86,86,lraes,resnet1d,0.9860139860139859,0.9581390831390831,-0.027874902874902796,-2.8270288701035264,30,30,1.0,1.0
+cricket,2,success,,10,10,12,21,86,86,lraes,resnet1d,0.972027972027972,0.9860139860139859,0.013986013986013957,1.4388487728378572,30,30,1.0,1.0
+cricket,3,success,,10,10,12,21,86,86,lraes,resnet1d,0.972027972027972,0.972027972027972,0.0,0.0,30,30,1.0,1.0
