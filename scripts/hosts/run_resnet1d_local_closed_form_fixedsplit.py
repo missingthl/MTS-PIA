@@ -158,6 +158,11 @@ def _build_model(args: argparse.Namespace, *, in_channels: int, num_classes: int
             posterior_mode=str(args.posterior_mode),
             posterior_student_dof=float(args.posterior_student_dof),
             mdl_penalty_beta=float(args.mdl_penalty_beta),
+            gaussian_refine_variant=str(args.gaussian_refine_variant),
+            mdl_zero_rank_rescue_margin=float(args.mdl_zero_rank_rescue_margin),
+            local_solver_competition_mode=str(args.local_solver_competition_mode),
+            relative_solver_temperature=float(args.relative_solver_temperature),
+            abs_gate_activity_floor=float(args.abs_gate_activity_floor),
             readout_gate_mode=str(args.local_readout_gate),
         )
     raise ValueError(f"unknown arm: {args.arm}")
@@ -291,6 +296,13 @@ def _export_mdl_rank_trace_artifact(
                 "lw_shrinkage_alpha": class_summary.get("lw_shrinkage_alpha"),
                 "posterior_mode": class_summary.get("posterior_mode"),
                 "mdl_penalty_beta": class_summary.get("mdl_penalty_beta"),
+                "gaussian_refine_variant": class_summary.get("gaussian_refine_variant"),
+                "mdl_zero_rank_rescue_margin": class_summary.get("mdl_zero_rank_rescue_margin"),
+                "trace_per_dim": class_summary.get("trace_per_dim"),
+                "rank0_score": class_summary.get("rank0_score"),
+                "rank1_score": class_summary.get("rank1_score"),
+                "rank01_relative_gap": class_summary.get("rank01_relative_gap"),
+                "zero_rank_rescued": class_summary.get("zero_rank_rescued"),
                 "rank_rows": rank_rows,
             }
         )
@@ -411,6 +423,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--posterior-mode", type=str, default="gaussian_dimnorm", choices=["gaussian_dimnorm", "student_t"])
     p.add_argument("--posterior-student-dof", type=float, default=3.0)
     p.add_argument("--mdl-penalty-beta", type=float, default=1.0)
+    p.add_argument("--gaussian-refine-variant", type=str, default="base", choices=["base", "trace_floor", "trace_floor_mdl_margin"])
+    p.add_argument("--mdl-zero-rank-rescue-margin", type=float, default=0.03)
+    p.add_argument("--local-solver-competition-mode", type=str, default="none", choices=["none", "relcomp"])
+    p.add_argument("--relative-solver-temperature", type=float, default=1.0)
+    p.add_argument("--abs-gate-activity-floor", type=float, default=1e-6)
     p.add_argument("--emit-mdl-rank-trace", action="store_true", default=False)
     p.add_argument("--local-readout-gate", type=str, default="none", choices=["none", "consistency"])
     p.add_argument("--detach-local-latent", action="store_true", default=False)
@@ -527,6 +544,11 @@ def main() -> None:
         "posterior_mode": str(args.posterior_mode),
         "posterior_student_dof": float(args.posterior_student_dof),
         "mdl_penalty_beta": float(args.mdl_penalty_beta),
+        "gaussian_refine_variant": str(args.gaussian_refine_variant),
+        "mdl_zero_rank_rescue_margin": float(args.mdl_zero_rank_rescue_margin),
+        "local_solver_competition_mode": str(args.local_solver_competition_mode),
+        "relative_solver_temperature": float(args.relative_solver_temperature),
+        "abs_gate_activity_floor": float(args.abs_gate_activity_floor),
         "local_readout_gate": str(args.local_readout_gate),
         "run_dir": run_dir,
     }
@@ -588,6 +610,19 @@ def main() -> None:
     selected_posterior_residual_energy_all: List[np.ndarray] = []
     selected_posterior_residual_energy_per_dim_all: List[np.ndarray] = []
     selected_posterior_sigma2_eff_all: List[np.ndarray] = []
+    selected_posterior_sigma2_used_all: List[np.ndarray] = []
+    selected_trace_per_dim_all: List[np.ndarray] = []
+    selected_rank0_score_all: List[np.ndarray] = []
+    selected_rank1_score_all: List[np.ndarray] = []
+    selected_rank01_relative_gap_all: List[np.ndarray] = []
+    selected_zero_rank_rescued_all: List[np.ndarray] = []
+    selected_abs_gate_all: List[np.ndarray] = []
+    selected_relative_top1_weight_all: List[np.ndarray] = []
+    selected_relative_top1_weight_entropy_all: List[np.ndarray] = []
+    selected_relative_solver_margin_all: List[np.ndarray] = []
+    selected_relative_competition_active_all: List[np.ndarray] = []
+    selected_local_solver_weighted_delta_norm_all: List[np.ndarray] = []
+    selected_relative_solver_top1_index_all: List[np.ndarray] = []
     with torch.no_grad():
         _maybe_set_probe_context(model, split="test", epoch=int(args.epochs))
         sample_offset = 0
@@ -631,6 +666,32 @@ def main() -> None:
                         selected_posterior_residual_energy_per_dim_all.append(np.asarray(routing_payload["posterior_residual_energy_per_dim"], dtype=np.float64))
                     if "posterior_sigma2_eff" in routing_payload:
                         selected_posterior_sigma2_eff_all.append(np.asarray(routing_payload["posterior_sigma2_eff"], dtype=np.float64))
+                    if "posterior_sigma2_used" in routing_payload:
+                        selected_posterior_sigma2_used_all.append(np.asarray(routing_payload["posterior_sigma2_used"], dtype=np.float64))
+                    if "trace_per_dim" in routing_payload:
+                        selected_trace_per_dim_all.append(np.asarray(routing_payload["trace_per_dim"], dtype=np.float64))
+                    if "rank0_score" in routing_payload:
+                        selected_rank0_score_all.append(np.asarray(routing_payload["rank0_score"], dtype=np.float64))
+                    if "rank1_score" in routing_payload:
+                        selected_rank1_score_all.append(np.asarray(routing_payload["rank1_score"], dtype=np.float64))
+                    if "rank01_relative_gap" in routing_payload:
+                        selected_rank01_relative_gap_all.append(np.asarray(routing_payload["rank01_relative_gap"], dtype=np.float64))
+                    if "zero_rank_rescued" in routing_payload:
+                        selected_zero_rank_rescued_all.append(np.asarray(routing_payload["zero_rank_rescued"], dtype=np.float64))
+                    if "abs_gate" in routing_payload:
+                        selected_abs_gate_all.append(np.asarray(routing_payload["abs_gate"], dtype=np.float64))
+                    if "relative_top1_weight" in routing_payload:
+                        selected_relative_top1_weight_all.append(np.asarray(routing_payload["relative_top1_weight"], dtype=np.float64))
+                    if "relative_top1_weight_entropy" in routing_payload:
+                        selected_relative_top1_weight_entropy_all.append(np.asarray(routing_payload["relative_top1_weight_entropy"], dtype=np.float64))
+                    if "relative_solver_margin" in routing_payload:
+                        selected_relative_solver_margin_all.append(np.asarray(routing_payload["relative_solver_margin"], dtype=np.float64))
+                    if "relative_competition_active" in routing_payload:
+                        selected_relative_competition_active_all.append(np.asarray(routing_payload["relative_competition_active"], dtype=np.float64))
+                    if "local_solver_weighted_delta_norm" in routing_payload:
+                        selected_local_solver_weighted_delta_norm_all.append(np.asarray(routing_payload["local_solver_weighted_delta_norm"], dtype=np.float64))
+                    if "relative_solver_top1_index" in routing_payload:
+                        selected_relative_solver_top1_index_all.append(np.asarray(routing_payload["relative_solver_top1_index"], dtype=np.int64))
                 if batch_idx == 0:
                     local_head = getattr(model, "local_head", None)
                     local_dataflow = None
@@ -688,6 +749,19 @@ def main() -> None:
                             "local_posterior_residual_energy": None if routing_payload is None or "posterior_residual_energy" not in routing_payload else float(routing_payload["posterior_residual_energy"][i]),
                             "local_posterior_residual_energy_per_dim": None if routing_payload is None or "posterior_residual_energy_per_dim" not in routing_payload else float(routing_payload["posterior_residual_energy_per_dim"][i]),
                             "local_posterior_sigma2_eff": None if routing_payload is None or "posterior_sigma2_eff" not in routing_payload else float(routing_payload["posterior_sigma2_eff"][i]),
+                            "local_posterior_sigma2_used": None if routing_payload is None or "posterior_sigma2_used" not in routing_payload else float(routing_payload["posterior_sigma2_used"][i]),
+                            "local_trace_per_dim": None if routing_payload is None or "trace_per_dim" not in routing_payload else float(routing_payload["trace_per_dim"][i]),
+                            "local_rank0_score": None if routing_payload is None or "rank0_score" not in routing_payload else float(routing_payload["rank0_score"][i]),
+                            "local_rank1_score": None if routing_payload is None or "rank1_score" not in routing_payload else float(routing_payload["rank1_score"][i]),
+                            "local_rank01_relative_gap": None if routing_payload is None or "rank01_relative_gap" not in routing_payload else float(routing_payload["rank01_relative_gap"][i]),
+                            "local_zero_rank_rescued": None if routing_payload is None or "zero_rank_rescued" not in routing_payload else int(round(float(routing_payload["zero_rank_rescued"][i]))),
+                            "local_abs_gate": None if routing_payload is None or "abs_gate" not in routing_payload else float(routing_payload["abs_gate"][i]),
+                            "local_relative_top1_weight": None if routing_payload is None or "relative_top1_weight" not in routing_payload else float(routing_payload["relative_top1_weight"][i]),
+                            "local_relative_top1_weight_entropy": None if routing_payload is None or "relative_top1_weight_entropy" not in routing_payload else float(routing_payload["relative_top1_weight_entropy"][i]),
+                            "local_relative_solver_margin": None if routing_payload is None or "relative_solver_margin" not in routing_payload else float(routing_payload["relative_solver_margin"][i]),
+                            "local_relative_competition_active": None if routing_payload is None or "relative_competition_active" not in routing_payload else float(routing_payload["relative_competition_active"][i]),
+                            "local_local_solver_weighted_delta_norm": None if routing_payload is None or "local_solver_weighted_delta_norm" not in routing_payload else float(routing_payload["local_solver_weighted_delta_norm"][i]),
+                            "local_relative_solver_top1_index": None if routing_payload is None or "relative_solver_top1_index" not in routing_payload else int(routing_payload["relative_solver_top1_index"][i]),
                         }
                     )
                 sample_offset += len(batch_y_np)
@@ -792,6 +866,57 @@ def main() -> None:
         if selected_posterior_sigma2_eff_all:
             posterior_sigma2_eff = np.concatenate(selected_posterior_sigma2_eff_all, axis=0)
             agreement_summary["posterior_sigma2_eff_mean"] = float(posterior_sigma2_eff.mean())
+        if selected_posterior_sigma2_used_all:
+            posterior_sigma2_used = np.concatenate(selected_posterior_sigma2_used_all, axis=0)
+            agreement_summary["posterior_sigma2_used_mean"] = float(posterior_sigma2_used.mean())
+        if selected_trace_per_dim_all:
+            trace_per_dim = np.concatenate(selected_trace_per_dim_all, axis=0)
+            agreement_summary["trace_per_dim_mean"] = float(trace_per_dim.mean())
+        if selected_rank0_score_all:
+            rank0_score = np.concatenate(selected_rank0_score_all, axis=0)
+            agreement_summary["rank0_score_mean"] = float(rank0_score.mean())
+        if selected_rank1_score_all:
+            rank1_score = np.concatenate(selected_rank1_score_all, axis=0)
+            agreement_summary["rank1_score_mean"] = float(rank1_score.mean())
+        if selected_rank01_relative_gap_all:
+            rank01_relative_gap = np.concatenate(selected_rank01_relative_gap_all, axis=0)
+            agreement_summary["rank01_relative_gap_mean"] = float(rank01_relative_gap.mean())
+        if selected_zero_rank_rescued_all:
+            zero_rank_rescued = np.concatenate(selected_zero_rank_rescued_all, axis=0)
+            agreement_summary["zero_rank_rescued_rate"] = float(zero_rank_rescued.mean())
+        if selected_abs_gate_all:
+            abs_gate = np.concatenate(selected_abs_gate_all, axis=0)
+            agreement_summary["abs_gate_mean"] = float(abs_gate.mean())
+            agreement_summary["abs_gate_q10"] = float(np.quantile(abs_gate, 0.10))
+            agreement_summary["abs_gate_q50"] = float(np.quantile(abs_gate, 0.50))
+            agreement_summary["abs_gate_q90"] = float(np.quantile(abs_gate, 0.90))
+        if selected_relative_top1_weight_all:
+            relative_top1_weight = np.concatenate(selected_relative_top1_weight_all, axis=0)
+            agreement_summary["relative_top1_weight_mean"] = float(relative_top1_weight.mean())
+        if selected_relative_top1_weight_entropy_all:
+            relative_top1_weight_entropy = np.concatenate(selected_relative_top1_weight_entropy_all, axis=0)
+            agreement_summary["relative_top1_weight_entropy"] = float(relative_top1_weight_entropy.mean())
+        if selected_relative_solver_margin_all:
+            relative_solver_margin = np.concatenate(selected_relative_solver_margin_all, axis=0)
+            agreement_summary["relative_solver_margin_mean"] = float(relative_solver_margin.mean())
+        if selected_relative_competition_active_all:
+            relative_competition_active = np.concatenate(selected_relative_competition_active_all, axis=0)
+            agreement_summary["relative_competition_active_rate"] = float(relative_competition_active.mean())
+        if selected_local_solver_weighted_delta_norm_all:
+            local_solver_weighted_delta_norm = np.concatenate(selected_local_solver_weighted_delta_norm_all, axis=0)
+            agreement_summary["local_solver_weighted_delta_norm_mean"] = float(local_solver_weighted_delta_norm.mean())
+        if selected_relative_solver_top1_index_all:
+            active_mask = None
+            if selected_relative_competition_active_all:
+                active_mask = np.concatenate(selected_relative_competition_active_all, axis=0) > 0.5
+            top1_index = np.concatenate(selected_relative_solver_top1_index_all, axis=0)
+            if active_mask is not None and active_mask.any():
+                active_top1 = top1_index[active_mask]
+                counts = np.bincount(active_top1.clip(min=0), minlength=max(1, int(active_top1.max(initial=0)) + 1))
+                probs = counts.astype(np.float64) / max(1.0, float(counts.sum()))
+                agreement_summary["solver_top1_occupancy_entropy"] = float(_normalized_entropy_from_probs(probs))
+            else:
+                agreement_summary["solver_top1_occupancy_entropy"] = 0.0
         local_head = getattr(model, "local_head", None)
         if local_head is not None and hasattr(local_head, "export_learned_prototype_geometry_summary"):
             learned_geometry = local_head.export_learned_prototype_geometry_summary()

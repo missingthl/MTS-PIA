@@ -22,6 +22,7 @@ DEFAULT_PIA_PYTHON = Path("/home/THL/miniconda3/envs/pia/bin/python")
 DEFAULT_BEHAVIORAL_RESULTS = ROOT / "out" / "_active" / "verify_resnet1d_dlcr_behavioral_matrix_20260418" / "behavioral_results_table.csv"
 DEFAULT_PHASE05_REFERENCE = ROOT / "out" / "_active" / "verify_resnet1d_center_prob_tangent_20260419" / "center_prob_tangent_phase05_table.csv"
 DEFAULT_FULLSCALE_REFERENCE = ROOT / "out" / "_active" / "verify_resnet1d_center_prob_tangent_20260419" / "center_prob_tangent_fullscale_table.csv"
+DEFAULT_PHASEB_GAUSSIAN_REFERENCE = ROOT / "out" / "_active" / "verify_resnet1d_center_prob_tangent_refined_20260420" / "center_prob_tangent_phaseB_short_formal_refined_gaussian_dimnorm_table.csv"
 DEFAULT_DATASETS = [
     "har",
     "natops",
@@ -211,6 +212,11 @@ def _build_condition(
     posterior_mode: str | None = None,
     posterior_student_dof: float | None = None,
     mdl_penalty_beta: float | None = None,
+    gaussian_refine_variant: str | None = None,
+    mdl_zero_rank_rescue_margin: float | None = None,
+    local_solver_competition_mode: str | None = None,
+    relative_solver_temperature: float | None = None,
+    abs_gate_activity_floor: float | None = None,
     emit_mdl_rank_trace: bool = False,
     subproto_temperature: float = 1.0,
 ) -> PhaseCondition:
@@ -241,6 +247,16 @@ def _build_condition(
         cli_args.extend(["--posterior-student-dof", str(float(posterior_student_dof))])
     if mdl_penalty_beta is not None:
         cli_args.extend(["--mdl-penalty-beta", str(float(mdl_penalty_beta))])
+    if gaussian_refine_variant is not None:
+        cli_args.extend(["--gaussian-refine-variant", str(gaussian_refine_variant)])
+    if mdl_zero_rank_rescue_margin is not None:
+        cli_args.extend(["--mdl-zero-rank-rescue-margin", str(float(mdl_zero_rank_rescue_margin))])
+    if local_solver_competition_mode is not None:
+        cli_args.extend(["--local-solver-competition-mode", str(local_solver_competition_mode)])
+    if relative_solver_temperature is not None:
+        cli_args.extend(["--relative-solver-temperature", str(float(relative_solver_temperature))])
+    if abs_gate_activity_floor is not None:
+        cli_args.extend(["--abs-gate-activity-floor", str(float(abs_gate_activity_floor))])
     if emit_mdl_rank_trace:
         cli_args.append("--emit-mdl-rank-trace")
     return PhaseCondition(
@@ -258,6 +274,11 @@ def _build_condition(
             "posterior_mode": posterior_mode,
             "posterior_student_dof": None if posterior_student_dof is None else float(posterior_student_dof),
             "mdl_penalty_beta": None if mdl_penalty_beta is None else float(mdl_penalty_beta),
+            "gaussian_refine_variant": gaussian_refine_variant,
+            "mdl_zero_rank_rescue_margin": None if mdl_zero_rank_rescue_margin is None else float(mdl_zero_rank_rescue_margin),
+            "local_solver_competition_mode": local_solver_competition_mode,
+            "relative_solver_temperature": None if relative_solver_temperature is None else float(relative_solver_temperature),
+            "abs_gate_activity_floor": None if abs_gate_activity_floor is None else float(abs_gate_activity_floor),
             "emit_mdl_rank_trace": bool(emit_mdl_rank_trace),
             "subproto_temperature": float(subproto_temperature),
             "runtime_config": dict(runtime_config),
@@ -413,6 +434,81 @@ def _build_phase_conditions(
                 )
         return conditions
 
+    if phase in {"phaseB2_short_formal_refined_trace_floor", "phaseB2_short_formal_refined_trace_floor_mdl_margin"}:
+        gaussian_refine_variant = "trace_floor" if phase.endswith("trace_floor") else "trace_floor_mdl_margin"
+        conditions = []
+        for dataset in PHASE0_DATASETS:
+            for beta in (1.0, 2.0):
+                beta_tag = str(beta).replace(".", "p")
+                conditions.append(
+                    _build_condition(
+                        phase_root=phase_root,
+                        dataset=dataset,
+                        label=f"center_prob_tangent_v3_refined_{gaussian_refine_variant}_b{beta_tag}",
+                        epochs=40,
+                        seed=seed,
+                        runtime_config=runtime_config,
+                        geometry_mode="center_prob_tangent",
+                        prob_tangent_version="v3",
+                        rank_selection_mode="mdl",
+                        posterior_mode="gaussian_dimnorm",
+                        posterior_student_dof=3.0,
+                        mdl_penalty_beta=float(beta),
+                        gaussian_refine_variant=gaussian_refine_variant,
+                        mdl_zero_rank_rescue_margin=0.03,
+                    )
+                )
+        return conditions
+
+    if phase == "phaseR1_relcomp":
+        conditions = []
+        for dataset in PHASE0_DATASETS:
+            for beta in (1.0, 2.0):
+                beta_tag = str(beta).replace(".", "p")
+                conditions.extend(
+                    [
+                        _build_condition(
+                            phase_root=phase_root,
+                            dataset=dataset,
+                            label=f"gaussian_baseline_b{beta_tag}",
+                            epochs=40,
+                            seed=seed,
+                            runtime_config=runtime_config,
+                            geometry_mode="center_prob_tangent",
+                            prob_tangent_version="v3",
+                            rank_selection_mode="mdl",
+                            posterior_mode="gaussian_dimnorm",
+                            posterior_student_dof=3.0,
+                            mdl_penalty_beta=float(beta),
+                            gaussian_refine_variant="trace_floor",
+                            mdl_zero_rank_rescue_margin=0.03,
+                            local_solver_competition_mode="none",
+                            relative_solver_temperature=1.0,
+                            abs_gate_activity_floor=1e-6,
+                        ),
+                        _build_condition(
+                            phase_root=phase_root,
+                            dataset=dataset,
+                            label=f"gaussian_relcomp_b{beta_tag}",
+                            epochs=40,
+                            seed=seed,
+                            runtime_config=runtime_config,
+                            geometry_mode="center_prob_tangent",
+                            prob_tangent_version="v3",
+                            rank_selection_mode="mdl",
+                            posterior_mode="gaussian_dimnorm",
+                            posterior_student_dof=3.0,
+                            mdl_penalty_beta=float(beta),
+                            gaussian_refine_variant="trace_floor",
+                            mdl_zero_rank_rescue_margin=0.03,
+                            local_solver_competition_mode="relcomp",
+                            relative_solver_temperature=1.0,
+                            abs_gate_activity_floor=1e-6,
+                        ),
+                    ]
+                )
+        return conditions
+
     if phase == "phaseC_fullscale_refined":
         selected_phaseb_summary_path = out_root / "center_prob_tangent_phaseB_short_formal_refined_summary.json"
         if not selected_phaseb_summary_path.is_file():
@@ -460,6 +556,60 @@ def _build_phase_conditions(
                         posterior_mode=selected_mode,
                         posterior_student_dof=3.0,
                         mdl_penalty_beta=float(selected_beta),
+                    ),
+                ]
+            )
+        return conditions
+
+    if phase == "phaseC2_fullscale_refined":
+        selected_phaseb2_summary_path = out_root / "center_prob_tangent_phaseB2_short_formal_refined_summary.json"
+        if not selected_phaseb2_summary_path.is_file():
+            raise RuntimeError("phaseC2_fullscale_refined requires center_prob_tangent_phaseB2_short_formal_refined_summary.json")
+        phaseb2_summary = _read_json(selected_phaseb2_summary_path)
+        selected_variant = str(phaseb2_summary.get("selected_gaussian_refine_variant") or "")
+        selected_beta = phaseb2_summary.get("selected_mdl_penalty_beta")
+        if selected_variant not in {"trace_floor", "trace_floor_mdl_margin"} or selected_beta in (None, ""):
+            raise RuntimeError("phaseC2_fullscale_refined requires a valid selected gaussian refine variant and mdl_penalty_beta from Phase B2")
+        conditions = []
+        for dataset in datasets:
+            best_tau = float(best_tau_map[dataset])
+            conditions.extend(
+                [
+                    _build_condition(
+                        phase_root=phase_root,
+                        dataset=dataset,
+                        label="center_only",
+                        epochs=100,
+                        seed=seed,
+                        runtime_config=runtime_config,
+                        geometry_mode="center_only",
+                        subproto_temperature=1.0,
+                    ),
+                    _build_condition(
+                        phase_root=phase_root,
+                        dataset=dataset,
+                        label="best_center_subproto",
+                        epochs=100,
+                        seed=seed,
+                        runtime_config=runtime_config,
+                        geometry_mode="center_subproto",
+                        subproto_temperature=best_tau,
+                    ),
+                    _build_condition(
+                        phase_root=phase_root,
+                        dataset=dataset,
+                        label="center_prob_tangent_v3_refined_b2",
+                        epochs=100,
+                        seed=seed,
+                        runtime_config=runtime_config,
+                        geometry_mode="center_prob_tangent",
+                        prob_tangent_version="v3",
+                        rank_selection_mode="mdl",
+                        posterior_mode="gaussian_dimnorm",
+                        posterior_student_dof=3.0,
+                        mdl_penalty_beta=float(selected_beta),
+                        gaussian_refine_variant=selected_variant,
+                        mdl_zero_rank_rescue_margin=0.03,
                     ),
                 ]
             )
@@ -732,6 +882,15 @@ def _maybe_enforce_phasec_gate(out_root: Path) -> None:
         raise RuntimeError("Phase B refined gate did not pass; refusing to launch phaseC_fullscale_refined")
 
 
+def _maybe_enforce_phasec2_gate(out_root: Path) -> None:
+    summary_path = out_root / "center_prob_tangent_phaseB2_short_formal_refined_summary.json"
+    if not summary_path.is_file():
+        raise RuntimeError("phaseC2_fullscale_refined requires center_prob_tangent_phaseB2_short_formal_refined_summary.json")
+    summary = _read_json(summary_path)
+    if not bool(summary.get("phase_c_gate_passed", False)):
+        raise RuntimeError("Phase B2 refined gate did not pass; refusing to launch phaseC2_fullscale_refined")
+
+
 def _run_summarizer(
     *,
     manifest_path: Path,
@@ -739,6 +898,7 @@ def _run_summarizer(
     python_bin: str,
     reference_phase05_table: Path | None = None,
     reference_fullscale_table: Path | None = None,
+    reference_phaseb_gaussian_table: Path | None = None,
 ) -> None:
     if not SUMMARIZER.is_file():
         return
@@ -754,6 +914,8 @@ def _run_summarizer(
         command.extend(["--reference-phase05-table", str(reference_phase05_table)])
     if reference_fullscale_table is not None:
         command.extend(["--reference-fullscale-table", str(reference_fullscale_table)])
+    if reference_phaseb_gaussian_table is not None:
+        command.extend(["--reference-phaseb-gaussian-table", str(reference_phaseb_gaussian_table)])
     subprocess.run(command, cwd=str(ROOT), check=True)
 
 
@@ -835,6 +997,79 @@ def _run_refined_phase_b(
     return consolidated_path
 
 
+def _run_refined_phase_b2(
+    *,
+    out_root: Path,
+    seed: int,
+    best_tau_map: Dict[str, float],
+    python_bin: str,
+    e0_reference: Path,
+    reference_phase05_table: Path | None,
+    reference_phaseb_gaussian_table: Path | None,
+) -> Path:
+    subphases = [
+        "phaseB2_short_formal_refined_trace_floor",
+        "phaseB2_short_formal_refined_trace_floor_mdl_margin",
+    ]
+    attempts: List[Dict[str, Any]] = []
+    all_conditions: List[Dict[str, Any]] = []
+    for phase in subphases:
+        result = _run_phase_with_oom_fallback(
+            phase=phase,
+            out_root=out_root,
+            conditions_builder=_build_phase_conditions,
+            seed=seed,
+            datasets=PHASE0_DATASETS,
+            best_tau_map=best_tau_map,
+            python_bin=python_bin,
+        )
+        manifest_path = Path(result["manifest_path"]).resolve()
+        manifest = _read_json(manifest_path)
+        all_conditions.extend(list(manifest.get("conditions", [])))
+        attempts.append(
+            {
+                "phase": phase,
+                "manifest_path": str(manifest_path),
+            }
+        )
+
+    combined_phase = "phaseB2_short_formal_refined"
+    combined_phase_root = out_root / combined_phase
+    _ensure_dir(combined_phase_root)
+    combined_manifest_path = combined_phase_root / f"center_prob_tangent_{combined_phase}_manifest.json"
+    combined_manifest = {
+        "phase": combined_phase,
+        "out_root": str(out_root),
+        "phase_root": str(combined_phase_root),
+        "attempts": attempts,
+        "conditions": all_conditions,
+    }
+    _write_json(combined_manifest_path, combined_manifest)
+    _run_summarizer(
+        manifest_path=combined_manifest_path,
+        e0_reference=e0_reference,
+        python_bin=python_bin,
+        reference_phase05_table=reference_phase05_table,
+        reference_fullscale_table=None,
+        reference_phaseb_gaussian_table=reference_phaseb_gaussian_table,
+    )
+    summary_path = _phase_summary_path(out_root, phase=combined_phase)
+    summary = _read_json(summary_path)
+    consolidated = {
+        "phase": combined_phase,
+        "attempts": attempts,
+        "selected_gaussian_refine_variant": summary.get("selected_gaussian_refine_variant"),
+        "selected_mdl_penalty_beta": summary.get("selected_mdl_penalty_beta"),
+        "selected_candidate": summary.get("selected_candidate"),
+        "phase_c_gate_passed": bool(summary.get("phase_c_gate_passed", False)),
+        "selected_summary_path": str(summary_path),
+        "comparison_csv": str(_phase_table_path(out_root, phase=combined_phase)),
+    }
+    consolidated_path = out_root / "center_prob_tangent_phaseB2_short_formal_refined_summary.json"
+    _write_json(consolidated_path, consolidated)
+    return consolidated_path
+
+
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Center prob tangent matrix launcher with dual-GPU DLCR scheduling.")
     parser.add_argument(
@@ -847,7 +1082,10 @@ def build_argparser() -> argparse.ArgumentParser:
             "phase1_fullscale",
             "phaseA_probe",
             "phaseB_short_formal_refined",
+            "phaseB2_short_formal_refined",
+            "phaseR1_relcomp",
             "phaseC_fullscale_refined",
+            "phaseC2_fullscale_refined",
         ],
     )
     parser.add_argument(
@@ -865,6 +1103,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--behavioral-results", type=str, default=str(DEFAULT_BEHAVIORAL_RESULTS))
     parser.add_argument("--reference-phase05-table", type=str, default=str(DEFAULT_PHASE05_REFERENCE))
     parser.add_argument("--reference-fullscale-table", type=str, default=str(DEFAULT_FULLSCALE_REFERENCE))
+    parser.add_argument("--reference-phaseb-gaussian-table", type=str, default=str(DEFAULT_PHASEB_GAUSSIAN_REFERENCE))
     parser.add_argument("--posterior-mode", type=str, default="auto", choices=["auto", "gaussian_dimnorm", "student_t"])
     parser.add_argument("--skip-phase1-gate", action="store_true", default=False)
     return parser
@@ -880,19 +1119,30 @@ def main() -> None:
     best_tau_map = _load_best_subproto_tau_map(Path(args.behavioral_results).resolve())
     if args.phase == "phaseA_probe":
         required_datasets = PHASEA_DATASETS
-    elif args.phase in {"phase05_short_formal", "phaseB_short_formal_refined"}:
+    elif args.phase in {"phase05_short_formal", "phaseB_short_formal_refined", "phaseB2_short_formal_refined", "phaseR1_relcomp"}:
         required_datasets = PHASE0_DATASETS
-    elif args.phase in {"phase1_fullscale", "phaseC_fullscale_refined"}:
+    elif args.phase in {"phase1_fullscale", "phaseC_fullscale_refined", "phaseC2_fullscale_refined"}:
         required_datasets = datasets
     else:
         required_datasets = PHASE0_DATASETS
-    missing = [dataset for dataset in required_datasets if dataset not in best_tau_map]
-    if missing:
-        raise ValueError(f"missing best_subproto_tau for datasets: {missing}")
+    requires_best_tau = args.phase in {
+        "phase05_short_formal",
+        "phase1_fullscale",
+        "phaseB_short_formal_refined",
+        "phaseB2_short_formal_refined",
+        "phaseC_fullscale_refined",
+        "phaseC2_fullscale_refined",
+    }
+    if requires_best_tau:
+        missing = [dataset for dataset in required_datasets if dataset not in best_tau_map]
+        if missing:
+            raise ValueError(f"missing best_subproto_tau for datasets: {missing}")
     if args.phase == "phase1_fullscale" and not args.skip_phase1_gate:
         _maybe_enforce_phase1_gate(out_root)
     if args.phase == "phaseC_fullscale_refined" and not args.skip_phase1_gate:
         _maybe_enforce_phasec_gate(out_root)
+    if args.phase == "phaseC2_fullscale_refined" and not args.skip_phase1_gate:
+        _maybe_enforce_phasec2_gate(out_root)
     if args.phase == "phaseB_short_formal_refined":
         consolidated_path = _run_refined_phase_b(
             out_root=out_root,
@@ -905,6 +1155,18 @@ def main() -> None:
         )
         print(f"[done] phaseB summary -> {consolidated_path}", flush=True)
         return
+    if args.phase == "phaseB2_short_formal_refined":
+        consolidated_path = _run_refined_phase_b2(
+            out_root=out_root,
+            seed=int(args.seed),
+            best_tau_map=best_tau_map,
+            python_bin=str(args.python_bin),
+            e0_reference=Path(args.behavioral_results).resolve(),
+            reference_phase05_table=Path(args.reference_phase05_table).resolve() if args.reference_phase05_table else None,
+            reference_phaseb_gaussian_table=Path(args.reference_phaseb_gaussian_table).resolve() if args.reference_phaseb_gaussian_table else None,
+        )
+        print(f"[done] phaseB2 summary -> {consolidated_path}", flush=True)
+        return
 
     result = _run_phase_with_oom_fallback(
         phase=str(args.phase),
@@ -916,13 +1178,14 @@ def main() -> None:
         python_bin=str(args.python_bin),
     )
     manifest_path = Path(result["manifest_path"]).resolve()
-    if args.phase in {"phase05_short_formal", "phase1_fullscale", "phaseA_probe", "phaseC_fullscale_refined"}:
+    if args.phase in {"phase05_short_formal", "phase1_fullscale", "phaseA_probe", "phaseR1_relcomp", "phaseC_fullscale_refined", "phaseC2_fullscale_refined"}:
         _run_summarizer(
             manifest_path=manifest_path,
             e0_reference=Path(args.behavioral_results).resolve(),
             python_bin=str(args.python_bin),
             reference_phase05_table=Path(args.reference_phase05_table).resolve() if args.reference_phase05_table else None,
             reference_fullscale_table=Path(args.reference_fullscale_table).resolve() if args.reference_fullscale_table else None,
+            reference_phaseb_gaussian_table=Path(args.reference_phaseb_gaussian_table).resolve() if args.reference_phaseb_gaussian_table else None,
         )
     print(f"[done] manifest -> {manifest_path}", flush=True)
 

@@ -50,6 +50,11 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
         posterior_mode: str = "gaussian_dimnorm",
         posterior_student_dof: float = 3.0,
         mdl_penalty_beta: float = 1.0,
+        gaussian_refine_variant: str = "base",
+        mdl_zero_rank_rescue_margin: float = 0.03,
+        local_solver_competition_mode: str = "none",
+        relative_solver_temperature: float = 1.0,
+        abs_gate_activity_floor: float = 1e-6,
         readout_gate_mode: str = "none",
         block_channels: tuple[int, int, int] = (64, 128, 128),
         kernel_sizes: tuple[int, int, int] = (7, 5, 3),
@@ -86,6 +91,11 @@ class ResNet1DLocalClosedFormResidual(nn.Module):
             posterior_mode=str(posterior_mode),
             posterior_student_dof=float(posterior_student_dof),
             mdl_penalty_beta=float(mdl_penalty_beta),
+            gaussian_refine_variant=str(gaussian_refine_variant),
+            mdl_zero_rank_rescue_margin=float(mdl_zero_rank_rescue_margin),
+            local_solver_competition_mode=str(local_solver_competition_mode),
+            relative_solver_temperature=float(relative_solver_temperature),
+            abs_gate_activity_floor=float(abs_gate_activity_floor),
         )
         self.beta = nn.Parameter(torch.tensor(float(init_beta), dtype=torch.float32))
         self.detach_local_input = bool(detach_local_input)
