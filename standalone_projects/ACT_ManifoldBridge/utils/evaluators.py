@@ -286,8 +286,10 @@ def fit_eval_resnet1d_acl(
             optimizer.zero_grad()
             anchor_features = model.encode(bx)
             logits = model.classify(anchor_features)
-            loss_cls = criterion(logits, by)
-            loss_supcon = _compute_acl_supcon_loss(
+            loss_cls_orig = criterion(logits, by)
+            
+            # Re-calculating using optimized loss function that also returns augmented logits/labels
+            loss_supcon, aug_info = _compute_acl_supcon_loss(
                 model,
                 anchor_features,
                 by,
@@ -296,11 +298,22 @@ def fit_eval_resnet1d_acl(
                 dev,
                 temperature=acl_temperature,
             )
+            
+            loss_cls_aug = torch.tensor(0.0, device=dev)
+            if aug_info is not None:
+                # aug_info: (aug_features, aug_labels)
+                aug_feat, aug_lab = aug_info
+                aug_logits = model.classify(aug_feat)
+                loss_cls_aug = criterion(aug_logits, aug_lab)
+
+            # Combined Loss: CE(orig) + CE(aug) + alpha * SupCon(orig, aug)
+            loss_cls = loss_cls_orig + loss_cls_aug
             loss = loss_cls + float(acl_loss_weight) * loss_supcon
+            
             loss.backward()
             optimizer.step()
 
-            running_cls += float(loss_cls.item())
+            running_cls += float(loss_cls_orig.item())# Still track orig separately if needed, or total
             running_supcon += float(loss_supcon.item())
             batch_count += 1
 
@@ -386,7 +399,10 @@ def _compute_acl_supcon_loss(
     dev: torch.device,
     *,
     temperature: float,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+    """
+    Returns (supcon_loss, (aug_enc_features, aug_labels))
+    """
     selected_local_idx: List[int] = []
     positive_arrays: List[np.ndarray] = []
     positive_labels: List[int] = []
@@ -402,7 +418,7 @@ def _compute_acl_supcon_loss(
             positive_labels.append(label_val)
 
     if not selected_local_idx or not positive_arrays:
-        return anchor_features.new_zeros(())
+        return anchor_features.new_zeros(()), None
 
     anchor_proj = model.project(anchor_features[selected_local_idx])
     anchor_sup_labels = anchor_labels[selected_local_idx]
@@ -414,11 +430,13 @@ def _compute_acl_supcon_loss(
 
     supcon_features = torch.cat([anchor_proj, pos_proj], dim=0)
     supcon_labels = torch.cat([anchor_sup_labels, pos_labels], dim=0)
-    return supervised_contrastive_loss(
+    
+    supcon_loss = supervised_contrastive_loss(
         supcon_features,
         supcon_labels,
         temperature=temperature,
     )
+    return supcon_loss, (pos_features, pos_labels)
 
 def fit_eval_resnet1d(X_train, y_train, X_val, y_val, X_test, y_test, epochs=30, lr=1e-3, batch_size=64, patience=10, device="cuda", return_model_obj=False):
     in_channels = X_train.shape[1]
