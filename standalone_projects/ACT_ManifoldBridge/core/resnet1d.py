@@ -63,21 +63,12 @@ class ResNet1DClassifier(nn.Module):
         super().__init__()
         self.backbone = ResNet1DBackbone(in_channels)
         self.classifier = nn.Linear(self.backbone.feature_dim, num_classes)
-        self.projection_head = nn.Sequential(
-            nn.Linear(self.backbone.feature_dim, self.backbone.feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.backbone.feature_dim, 64),
-        )
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)
 
     def classify(self, features: torch.Tensor) -> torch.Tensor:
         return self.classifier(features)
-
-    def project(self, features: torch.Tensor) -> torch.Tensor:
-        proj = self.projection_head(features)
-        return F.normalize(proj, p=2, dim=-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         latent = self.encode(x)

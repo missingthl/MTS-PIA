@@ -1,4 +1,5 @@
 import os
+
 if "OMP_NUM_THREADS" not in os.environ:
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
@@ -7,42 +8,29 @@ if "OMP_NUM_THREADS" not in os.environ:
     os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
-import sys
-import numpy as np
-import torch
-import pandas as pd
-import json
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 
-# Local imports
+import numpy as np
+import pandas as pd
+import torch
+
 from core.bridge import bridge_single, logvec_to_spd
-from core.resnet1d import ResNet1DClassifier
+from core.curriculum import active_direction_probs, build_curriculum_aug_candidates
 from core.pia import (
-    FisherPIAConfig, LRAESConfig, 
-    compute_fisher_pia_terms, build_lraes_direction_bank, build_lraes_class_basis_bank, build_pia_direction_bank
+    FisherPIAConfig,
+    LRAESConfig,
+    build_lraes_direction_bank,
+    build_pia_direction_bank,
 )
-from act_lite_feedback import compute_margin_feedback
-from core.curriculum import (
-    active_direction_probs, 
-    build_curriculum_aug_candidates,
-    build_step_tier_aug_candidates,
-    build_acl_candidate_pool,
-    apply_safe_step_constraint
-)
-from host_alignment_probe import (
-    compute_candidate_usefulness_batch,
-    compute_gradient_alignment,
-    compute_entropy_shift,
-    score_hard_positive_candidates,
-)
-from utils.datasets import load_trials_for_dataset, make_trial_split, AEON_FIXED_SPLIT_SPECS
+from host_alignment_probe import compute_gradient_alignment
+from utils.datasets import AEON_FIXED_SPLIT_SPECS, load_trials_for_dataset, make_trial_split
 from utils.evaluators import (
-    build_model, fit_eval_minirocket, fit_eval_resnet1d, fit_eval_resnet1d_acl,
-    fit_eval_resnet1d_continue_ce,
-    fit_eval_resnet1d_weighted_aug_ce,
-    fit_eval_patchtst, fit_eval_timesnet, _get_dev
+    build_model,
+    fit_eval_minirocket,
+    fit_eval_patchtst,
+    fit_eval_resnet1d,
+    fit_eval_timesnet,
 )
 
 
@@ -55,253 +43,45 @@ class TrialRecord:
     z: np.ndarray
 
 
-def _build_trial_records(trials, spd_eps=1e-4):
-    if not trials: return [], None
-    records = []; log_covs = []
+def _build_trial_records(trials, spd_eps: float = 1e-4):
+    if not trials:
+        return [], None
+
+    records = []
+    log_covs = []
     for t in trials:
         x = torch.from_numpy(t.x).double()
         x = x - x.mean(dim=-1, keepdim=True)
         cov = (x @ x.transpose(-1, -2)) / (x.shape[-1] - 1)
-        cov = cov + spd_eps * torch.eye(cov.shape[0])
+        cov = cov + spd_eps * torch.eye(cov.shape[0], dtype=cov.dtype)
         vals, vecs = torch.linalg.eigh(cov)
         log_cov = vecs @ torch.diag_embed(torch.log(torch.clamp(vals, min=spd_eps))) @ vecs.transpose(-1, -2)
         log_covs.append(log_cov.numpy())
-        records.append({"tid": t.tid, "y": t.y, "x_raw": t.x, "sigma_orig": cov.numpy(), "log_cov": log_cov.numpy()})
-    
-    mean_log = np.mean(log_covs, axis=0)
-    final_records = []
-    idx = np.triu_indices(mean_log.shape[0])
-    for r in records:
-        z = (r["log_cov"] - mean_log)[idx]
-        final_records.append(TrialRecord(tid=r["tid"], y=r["y"], x_raw=r["x_raw"], sigma_orig=r["sigma_orig"], z=z))
-    return final_records, mean_log
-
-
-def _parse_step_tier_ratios(raw: str) -> Tuple[float, ...]:
-    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
-    if not parts:
-        raise ValueError("mba_step_tier_ratios must contain at least one ratio")
-    ratios = tuple(float(p) for p in parts)
-    if any(r < 0.0 or r > 1.0 for r in ratios):
-        raise ValueError("mba_step_tier_ratios values must lie in [0, 1]")
-    if tuple(sorted(ratios)) != ratios:
-        raise ValueError("mba_step_tier_ratios must be sorted in non-decreasing order")
-    return ratios
-
-
-def _save_acl_audits(out_root: str, dataset_name: str, seed: int, candidate_rows: List[Dict[str, object]], selected_rows: List[Dict[str, object]]):
-    audit_dir = os.path.join(out_root, "audit")
-    os.makedirs(audit_dir, exist_ok=True)
-
-    candidate_df = pd.DataFrame([_materialize_audit_row(r) for r in candidate_rows])
-    selected_df = pd.DataFrame([_materialize_audit_row(r) for r in selected_rows])
-    candidate_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_candidate_scores.csv")
-    selected_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_selected_positives.csv")
-    candidate_df.to_csv(candidate_path, index=False)
-    selected_df.to_csv(selected_path, index=False)
-    return candidate_path, selected_path
-
-
-def _materialize_audit_row(row: Dict[str, object]) -> Dict[str, object]:
-    out = {}
-    for key, value in row.items():
-        if key in {"z_src", "z_cand", "x_cand"}:
-            continue
-        if isinstance(value, np.ndarray):
-            if value.ndim == 0:
-                out[key] = float(value.item())
-            else:
-                out[key] = json.dumps(np.asarray(value).tolist())
-        elif isinstance(value, (np.floating, np.integer)):
-            out[key] = value.item()
-        else:
-            out[key] = value
-    return out
-
-
-def _save_step_tier_audits(
-    out_root: str,
-    dataset_name: str,
-    seed: int,
-    candidate_rows: List[Dict[str, object]],
-) -> Dict[str, str]:
-    audit_dir = os.path.join(out_root, "audit")
-    os.makedirs(audit_dir, exist_ok=True)
-    candidate_df = pd.DataFrame([_materialize_audit_row(r) for r in candidate_rows])
-    candidate_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_widened_candidates.csv")
-    candidate_df.to_csv(candidate_path, index=False)
-
-    tier_summary_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_tier_summary.csv")
-    ray_summary_path = os.path.join(audit_dir, f"{dataset_name}_s{seed}_ray_summary.csv")
-
-    if candidate_df.empty:
-        pd.DataFrame([{"dataset": dataset_name, "seed": seed}]).to_csv(tier_summary_path, index=False)
-        pd.DataFrame([{"dataset": dataset_name, "seed": seed}]).to_csv(ray_summary_path, index=False)
-        return {
-            "candidate_audit_csv": candidate_path,
-            "tier_summary_csv": tier_summary_path,
-            "ray_summary_csv": ray_summary_path,
-        }
-
-    numeric_cols = [
-        "tier_ratio",
-        "safe_upper_bound",
-        "gamma_used",
-        "safe_radius_ratio",
-        "transport_error_logeuc",
-        "margin_aug",
-        "feedback_weight",
-        "alignment_cosine",
-    ]
-    for col in numeric_cols:
-        if col in candidate_df.columns:
-            candidate_df[col] = pd.to_numeric(candidate_df[col], errors="coerce")
-
-    tier_order = [label for label in ["small", "mid", "edge"] if label in set(candidate_df.get("tier_label", []))]
-    if not tier_order:
-        tier_order = [str(v) for v in candidate_df["tier_label"].dropna().unique().tolist()]
-
-    tier_summary_row: Dict[str, object] = {
-        "dataset": dataset_name,
-        "seed": int(seed),
-        "candidate_total_count": int(len(candidate_df)),
-        "step_tier_count": int(candidate_df["tier_label"].nunique()) if "tier_label" in candidate_df.columns else 0,
-    }
-    for label in tier_order:
-        tier_df = candidate_df[candidate_df["tier_label"] == label]
-        weights = pd.to_numeric(tier_df.get("feedback_weight"), errors="coerce")
-        tier_summary_row[f"E_w_{label}"] = float(weights.mean()) if len(weights) else np.nan
-        tier_summary_row[f"admission_{label}"] = float((weights > 0.5).mean()) if len(weights) else np.nan
-        tier_summary_row[f"tier_margin_mean_{label}"] = float(pd.to_numeric(tier_df.get("margin_aug"), errors="coerce").mean()) if len(tier_df) else np.nan
-        tier_summary_row[f"tier_transport_error_logeuc_mean_{label}"] = float(pd.to_numeric(tier_df.get("transport_error_logeuc"), errors="coerce").mean()) if len(tier_df) else np.nan
-        tier_summary_row[f"tier_alignment_cosine_mean_{label}"] = float(pd.to_numeric(tier_df.get("alignment_cosine"), errors="coerce").mean()) if len(tier_df) else np.nan
-        tier_summary_row[f"tier_count_{label}"] = int(len(tier_df))
-    pd.DataFrame([tier_summary_row]).to_csv(tier_summary_path, index=False)
-
-    ray_rows: List[Dict[str, object]] = []
-    if "ray_id" in candidate_df.columns:
-        for ray_id, ray_df in candidate_df.groupby("ray_id", sort=True):
-            row: Dict[str, object] = {
-                "dataset": dataset_name,
-                "seed": int(seed),
-                "ray_id": int(ray_id),
+        records.append(
+            {
+                "tid": t.tid,
+                "y": t.y,
+                "x_raw": t.x,
+                "sigma_orig": cov.numpy(),
+                "log_cov": log_cov.numpy(),
             }
-            for base_col in ["anchor_index", "direction_id", "sign"]:
-                if base_col in ray_df.columns:
-                    vals = ray_df[base_col].dropna().tolist()
-                    row[base_col] = vals[0] if vals else np.nan
-            for label in tier_order:
-                tier_df = ray_df[ray_df["tier_label"] == label]
-                row[f"feedback_weight_{label}"] = float(pd.to_numeric(tier_df.get("feedback_weight"), errors="coerce").mean()) if len(tier_df) else np.nan
-                row[f"alignment_cosine_{label}"] = float(pd.to_numeric(tier_df.get("alignment_cosine"), errors="coerce").mean()) if len(tier_df) else np.nan
-                row[f"transport_error_logeuc_{label}"] = float(pd.to_numeric(tier_df.get("transport_error_logeuc"), errors="coerce").mean()) if len(tier_df) else np.nan
-            ray_rows.append(row)
-    pd.DataFrame(ray_rows if ray_rows else [{"dataset": dataset_name, "seed": int(seed)}]).to_csv(ray_summary_path, index=False)
-    return {
-        "candidate_audit_csv": candidate_path,
-        "tier_summary_csv": tier_summary_path,
-        "ray_summary_csv": ray_summary_path,
-    }
-
-
-def _build_selected_positive_map(selected_rows: List[Dict[str, object]]) -> Dict[int, List[np.ndarray]]:
-    positive_map: Dict[int, List[np.ndarray]] = {}
-    for row in selected_rows:
-        anchor_idx = int(row["anchor_index"])
-        x_cand = np.asarray(row["x_cand"], dtype=np.float32)
-        positive_map.setdefault(anchor_idx, []).append(x_cand)
-    return positive_map
-
-
-def _is_finite_scalar(value: object) -> bool:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return False
-    return np.isfinite(out)
-
-
-def _attach_training_feedback_to_candidate_rows(
-    candidate_rows: List[Dict[str, object]],
-    res_act: Dict[str, object],
-) -> None:
-    weights = np.asarray(res_act.get("aug_feedback_weight_by_sample", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
-    margins = np.asarray(res_act.get("aug_margin_by_sample", np.zeros((0,), dtype=np.float64)), dtype=np.float64)
-    seen = np.asarray(res_act.get("aug_seen_count_by_sample", np.zeros((0,), dtype=np.int64)), dtype=np.int64)
-    if weights.size != len(candidate_rows) or margins.size != len(candidate_rows) or seen.size != len(candidate_rows):
-        return
-    for idx, row in enumerate(candidate_rows):
-        row["feedback_weight"] = float(weights[idx]) if np.isfinite(weights[idx]) else np.nan
-        row["margin_aug"] = float(margins[idx]) if np.isfinite(margins[idx]) else np.nan
-        row["aug_seen_count"] = int(seen[idx])
-
-
-def _enrich_mba_candidate_rows_with_probe(
-    *,
-    args,
-    model_obj,
-    candidate_rows: List[Dict[str, object]],
-    tid_to_rec: Dict[str, TrialRecord],
-    feedback_margin_temperature: float,
-    feedback_margin_polarity: str,
-) -> None:
-    if model_obj is None or not candidate_rows:
-        for row in candidate_rows:
-            row.setdefault("alignment_cosine", np.nan)
-            row.setdefault("is_conflict", np.nan)
-            row.setdefault("margin_aug", np.nan)
-            row.setdefault("feedback_weight", np.nan)
-        return
-
-    dev = _get_dev(args.device)
-    model = model_obj.to(dev)
-    model.eval()
-    chunk_size = 32
-
-    for start in range(0, len(candidate_rows), chunk_size):
-        chunk = candidate_rows[start : start + chunk_size]
-        if not chunk:
-            continue
-        x_orig_batch = torch.from_numpy(np.stack([tid_to_rec[row["tid"]].x_raw for row in chunk])).float()
-        x_cand_batch = torch.from_numpy(np.stack([np.asarray(row["x_cand"], dtype=np.float32) for row in chunk])).float()
-        y_batch = torch.from_numpy(np.asarray([int(row["y"]) for row in chunk], dtype=np.int64))
-
-        usefulness = (
-            compute_candidate_usefulness_batch(
-                model,
-                x_orig_batch,
-                y_batch,
-                x_cand_batch,
-                device=args.device,
-            )
-            if args.theory_diagnostics
-            else [{} for _ in chunk]
         )
 
-        with torch.no_grad():
-            logits = model(x_cand_batch.to(dev))
-            margins, weights = compute_margin_feedback(
-                logits,
-                y_batch.to(dev),
-                temperature=feedback_margin_temperature,
-                polarity=feedback_margin_polarity,
+    mean_log = np.mean(log_covs, axis=0)
+    idx = np.triu_indices(mean_log.shape[0])
+    final_records = []
+    for record in records:
+        z = (record["log_cov"] - mean_log)[idx]
+        final_records.append(
+            TrialRecord(
+                tid=record["tid"],
+                y=record["y"],
+                x_raw=record["x_raw"],
+                sigma_orig=record["sigma_orig"],
+                z=z,
             )
-        margins_np = margins.detach().cpu().numpy()
-        weights_np = weights.detach().cpu().numpy()
-
-        for row, metrics, margin_aug, feedback_weight in zip(chunk, usefulness, margins_np, weights_np):
-            if args.theory_diagnostics:
-                row["alignment_cosine"] = float(metrics.get("alignment_cosine", np.nan))
-                row["is_conflict"] = float(metrics.get("is_conflict", np.nan))
-                row["entropy_orig"] = float(metrics.get("entropy_orig", np.nan))
-                row["entropy_aug"] = float(metrics.get("entropy_aug", np.nan))
-                row["entropy_shift"] = float(metrics.get("entropy_shift", np.nan))
-            row.setdefault("probe_margin_aug", float(margin_aug))
-            row.setdefault("probe_feedback_weight", float(feedback_weight))
-            if not _is_finite_scalar(row.get("margin_aug")):
-                row["margin_aug"] = float(margin_aug)
-            if not _is_finite_scalar(row.get("feedback_weight")):
-                row["feedback_weight"] = float(feedback_weight)
+        )
+    return final_records, mean_log
 
 
 def _fit_host_model(
@@ -338,11 +118,11 @@ def _fit_host_model(
         kwargs["loader_seed"] = loader_seed
         return fit_eval_timesnet(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
 
-    m = build_model(n_kernels=args.n_kernels, random_state=loader_seed or 42)
-    return fit_eval_minirocket(m, X_tr, y_tr, X_test_raw, y_test)
+    model = build_model(n_kernels=args.n_kernels, random_state=loader_seed or 42)
+    return fit_eval_minirocket(model, X_tr, y_tr, X_test_raw, y_test)
 
 
-def _build_mba_realized_augmentations(
+def _build_act_realized_augmentations(
     *,
     args,
     seed: int,
@@ -352,7 +132,7 @@ def _build_mba_realized_augmentations(
     mean_log: np.ndarray,
 ) -> Dict[str, object]:
     if args.algo == "lraes":
-        W, _ = build_lraes_direction_bank(
+        direction_bank, _ = build_lraes_direction_bank(
             X_train_z,
             y_train,
             k_dir=args.k_dir,
@@ -360,90 +140,46 @@ def _build_mba_realized_augmentations(
             lraes_cfg=LRAESConfig(),
         )
     else:
-        W, _ = build_pia_direction_bank(X_train_z, k_dir=args.k_dir, seed=seed)
+        direction_bank, _ = build_pia_direction_bank(X_train_z, k_dir=args.k_dir, seed=seed)
 
-    effective_k = W.shape[0]
+    effective_k = int(direction_bank.shape[0])
     print(f"Requested K: {args.k_dir} | Effective K: {effective_k} | Classes: {len(np.unique(y_train))}")
 
-    gamma_budget = np.full((effective_k,), args.pia_gamma)
-    probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
-    eta_val = 0.5 if not args.disable_safe_step else None
-    tid_train = np.array([r.tid for r in train_recs])
+    gamma_budget = np.full((effective_k,), float(args.pia_gamma), dtype=np.float64)
+    direction_probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
+    eta_safe = None if args.disable_safe_step else 0.5
+    tid_train = np.asarray([record.tid for record in train_recs], dtype=object)
+
+    z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
+        X_train_z,
+        y_train,
+        tid_train,
+        direction_bank=direction_bank,
+        direction_probs=direction_probs,
+        gamma_by_dir=gamma_budget,
+        multiplier=args.multiplier,
+        seed=seed + 42,
+        eta_safe=eta_safe,
+    )
+
+    tid_to_rec = {record.tid: record for record in train_recs}
     aug_trials: List[Dict[str, object]] = []
     bridge_metrics: List[Dict[str, object]] = []
-    tid_to_rec = {r.tid: r for r in train_recs}
-    candidate_rows: List[Dict[str, object]] = []
-
-    if args.mba_candidate_mode == "step_tiers":
-        step_candidates, aug_meta = build_step_tier_aug_candidates(
-            X_train_z,
-            y_train,
-            tid_train,
-            direction_bank=W,
-            direction_probs=probs,
-            gamma_by_dir=gamma_budget,
-            seed=seed + 42,
-            tier_ratios=tuple(args.mba_step_tier_ratios),
-            eta_safe=eta_val,
+    for i in range(len(z_aug)):
+        src = tid_to_rec[tid_aug[i]]
+        sigma_aug = logvec_to_spd(z_aug[i], mean_log)
+        x_aug, bridge_meta = bridge_single(
+            torch.from_numpy(src.x_raw),
+            torch.from_numpy(src.sigma_orig),
+            torch.from_numpy(sigma_aug),
         )
-        z_aug = np.stack([np.asarray(row["z_cand"], dtype=np.float32) for row in step_candidates]) if step_candidates else np.empty((0, X_train_z.shape[1]), dtype=np.float32)
-        y_aug = np.asarray([int(row["y"]) for row in step_candidates], dtype=np.int64) if step_candidates else np.empty((0,), dtype=np.int64)
-        tid_aug = np.asarray([row["tid"] for row in step_candidates], dtype=object) if step_candidates else np.empty((0,), dtype=object)
+        aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
+        bridge_metrics.append(bridge_meta)
 
-        for aug_index, row in enumerate(step_candidates):
-            src = tid_to_rec[row["tid"]]
-            sigma_aug = logvec_to_spd(np.asarray(row["z_cand"], dtype=np.float32), mean_log)
-            x_aug, meta_b = bridge_single(
-                torch.from_numpy(src.x_raw),
-                torch.from_numpy(src.sigma_orig),
-                torch.from_numpy(sigma_aug),
-            )
-            enriched = dict(row)
-            enriched["x_cand"] = x_aug.numpy()
-            enriched["aug_index"] = int(aug_index)
-            enriched.update({
-                "transport_error_fro": float(meta_b.get("transport_error_fro", 0.0)),
-                "transport_error_logeuc": float(meta_b.get("transport_error_logeuc", 0.0)),
-                "bridge_cond_A": float(meta_b.get("bridge_cond_A", 0.0)),
-                "metric_preservation_error": float(meta_b.get("metric_preservation_error", 0.0)),
-            })
-            candidate_rows.append(enriched)
-            aug_trials.append({
-                "x": x_aug.numpy(),
-                "y": int(row["y"]),
-                "tid": row["tid"],
-                "candidate_index": int(aug_index),
-                "tier_label": row.get("tier_label", ""),
-                "ray_id": row.get("ray_id"),
-            })
-            bridge_metrics.append(meta_b)
-    else:
-        z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
-            X_train_z,
-            y_train,
-            tid_train,
-            direction_bank=W,
-            direction_probs=probs,
-            gamma_by_dir=gamma_budget,
-            multiplier=args.multiplier,
-            seed=seed + 42,
-            eta_safe=eta_val,
-        )
-
-        for i in range(len(z_aug)):
-            src = tid_to_rec[tid_aug[i]]
-            sigma_aug = logvec_to_spd(z_aug[i], mean_log)
-            x_aug, meta_b = bridge_single(
-                torch.from_numpy(src.x_raw),
-                torch.from_numpy(src.sigma_orig),
-                torch.from_numpy(sigma_aug),
-            )
-            aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
-            bridge_metrics.append(meta_b)
-
-    X_aug_raw = np.stack([t["x"] for t in aug_trials]) if aug_trials else None
-    y_aug_np = np.array([t["y"] for t in aug_trials], dtype=np.int64) if aug_trials else None
+    X_aug_raw = np.stack([trial["x"] for trial in aug_trials]) if aug_trials else None
+    y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
     avg_bridge = pd.DataFrame(bridge_metrics).mean().to_dict() if bridge_metrics else {}
+
     return {
         "effective_k": effective_k,
         "z_aug": z_aug,
@@ -456,11 +192,8 @@ def _build_mba_realized_augmentations(
         "avg_bridge": avg_bridge,
         "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
         "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
-        "candidate_rows": candidate_rows,
-        "candidate_total_count": int(aug_meta.get("candidate_total_count", len(candidate_rows) if candidate_rows else len(aug_trials))),
+        "candidate_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
         "aug_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
-        "step_tier_count": int(aug_meta.get("step_tier_count", 0)),
-        "tier_labels": list(aug_meta.get("tier_labels", [])),
     }
 
 
@@ -476,34 +209,31 @@ def _run_analysis_probe(
     if not args.theory_diagnostics or args.model == "minirocket" or model_obj is None or not aug_trials:
         return alignment_metrics
 
-    print("Running Theory Diagnostics (Host Alignment Probe)...")
+    print("Running theory diagnostics...")
     with torch.enable_grad():
         aligns = []
         probe_idx = np.random.choice(len(aug_trials), min(20, len(aug_trials)), replace=False)
-        for i in probe_idx:
-            src = tid_to_rec[tid_aug[i]]
-            x_o = torch.from_numpy(src.x_raw).unsqueeze(0).float()
-            y_o = torch.tensor([src.y]).long()
-            x_a = torch.from_numpy(aug_trials[i]["x"]).unsqueeze(0).float()
-
-            probe = compute_gradient_alignment(model_obj, x_o, y_o, x_a, device=args.device)
-            aligns.append(probe)
+        for idx in probe_idx:
+            src = tid_to_rec[tid_aug[idx]]
+            x_orig = torch.from_numpy(src.x_raw).unsqueeze(0).float()
+            y_orig = torch.tensor([src.y]).long()
+            x_aug = torch.from_numpy(aug_trials[idx]["x"]).unsqueeze(0).float()
+            aligns.append(compute_gradient_alignment(model_obj, x_orig, y_orig, x_aug, device=args.device))
 
         if aligns:
-            alignment_metrics["host_geom_cosine_mean"] = float(np.mean([p["alignment_cosine"] for p in aligns]))
-            alignment_metrics["host_conflict_rate"] = float(np.mean([p["is_conflict"] for p in aligns]))
+            alignment_metrics["host_geom_cosine_mean"] = float(np.mean([probe["alignment_cosine"] for probe in aligns]))
+            alignment_metrics["host_conflict_rate"] = float(np.mean([probe["is_conflict"] for probe in aligns]))
     return alignment_metrics
 
 
-def _run_mba_pipeline(
+def _run_act_pipeline(
     *,
     args,
     seed: int,
-    dataset_name: str,
     X_train_raw: np.ndarray,
     y_train: np.ndarray,
-    X_val_raw: np.ndarray | None,
-    y_val: np.ndarray | None,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
     X_test_raw: np.ndarray,
     y_test: np.ndarray,
     X_train_z: np.ndarray,
@@ -514,7 +244,7 @@ def _run_mba_pipeline(
     batch_size: int,
     patience: int,
 ) -> Dict[str, object]:
-    aug_out = _build_mba_realized_augmentations(
+    aug_out = _build_act_realized_augmentations(
         args=args,
         seed=seed,
         X_train_z=X_train_z,
@@ -523,7 +253,7 @@ def _run_mba_pipeline(
         mean_log=mean_log,
     )
 
-    print("Fitting Baseline...")
+    print("Fitting baseline...")
     res_base = _fit_host_model(
         args=args,
         X_tr=X_train_raw,
@@ -537,13 +267,15 @@ def _run_mba_pipeline(
         batch_size=batch_size,
         patience=patience,
         return_model_obj=args.theory_diagnostics,
+        loader_seed=seed,
     )
 
     if aug_out["aug_trials"]:
-        X_mix = np.concatenate([X_train_raw, aug_out["X_aug_raw"]])
-        y_mix = np.concatenate([y_train, aug_out["y_aug_np"]])
+        X_mix = np.concatenate([X_train_raw, aug_out["X_aug_raw"]], axis=0)
+        y_mix = np.concatenate([y_train, aug_out["y_aug_np"]], axis=0)
     else:
-        X_mix, y_mix = X_train_raw, y_train
+        X_mix = X_train_raw
+        y_mix = y_train
 
     alignment_metrics = _run_analysis_probe(
         args=args,
@@ -552,27 +284,8 @@ def _run_mba_pipeline(
         aug_trials=aug_out["aug_trials"],
         tid_to_rec=aug_out["tid_to_rec"],
     )
-    step_tier_audits: Dict[str, str] = {}
-    if args.mba_candidate_mode == "step_tiers":
-        _enrich_mba_candidate_rows_with_probe(
-            args=args,
-            model_obj=res_base.get("model_obj"),
-            candidate_rows=aug_out["candidate_rows"],
-            tid_to_rec=aug_out["tid_to_rec"],
-            feedback_margin_temperature=args.feedback_margin_temperature,
-            feedback_margin_polarity=args.feedback_margin_polarity,
-        )
-        step_tier_audits = _save_step_tier_audits(
-            args.out_root,
-            dataset_name,
-            seed,
-            aug_out["candidate_rows"],
-        )
-        if aug_out["candidate_rows"] and args.theory_diagnostics:
-            alignment_metrics["host_geom_cosine_mean"] = float(np.nanmean([float(r.get("alignment_cosine", np.nan)) for r in aug_out["candidate_rows"]]))
-            alignment_metrics["host_conflict_rate"] = float(np.nanmean([1.0 if float(r.get("alignment_cosine", 0.0)) < 0 else 0.0 for r in aug_out["candidate_rows"]]))
 
-    print(f"Fitting ACT Model ({len(X_mix)} samples)...")
+    print(f"Fitting ACT model ({len(X_mix)} samples)...")
     res_act = _fit_host_model(
         args=args,
         X_tr=X_mix,
@@ -586,6 +299,7 @@ def _run_mba_pipeline(
         batch_size=batch_size,
         patience=patience,
         return_model_obj=False,
+        loader_seed=seed,
     )
 
     return {
@@ -596,380 +310,14 @@ def _run_mba_pipeline(
         "manifold_margin_mean": aug_out["manifold_margin_mean"],
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
-        "candidate_total_count": aug_out.get("candidate_total_count", 0),
-        "aug_total_count": aug_out.get("aug_total_count", 0),
-        "step_tier_count": aug_out.get("step_tier_count", 0),
-        "candidate_audit_csv": step_tier_audits.get("candidate_audit_csv", ""),
-        "tier_summary_csv": step_tier_audits.get("tier_summary_csv", ""),
-        "ray_summary_csv": step_tier_audits.get("ray_summary_csv", ""),
+        "candidate_total_count": aug_out["candidate_total_count"],
+        "aug_total_count": aug_out["aug_total_count"],
+        "effective_k": aug_out["effective_k"],
         "viz_payload": {
             "Z_aug": aug_out["z_aug"],
             "y_aug": aug_out["y_aug"],
-            "X_aug_raw": np.stack([t["x"] for t in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
+            "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
         },
-    }
-
-
-def _run_mba_feedback_pipeline(
-    *,
-    args,
-    seed: int,
-    dataset_name: str,
-    X_train_raw: np.ndarray,
-    y_train: np.ndarray,
-    X_val_raw: np.ndarray | None,
-    y_val: np.ndarray | None,
-    X_test_raw: np.ndarray,
-    y_test: np.ndarray,
-    X_train_z: np.ndarray,
-    train_recs: List[TrialRecord],
-    mean_log: np.ndarray,
-    epochs: int,
-    lr: float,
-    batch_size: int,
-    patience: int,
-) -> Dict[str, object]:
-    if args.model != "resnet1d":
-        raise ValueError("mba_feedback pipeline currently supports only model=resnet1d")
-
-    aug_out = _build_mba_realized_augmentations(
-        args=args,
-        seed=seed,
-        X_train_z=X_train_z,
-        y_train=y_train,
-        train_recs=train_recs,
-        mean_log=mean_log,
-    )
-
-    in_channels = X_train_raw.shape[1]
-    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(int(seed))
-        init_model = ResNet1DClassifier(in_channels, num_classes)
-    init_state = {k: v.detach().cpu().clone() for k, v in init_model.state_dict().items()}
-
-    print("Fitting Matched-Budget CE Baseline...")
-    res_base = fit_eval_resnet1d_continue_ce(
-        X_train_raw,
-        y_train,
-        X_val_raw,
-        y_val,
-        X_test_raw,
-        y_test,
-        init_state_dict=init_state,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        device=args.device,
-        return_model_obj=args.theory_diagnostics,
-        loader_seed=seed,
-    )
-
-    print(f"Fitting ACT-Lite Model ({len(X_train_raw)} orig + {0 if aug_out['X_aug_raw'] is None else len(aug_out['X_aug_raw'])} aug)...")
-    res_act = fit_eval_resnet1d_weighted_aug_ce(
-        X_train_raw,
-        y_train,
-        aug_out["X_aug_raw"],
-        aug_out["y_aug_np"],
-        X_val_raw,
-        y_val,
-        X_test_raw,
-        y_test,
-        init_state_dict=init_state,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        device=args.device,
-        feedback_margin_temperature=args.feedback_margin_temperature,
-        feedback_margin_polarity=args.feedback_margin_polarity,
-        feedback_aug_weight=args.feedback_aug_weight,
-        loader_seed=seed,
-        return_model_obj=False,
-    )
-
-    alignment_metrics = _run_analysis_probe(
-        args=args,
-        model_obj=res_base.get("model_obj"),
-        tid_aug=aug_out["tid_aug"],
-        aug_trials=aug_out["aug_trials"],
-        tid_to_rec=aug_out["tid_to_rec"],
-    )
-    step_tier_audits: Dict[str, str] = {}
-    if args.mba_candidate_mode == "step_tiers":
-        _attach_training_feedback_to_candidate_rows(aug_out["candidate_rows"], res_act)
-        _enrich_mba_candidate_rows_with_probe(
-            args=args,
-            model_obj=res_base.get("model_obj"),
-            candidate_rows=aug_out["candidate_rows"],
-            tid_to_rec=aug_out["tid_to_rec"],
-            feedback_margin_temperature=args.feedback_margin_temperature,
-            feedback_margin_polarity=args.feedback_margin_polarity,
-        )
-        step_tier_audits = _save_step_tier_audits(
-            args.out_root,
-            dataset_name,
-            seed,
-            aug_out["candidate_rows"],
-        )
-        if aug_out["candidate_rows"] and args.theory_diagnostics:
-            alignment_metrics["host_geom_cosine_mean"] = float(np.nanmean([float(r.get("alignment_cosine", np.nan)) for r in aug_out["candidate_rows"]]))
-            alignment_metrics["host_conflict_rate"] = float(np.nanmean([1.0 if float(r.get("alignment_cosine", 0.0)) < 0 else 0.0 for r in aug_out["candidate_rows"]]))
-
-    return {
-        "res_base": res_base,
-        "res_act": res_act,
-        "avg_bridge": aug_out["avg_bridge"],
-        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
-        "manifold_margin_mean": aug_out["manifold_margin_mean"],
-        "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
-        "host_conflict_rate": alignment_metrics["host_conflict_rate"],
-        "feedback_weight_mean": res_act.get("feedback_weight_mean", 0.0),
-        "feedback_weight_std": res_act.get("feedback_weight_std", 0.0),
-        "feedback_reject_frac": res_act.get("feedback_reject_frac", 0.0),
-        "last_orig_ce_loss": res_act.get("last_orig_ce_loss", 0.0),
-        "last_weighted_aug_ce_loss": res_act.get("last_weighted_aug_ce_loss", 0.0),
-        "last_aug_margin_mean": res_act.get("last_aug_margin_mean", 0.0),
-        "candidate_total_count": aug_out.get("candidate_total_count", 0),
-        "aug_total_count": aug_out.get("aug_total_count", 0),
-        "step_tier_count": aug_out.get("step_tier_count", 0),
-        "candidate_audit_csv": step_tier_audits.get("candidate_audit_csv", ""),
-        "tier_summary_csv": step_tier_audits.get("tier_summary_csv", ""),
-        "ray_summary_csv": step_tier_audits.get("ray_summary_csv", ""),
-    }
-
-
-def _run_gcg_acl_pipeline(
-    *,
-    args,
-    seed: int,
-    dataset_name: str,
-    X_train_raw: np.ndarray,
-    y_train: np.ndarray,
-    X_val_raw: np.ndarray | None,
-    y_val: np.ndarray | None,
-    X_test_raw: np.ndarray,
-    y_test: np.ndarray,
-    X_train_z: np.ndarray,
-    train_recs: List[TrialRecord],
-    mean_log: np.ndarray,
-    epochs: int,
-    lr: float,
-    batch_size: int,
-    patience: int,
-) -> Dict[str, object]:
-    if args.model != "resnet1d":
-        raise ValueError("gcg_acl pipeline currently supports only model=resnet1d")
-    if args.algo != "lraes":
-        raise ValueError("gcg_acl pipeline currently expects algo=lraes")
-
-    warmup_epochs = int(args.acl_warmup_epochs)
-    if epochs > 1:
-        warmup_epochs = min(max(1, warmup_epochs), epochs - 1)
-    else:
-        warmup_epochs = 1
-    acl_epochs = max(0, int(epochs) - warmup_epochs)
-    if acl_epochs <= 0:
-        print("Warning: total epochs leave no ACL fine-alignment epochs after warm-up.")
-
-    print(f"Phase A Warm-up: epochs={warmup_epochs}")
-    res_warmup = fit_eval_resnet1d(
-        X_train_raw,
-        y_train,
-        X_val_raw,
-        y_val,
-        X_test_raw,
-        y_test,
-        epochs=warmup_epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        device=args.device,
-        return_model_obj=True,
-    )
-    warmup_model = res_warmup["model_obj"]
-    warmup_state = {k: v.detach().cpu().clone() for k, v in warmup_model.state_dict().items()}
-
-    if acl_epochs > 0:
-        print(f"Matched-Budget CE Baseline: continue CE for epochs={acl_epochs}")
-        res_base = fit_eval_resnet1d_continue_ce(
-            X_train_raw,
-            y_train,
-            X_val_raw,
-            y_val,
-            X_test_raw,
-            y_test,
-            init_state_dict=warmup_state,
-            epochs=acl_epochs,
-            lr=lr,
-            batch_size=batch_size,
-            patience=patience,
-            device=args.device,
-            return_model_obj=False,
-        )
-    else:
-        res_base = {
-            "accuracy": res_warmup["accuracy"],
-            "macro_f1": res_warmup["macro_f1"],
-            "best_val_f1": res_warmup.get("best_val_f1", 0.0),
-            "best_val_loss": res_warmup.get("best_val_loss", float("inf")),
-            "stop_epoch": 0,
-        }
-
-    print("Phase B Candidate Build: generating class-conditioned basis...")
-    class_basis_bank, basis_meta = build_lraes_class_basis_bank(
-        X_train_z,
-        y_train,
-        k_dir=args.k_dir,
-        fisher_cfg=FisherPIAConfig(),
-        lraes_cfg=LRAESConfig(top_k_per_class=int(args.k_dir)),
-    )
-    candidates, candidate_meta = build_acl_candidate_pool(
-        X_train_z,
-        y_train,
-        np.array([r.tid for r in train_recs]),
-        class_basis_bank=class_basis_bank,
-        candidates_per_anchor=args.acl_candidates_per_anchor,
-        gamma_scale=args.pia_gamma,
-        seed=seed + 42,
-        eta_safe=None if args.disable_safe_step else 0.5,
-    )
-
-    tid_to_rec = {r.tid: r for r in train_recs}
-    dev = _get_dev(args.device)
-    warmup_model = warmup_model.to(dev)
-
-    candidate_rows: List[Dict[str, object]] = []
-    probe_batch_size = 32
-    for start in range(0, len(candidates), probe_batch_size):
-        chunk = candidates[start : start + probe_batch_size]
-        x_orig_list = []
-        x_cand_list = []
-        y_list = []
-        bridged_chunk = []
-        for item in chunk:
-            src = tid_to_rec[item["tid"]]
-            sigma_cand = logvec_to_spd(item["z_cand"], mean_log)
-            x_cand, bridge_meta = bridge_single(
-                torch.from_numpy(src.x_raw),
-                torch.from_numpy(src.sigma_orig),
-                torch.from_numpy(sigma_cand),
-            )
-            enriched = dict(item)
-            enriched["x_cand"] = x_cand.numpy()
-            enriched.update({
-                "transport_error_fro": float(bridge_meta.get("transport_error_fro", 0.0)),
-                "transport_error_logeuc": float(bridge_meta.get("transport_error_logeuc", 0.0)),
-                "bridge_cond_A": float(bridge_meta.get("bridge_cond_A", 0.0)),
-                "metric_preservation_error": float(bridge_meta.get("metric_preservation_error", 0.0)),
-            })
-            bridged_chunk.append(enriched)
-            x_orig_list.append(src.x_raw)
-            x_cand_list.append(enriched["x_cand"])
-            y_list.append(src.y)
-
-        if not bridged_chunk:
-            continue
-
-        x_orig_batch = torch.from_numpy(np.stack(x_orig_list)).float()
-        x_cand_batch = torch.from_numpy(np.stack(x_cand_list)).float()
-        y_batch = torch.from_numpy(np.asarray(y_list, dtype=np.int64))
-        usefulness = compute_candidate_usefulness_batch(
-            warmup_model,
-            x_orig_batch,
-            y_batch,
-            x_cand_batch,
-            device=args.device,
-        )
-        for enriched, probe_metrics in zip(bridged_chunk, usefulness):
-            enriched.update(probe_metrics)
-            candidate_rows.append(enriched)
-
-    scored_rows, selected_rows = score_hard_positive_candidates(
-        candidate_rows,
-        alignment_weight=args.acl_alignment_weight,
-        positives_per_anchor=args.acl_positives_per_anchor,
-    )
-    candidate_csv, selected_csv = _save_acl_audits(args.out_root, dataset_name, seed, scored_rows, selected_rows)
-    selected_positive_map = _build_selected_positive_map(selected_rows)
-    
-    # Build alignment map for soft gating
-    selected_alignment_map: Dict[int, List[float]] = {}
-    for row in selected_rows:
-        anchor_idx = int(row["anchor_index"])
-        align_score = float(row.get("alignment_cosine", 1.0))
-        selected_alignment_map.setdefault(anchor_idx, []).append(align_score)
-
-    if acl_epochs > 0:
-        print(f"Phase C ACL Fine Alignment: epochs={acl_epochs} | selected anchors={len(selected_positive_map)} | soft-gating={args.acl_soft_gating}")
-        res_acl = fit_eval_resnet1d_acl(
-            X_train_raw,
-            y_train,
-            X_val_raw,
-            y_val,
-            X_test_raw,
-            y_test,
-            init_state_dict=warmup_state,
-            selected_positive_map=selected_positive_map,
-            epochs=acl_epochs,
-            lr=lr,
-            batch_size=batch_size,
-            patience=patience,
-            device=args.device,
-            acl_temperature=args.acl_temperature,
-            acl_loss_weight=args.acl_loss_weight,
-            aug_ce_mode=args.acl_aug_ce_mode,
-            selected_alignment_map=selected_alignment_map,
-            soft_gating=args.acl_soft_gating,
-            gating_tau=args.acl_gating_tau,
-            return_model_obj=False,
-        )
-    else:
-        res_acl = {
-            "accuracy": res_warmup["accuracy"],
-            "macro_f1": res_warmup["macro_f1"],
-            "best_val_f1": res_warmup.get("best_val_f1", 0.0),
-            "best_val_loss": res_warmup.get("best_val_loss", float("inf")),
-            "stop_epoch": 0,
-            "last_ce_loss": 0.0,
-            "last_supcon_loss": 0.0,
-            "selected_anchor_count": int(sum(1 for v in selected_positive_map.values() if v)),
-            "selected_positive_count": int(sum(len(v) for v in selected_positive_map.values())),
-        }
-
-    avg_bridge = pd.DataFrame(
-        [
-            {
-                "transport_error_fro": float(r.get("transport_error_fro", 0.0)),
-                "transport_error_logeuc": float(r.get("transport_error_logeuc", 0.0)),
-                "bridge_cond_A": float(r.get("bridge_cond_A", 0.0)),
-                "metric_preservation_error": float(r.get("metric_preservation_error", 0.0)),
-                "safe_radius_ratio": float(r.get("safe_radius_ratio", 1.0)),
-            }
-            for r in scored_rows
-        ]
-    ).mean().to_dict() if scored_rows else {}
-
-    return {
-        "res_base": res_base,
-        "res_act": res_acl,
-        "res_warmup": res_warmup,
-        "avg_bridge": avg_bridge,
-        "safe_radius_ratio_mean": candidate_meta.get("safe_radius_ratio_mean", 1.0),
-        "manifold_margin_mean": candidate_meta.get("manifold_margin_mean", 0.0),
-        "host_geom_cosine_mean": float(np.mean([float(r.get("alignment_cosine", 0.0)) for r in scored_rows])) if scored_rows else 0.0,
-        "host_conflict_rate": float(np.mean([1.0 if float(r.get("alignment_cosine", 0.0)) < 0 else 0.0 for r in scored_rows])) if scored_rows else 0.0,
-        "selected_anchor_count": int(sum(1 for v in selected_positive_map.values() if v)),
-        "selected_positive_count": int(sum(len(v) for v in selected_positive_map.values())),
-        "candidate_total_count": int(len(scored_rows)),
-        "hard_positive_score_mean": float(np.mean([float(r.get("hard_positive_score", 0.0)) for r in selected_rows])) if selected_rows else 0.0,
-        "fidelity_score_mean": float(np.mean([float(r.get("fidelity_score", 0.0)) for r in selected_rows])) if selected_rows else 0.0,
-        "candidate_csv": candidate_csv,
-        "selected_csv": selected_csv,
-        "basis_meta": basis_meta,
-        "mean_aug_ce_weight": res_acl.get("mean_aug_ce_weight", 1.0),
-        "zero_weight_fraction": res_acl.get("zero_weight_fraction", 0.0),
     }
 
 
@@ -977,19 +325,27 @@ def run_experiment(dataset_name, args):
     print(f"\n>>>> Dataset: {dataset_name} | Model: {args.model} <<<<")
     try:
         all_trials = load_trials_for_dataset(dataset_name)
-    except Exception as e:
-        print(f"Failed to load {dataset_name}: {e}")
-        return [{
-            "dataset": dataset_name, "seed": -1, "status": "failed", "fail_reason": str(e),
-            "requested_k_dir": args.k_dir, "effective_k_dir": 0, "algo": args.algo, "model": args.model
-        }]
+    except Exception as exc:
+        print(f"Failed to load {dataset_name}: {exc}")
+        return [
+            {
+                "dataset": dataset_name,
+                "seed": -1,
+                "status": "failed",
+                "fail_reason": str(exc),
+                "requested_k_dir": args.k_dir,
+                "effective_k_dir": 0,
+                "algo": args.algo,
+                "model": args.model,
+                "pipeline": "act",
+            }
+        ]
 
-    # Load host defaults if requested
     epochs = args.epochs
     lr = args.lr
     batch_size = args.batch_size
     patience = args.patience
-    
+
     if args.host_config != "none":
         if args.host_config == "resnet1d_default":
             epochs, lr, batch_size, patience = 30, 1e-3, 64, 10
@@ -999,8 +355,7 @@ def run_experiment(dataset_name, args):
             epochs, lr, batch_size, patience = 100, 5e-4, 32, 15
 
     results = []
-    seeds = [int(s) for s in args.seeds.split(",")]
-    
+    seeds = [int(seed) for seed in args.seeds.split(",")]
     for seed in seeds:
         print(f"Seed {seed}...")
         try:
@@ -1008,172 +363,117 @@ def run_experiment(dataset_name, args):
             train_recs, mean_log = _build_trial_records(train_trials)
             test_recs, _ = _build_trial_records(test_trials)
             val_recs, _ = _build_trial_records(val_trials)
-            
-            X_train_raw = np.stack([r.x_raw for r in train_recs])
-            y_train = np.array([r.y for r in train_recs])
-            X_test_raw = np.stack([r.x_raw for r in test_recs])
-            y_test = np.array([r.y for r in test_recs])
-            
+
+            X_train_raw = np.stack([record.x_raw for record in train_recs])
+            y_train = np.asarray([record.y for record in train_recs], dtype=np.int64)
+            X_test_raw = np.stack([record.x_raw for record in test_recs])
+            y_test = np.asarray([record.y for record in test_recs], dtype=np.int64)
+
             X_val_raw, y_val = None, None
             if val_recs:
-                X_val_raw = np.stack([r.x_raw for r in val_recs])
-                y_val = np.array([r.y for r in val_recs])
+                X_val_raw = np.stack([record.x_raw for record in val_recs])
+                y_val = np.asarray([record.y for record in val_recs], dtype=np.int64)
 
-            X_train_z = np.stack([r.z for r in train_recs])
-            if args.pipeline == "gcg_acl":
-                pipeline_out = _run_gcg_acl_pipeline(
-                    args=args,
-                    seed=seed,
-                    dataset_name=dataset_name,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                )
-            elif args.pipeline == "mba_feedback":
-                pipeline_out = _run_mba_feedback_pipeline(
-                    args=args,
-                    seed=seed,
-                    dataset_name=dataset_name,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                )
-            else:
-                pipeline_out = _run_mba_pipeline(
-                    args=args,
-                    seed=seed,
-                    dataset_name=dataset_name,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                )
+            X_train_z = np.stack([record.z for record in train_recs])
+            pipeline_out = _run_act_pipeline(
+                args=args,
+                seed=seed,
+                X_train_raw=X_train_raw,
+                y_train=y_train,
+                X_val_raw=X_val_raw,
+                y_val=y_val,
+                X_test_raw=X_test_raw,
+                y_test=y_test,
+                X_train_z=X_train_z,
+                train_recs=train_recs,
+                mean_log=mean_log,
+                epochs=epochs,
+                lr=lr,
+                batch_size=batch_size,
+                patience=patience,
+            )
 
             res_base = pipeline_out["res_base"]
             res_act = pipeline_out["res_act"]
-            res_warmup = pipeline_out.get("res_warmup")
             avg_bridge = pipeline_out.get("avg_bridge", {})
-
+            gain = float(res_act["macro_f1"] - res_base["macro_f1"])
             summary = {
-                "dataset": dataset_name, "seed": seed, "status": "success", 
-                "algo": args.algo, "model": args.model, "pipeline": args.pipeline,
-                "mba_candidate_mode": args.mba_candidate_mode,
-                "mba_step_tier_ratios": ",".join(f"{r:.6g}" for r in args.mba_step_tier_ratios),
-                "feedback_margin_polarity": args.feedback_margin_polarity,
-                "acl_aug_ce_mode": args.acl_aug_ce_mode if args.pipeline == "gcg_acl" else "n/a",
-                "base_f1": res_base["macro_f1"], "act_f1": res_act["macro_f1"],
-                "gain": res_act["macro_f1"] - res_base["macro_f1"],
-                "warmup_f1": res_warmup["macro_f1"] if res_warmup is not None else np.nan,
-                
-                # Prop 1: Transport Fidelity
-                "transport_error_fro_mean": avg_bridge.get("transport_error_fro", 0),
-                "transport_error_logeuc_mean": avg_bridge.get("transport_error_logeuc", 0),
-                "bridge_cond_A_mean": avg_bridge.get("bridge_cond_A", 0),
-                "metric_preservation_error_mean": avg_bridge.get("metric_preservation_error", 0),
-                
-                # Prop 2: Safe Region
-                "safe_radius_ratio_mean": pipeline_out.get("safe_radius_ratio_mean", 1.0),
-                "manifold_margin_mean": pipeline_out.get("manifold_margin_mean", 0),
-                
-                # Prop 3: Host Alignment
-                "host_geom_cosine_mean": pipeline_out.get("host_geom_cosine_mean", 0.0),
-                "host_conflict_rate": pipeline_out.get("host_conflict_rate", 0.0),
-                
-                "base_stop_epoch": res_base.get("stop_epoch", 0),
-                "act_stop_epoch": res_act.get("stop_epoch", 0),
-                "warmup_stop_epoch": res_warmup.get("stop_epoch", 0) if res_warmup is not None else np.nan,
-                "f1_gain_pct": (res_act["macro_f1"] - res_base["macro_f1"]) / (res_base["macro_f1"] + 1e-7) * 100,
-                "base_best_val_f1": res_base.get("best_val_f1", 0),
-                "act_best_val_f1": res_act.get("best_val_f1", 0),
-                "warmup_best_val_f1": res_warmup.get("best_val_f1", 0) if res_warmup is not None else np.nan,
-                "selected_anchor_count": pipeline_out.get("selected_anchor_count", 0),
-                "selected_positive_count": pipeline_out.get("selected_positive_count", 0),
-                "candidate_total_count": pipeline_out.get("candidate_total_count", 0),
-                "aug_total_count": pipeline_out.get("aug_total_count", 0),
-                "step_tier_count": pipeline_out.get("step_tier_count", 0),
-                "hard_positive_score_mean": pipeline_out.get("hard_positive_score_mean", 0.0),
-                "fidelity_score_mean": pipeline_out.get("fidelity_score_mean", 0.0),
-                "mean_aug_ce_weight": pipeline_out.get("mean_aug_ce_weight", 1.0),
-                "zero_weight_fraction": pipeline_out.get("zero_weight_fraction", 0.0),
-                "acl_last_ce_loss": res_act.get("last_ce_loss", 0.0),
-                "acl_last_supcon_loss": res_act.get("last_supcon_loss", 0.0),
-                "feedback_weight_mean": pipeline_out.get("feedback_weight_mean", res_act.get("feedback_weight_mean", 0.0)),
-                "feedback_weight_std": pipeline_out.get("feedback_weight_std", res_act.get("feedback_weight_std", 0.0)),
-                "feedback_reject_frac": pipeline_out.get("feedback_reject_frac", res_act.get("feedback_reject_frac", 0.0)),
-                "last_orig_ce_loss": pipeline_out.get("last_orig_ce_loss", res_act.get("last_orig_ce_loss", 0.0)),
-                "last_weighted_aug_ce_loss": pipeline_out.get("last_weighted_aug_ce_loss", res_act.get("last_weighted_aug_ce_loss", 0.0)),
-                "last_aug_margin_mean": pipeline_out.get("last_aug_margin_mean", res_act.get("last_aug_margin_mean", 0.0)),
-                "candidate_audit_csv": pipeline_out.get("candidate_audit_csv", ""),
-                "tier_summary_csv": pipeline_out.get("tier_summary_csv", ""),
-                "ray_summary_csv": pipeline_out.get("ray_summary_csv", ""),
+                "dataset": dataset_name,
+                "seed": seed,
+                "status": "success",
+                "algo": args.algo,
+                "model": args.model,
+                "pipeline": "act",
+                "base_f1": float(res_base["macro_f1"]),
+                "act_f1": float(res_act["macro_f1"]),
+                "gain": gain,
+                "f1_gain_pct": gain / (float(res_base["macro_f1"]) + 1e-7) * 100.0,
+                "base_stop_epoch": int(res_base.get("stop_epoch", 0)),
+                "act_stop_epoch": int(res_act.get("stop_epoch", 0)),
+                "base_best_val_f1": float(res_base.get("best_val_f1", 0.0)),
+                "act_best_val_f1": float(res_act.get("best_val_f1", 0.0)),
+                "transport_error_fro_mean": float(avg_bridge.get("transport_error_fro", 0.0)),
+                "transport_error_logeuc_mean": float(avg_bridge.get("transport_error_logeuc", 0.0)),
+                "bridge_cond_A_mean": float(avg_bridge.get("bridge_cond_A", 0.0)),
+                "metric_preservation_error_mean": float(avg_bridge.get("metric_preservation_error", 0.0)),
+                "safe_radius_ratio_mean": float(pipeline_out.get("safe_radius_ratio_mean", 1.0)),
+                "manifold_margin_mean": float(pipeline_out.get("manifold_margin_mean", 0.0)),
+                "host_geom_cosine_mean": float(pipeline_out.get("host_geom_cosine_mean", 0.0)),
+                "host_conflict_rate": float(pipeline_out.get("host_conflict_rate", 0.0)),
+                "candidate_total_count": int(pipeline_out.get("candidate_total_count", 0)),
+                "aug_total_count": int(pipeline_out.get("aug_total_count", 0)),
+                "requested_k_dir": int(args.k_dir),
+                "effective_k_dir": int(pipeline_out.get("effective_k", 0)),
             }
-            print(f"Base: {summary['base_f1']:.4f} | ACT: {summary['act_f1']:.4f} | Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)")
-            if res_warmup is not None:
-                print(f"Warm-up reference: {summary['warmup_f1']:.4f}")
+            print(
+                f"Base: {summary['base_f1']:.4f} | "
+                f"ACT: {summary['act_f1']:.4f} | "
+                f"Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)"
+            )
             results.append(summary)
 
-            # Optional: Save visualization data
-            if args.save_viz_samples and args.pipeline == "mba":
+            if args.save_viz_samples:
                 viz_dir = os.path.join(args.out_root, "viz_data")
                 os.makedirs(viz_dir, exist_ok=True)
                 save_path = os.path.join(viz_dir, f"{dataset_name}_s{seed}_viz.npz")
-                np.savez(save_path,
-                    Z_orig=X_train_z, 
+                np.savez(
+                    save_path,
+                    Z_orig=X_train_z,
                     y_orig=y_train,
                     Z_aug=pipeline_out["viz_payload"]["Z_aug"],
                     y_aug=pipeline_out["viz_payload"]["y_aug"],
-                    X_orig_raw=X_train_raw[:20], # Sample 20 for waveform plotting
+                    X_orig_raw=X_train_raw[:20],
                     X_aug_raw=pipeline_out["viz_payload"]["X_aug_raw"],
-                    mean_log=mean_log
+                    mean_log=mean_log,
                 )
                 print(f"Visualization samples saved to {save_path}")
 
-        except Exception as e:
+        except Exception as exc:
             import traceback
+
             traceback.print_exc()
-            print(f"Error in {dataset_name} Seed {seed}: {e}")
-            results.append({
-                "dataset": dataset_name, "seed": seed, "status": "failed", "fail_reason": str(e),
-                "requested_k_dir": args.k_dir, "effective_k_dir": 0, "algo": args.algo, "model": args.model
-            })
-    
+            print(f"Error in {dataset_name} Seed {seed}: {exc}")
+            results.append(
+                {
+                    "dataset": dataset_name,
+                    "seed": seed,
+                    "status": "failed",
+                    "fail_reason": str(exc),
+                    "requested_k_dir": args.k_dir,
+                    "effective_k_dir": 0,
+                    "algo": args.algo,
+                    "model": args.model,
+                    "pipeline": "act",
+                }
+            )
     return results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ACT_ManifoldBridge protocol runner")
+    parser = argparse.ArgumentParser(description="ACT_ManifoldBridge original ACT runner")
     parser.add_argument("--dataset", type=str, default="natops")
     parser.add_argument("--all-datasets", action="store_true")
-    parser.add_argument("--pipeline", type=str, choices=["mba", "mba_feedback", "gcg_acl"], default="mba")
+    parser.add_argument("--pipeline", type=str, choices=["act", "mba"], default="act")
     parser.add_argument("--algo", type=str, choices=["pia", "lraes"], default="lraes")
     parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
     parser.add_argument("--host-config", type=str, choices=["none", "resnet1d_default", "patchtst_default", "timesnet_default"], default="none")
@@ -1181,8 +481,6 @@ def main():
     parser.add_argument("--k-dir", type=int, default=10)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
     parser.add_argument("--multiplier", type=int, default=1)
-    parser.add_argument("--mba-candidate-mode", type=str, choices=["core", "step_tiers"], default="core")
-    parser.add_argument("--mba-step-tier-ratios", type=str, default="0.25,0.5,0.9")
     parser.add_argument("--n-kernels", type=int, default=10000)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -1190,46 +488,32 @@ def main():
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--theory-diagnostics", action="store_true", help="Enable heavy theoretical metrics (host alignment, etc)")
-    parser.add_argument("--disable-safe-step", action="store_true", help="Ablation: Disable Safe-Step constraint")
-    parser.add_argument("--save-viz-samples", action="store_true", help="Save latent and raw samples for paper visualizations")
-    parser.add_argument("--acl-warmup-epochs", type=int, default=10)
-    parser.add_argument("--acl-candidates-per-anchor", type=int, default=4)
-    parser.add_argument("--acl-temperature", type=float, default=0.07)
-    parser.add_argument("--acl-loss-weight", type=float, default=0.2)
-    parser.add_argument("--acl-alignment-weight", type=float, default=0.7)
-    parser.add_argument("--acl-positives-per-anchor", type=int, choices=[1, 2], default=1)
-    parser.add_argument("--acl-aug-ce-mode", type=str, choices=["none", "selected"], default="selected", 
-                        help="Pure ACL (none) vs Hybrid ACL (selected)")
-    parser.add_argument("--acl-soft-gating", action="store_true", help="Enable Alignment-Guided Soft CE Gating")
-    parser.add_argument("--acl-gating-tau", type=float, default=0.0, help="Tau threshold for soft gating")
-    parser.add_argument("--feedback-margin-temperature", type=float, default=1.0)
-    parser.add_argument("--feedback-margin-polarity", type=str, choices=["easy", "hard"], default="easy")
-    parser.add_argument("--feedback-aug-weight", type=float, default=1.0)
-    parser.add_argument("--out-root", type=str, default="results/full_sweep_v1")
+    parser.add_argument("--theory-diagnostics", action="store_true", help="Enable host-alignment diagnostics for sampled augmented trials")
+    parser.add_argument("--disable-safe-step", action="store_true", help="Disable Safe-Step constraint")
+    parser.add_argument("--save-viz-samples", action="store_true", help="Save latent and raw samples for visualization")
+    parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
-    args.mba_step_tier_ratios = _parse_step_tier_ratios(args.mba_step_tier_ratios)
-    if args.mba_candidate_mode == "step_tiers" and int(args.multiplier) != 1:
-        raise ValueError("step_tiers mode requires --multiplier 1; widen the candidate space via tier ratios instead")
+
+    if args.pipeline == "mba":
+        print("Using legacy pipeline alias 'mba' -> 'act'.")
 
     os.makedirs(args.out_root, exist_ok=True)
-    
     datasets = [args.dataset]
     if args.all_datasets:
         datasets = sorted(list(AEON_FIXED_SPLIT_SPECS.keys()))
-    
+
     all_results = []
-    for ds in datasets:
+    for dataset_name in datasets:
         try:
-            res = run_experiment(ds, args)
-            all_results.extend(res)
-            pd.DataFrame(all_results).to_csv(f"{args.out_root}/sweep_results.csv", index=False)
-        except Exception as e:
-            print(f"Failed {ds}: {e}")
+            result_rows = run_experiment(dataset_name, args)
+            all_results.extend(result_rows)
+            pd.DataFrame(all_results).to_csv(os.path.join(args.out_root, "sweep_results.csv"), index=False)
+        except Exception as exc:
+            print(f"Failed {dataset_name}: {exc}")
 
     final_df = pd.DataFrame(all_results)
-    final_df.to_csv(f"{args.out_root}/final_results.csv", index=False)
-    print(f"\nSweep Complete! Results saved to {args.out_root}/final_results.csv")
+    final_df.to_csv(os.path.join(args.out_root, "final_results.csv"), index=False)
+    print(f"\nSweep complete. Results saved to {os.path.join(args.out_root, 'final_results.csv')}")
 
 
 if __name__ == "__main__":

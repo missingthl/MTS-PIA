@@ -1,9 +1,0 @@
-{
-  "phase": "preflight",
-  "expected_actual_runs": 3,
-  "observed_actual_runs": 3,
-  "all_status_success": true,
-  "n4_audit_present": true,
-  "n8_audit_present": true,
-  "preflight_gate_pass": true
-}

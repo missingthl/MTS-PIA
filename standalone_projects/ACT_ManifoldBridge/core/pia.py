@@ -177,61 +177,6 @@ def _collect_lraes_candidates(
     return candidates
 
 
-def build_lraes_class_basis_bank(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    *,
-    k_dir: int,
-    fisher_cfg: FisherPIAConfig,
-    lraes_cfg: LRAESConfig,
-) -> Tuple[Dict[int, Dict[str, np.ndarray]], Dict[str, object]]:
-    """
-    ACL path: retain class-conditional top-k eigendirections instead of flattening
-    them into a single global bank.
-    """
-    candidates = _collect_lraes_candidates(
-        X_train,
-        y_train,
-        fisher_cfg=fisher_cfg,
-        lraes_cfg=lraes_cfg,
-    )
-    y = np.asarray(y_train).astype(int).ravel()
-    classes = sorted(np.unique(y).tolist())
-
-    bank: Dict[int, Dict[str, np.ndarray]] = {}
-    for cls in classes:
-        cls_candidates = [c for c in candidates if int(c["class_id"]) == int(cls)]
-        cls_candidates = sorted(cls_candidates, key=lambda x: x["score"], reverse=True)
-        kept = cls_candidates[: max(0, int(k_dir))]
-
-        if kept:
-            axes = np.vstack([c["axis"] for c in kept]).astype(np.float32)
-            eigvals = np.asarray([c["eigval"] for c in kept], dtype=np.float32)
-            axis_scores = np.asarray([c["score"] for c in kept], dtype=np.float32)
-            axis_ranks = np.asarray([c["axis_rank"] for c in kept], dtype=np.int64)
-        else:
-            d = int(X_train.shape[1])
-            axes = np.empty((0, d), dtype=np.float32)
-            eigvals = np.empty((0,), dtype=np.float32)
-            axis_scores = np.empty((0,), dtype=np.float32)
-            axis_ranks = np.empty((0,), dtype=np.int64)
-
-        bank[int(cls)] = {
-            "axes": axes,
-            "eigvals": eigvals,
-            "axis_scores": axis_scores,
-            "class_id": np.asarray([int(cls)], dtype=np.int64),
-            "axis_ranks": axis_ranks,
-        }
-
-    meta = {
-        "bank_source": "lraes_class_basis",
-        "k_dir": int(k_dir),
-        "classes": classes,
-    }
-    return bank, meta
-
-
 def build_pia_direction_bank(
     X_train: np.ndarray,
     k_dir: int = 5,
