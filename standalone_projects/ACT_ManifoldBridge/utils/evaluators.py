@@ -233,6 +233,174 @@ def fit_eval_pytorch_model(
         res["model_obj"] = model  # Return for theory probing
     return res
 
+
+def _true_class_margin(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    true_logits = logits.gather(1, y.view(-1, 1)).squeeze(1)
+    if logits.shape[1] <= 1:
+        return true_logits
+    masked = logits.clone()
+    masked.scatter_(1, y.view(-1, 1), -torch.inf)
+    other_logits = torch.max(masked, dim=1).values
+    return true_logits - other_logits
+
+
+def fit_eval_pytorch_model_weighted_aug_ce(
+    model,
+    X_train,
+    y_train,
+    X_aug,
+    y_aug,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    use_cosine_annealing=False,
+    feedback_margin_temperature: float = 1.0,
+    aug_loss_weight: float = 1.0,
+    loader_seed: Optional[int] = None,
+) -> Dict[str, float]:
+    dev = _get_dev(device)
+    model.to(dev)
+
+    orig_loader = _make_tensor_loader(
+        X_train,
+        y_train,
+        batch_size=batch_size,
+        shuffle=True,
+        indexed=False,
+        seed=loader_seed,
+    )
+    aug_loader = None
+    if X_aug is not None and y_aug is not None and len(y_aug) > 0:
+        aug_loader = _make_tensor_loader(
+            X_aug,
+            y_aug,
+            batch_size=batch_size,
+            shuffle=True,
+            indexed=False,
+            seed=None if loader_seed is None else int(loader_seed) + 991,
+        )
+
+    val_loader = None
+    if X_val is not None:
+        val_loader = _make_tensor_loader(
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            shuffle=False,
+            indexed=False,
+        )
+
+    test_loader = _make_tensor_loader(
+        X_test,
+        y_test,
+        batch_size=batch_size,
+        shuffle=False,
+        indexed=False,
+    )
+
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss()
+    criterion_per_sample = nn.CrossEntropyLoss(reduction="none")
+    scheduler = None
+    if use_cosine_annealing:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    early_stopping = EarlyStopping(patience=patience, mode="max")
+    best_val_f1 = 0
+    best_val_loss = float("inf")
+    stop_epoch = epochs
+    last_orig_ce_loss = 0.0
+    last_weighted_aug_ce_loss = 0.0
+    last_aug_margin_mean = 0.0
+    weight_values: List[float] = []
+
+    tau = max(1e-6, float(feedback_margin_temperature))
+    lambda_aug = float(aug_loss_weight)
+
+    for epoch in range(epochs):
+        model.train()
+        aug_iter = iter(aug_loader) if aug_loader is not None else None
+        epoch_orig_losses: List[float] = []
+        epoch_aug_losses: List[float] = []
+        epoch_margins: List[float] = []
+        for bx, by in orig_loader:
+            bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
+            optimizer.zero_grad()
+            logits = model(bx)
+            loss_orig = criterion(logits, by)
+            loss = loss_orig
+            epoch_orig_losses.append(float(loss_orig.item()))
+
+            if aug_iter is not None and aug_loader is not None:
+                try:
+                    ax, ay = next(aug_iter)
+                except StopIteration:
+                    aug_iter = iter(aug_loader)
+                    ax, ay = next(aug_iter)
+                ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
+                logits_aug = model(ax)
+                margin = _true_class_margin(logits_aug, ay)
+                weights = torch.sigmoid(margin / tau).detach()
+                ce_aug = criterion_per_sample(logits_aug, ay)
+                weighted_aug = torch.mean(weights * ce_aug)
+                loss = loss + lambda_aug * weighted_aug
+                epoch_aug_losses.append(float(weighted_aug.item()))
+                epoch_margins.append(float(torch.mean(margin.detach()).item()))
+                weight_values.extend(weights.detach().cpu().numpy().astype(float).tolist())
+
+            loss.backward()
+            optimizer.step()
+
+        if epoch_orig_losses:
+            last_orig_ce_loss = float(np.mean(epoch_orig_losses))
+        if epoch_aug_losses:
+            last_weighted_aug_ce_loss = float(np.mean(epoch_aug_losses))
+        else:
+            last_weighted_aug_ce_loss = 0.0
+        if epoch_margins:
+            last_aug_margin_mean = float(np.mean(epoch_margins))
+        else:
+            last_aug_margin_mean = 0.0
+
+        if scheduler:
+            scheduler.step()
+
+        if val_loader:
+            v_loss, v_acc, v_f1 = _evaluate(model, val_loader, dev, criterion)
+            if v_f1 > best_val_f1:
+                best_val_f1 = v_f1
+                best_val_loss = v_loss
+            early_stopping(v_f1, model)
+            if early_stopping.early_stop:
+                stop_epoch = epoch + 1
+                break
+        else:
+            stop_epoch = epoch + 1
+
+    if early_stopping.best_model_state:
+        model.load_state_dict(early_stopping.best_model_state)
+
+    _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
+    weights_np = np.asarray(weight_values, dtype=np.float64)
+    return {
+        "accuracy": t_acc,
+        "macro_f1": t_f1,
+        "best_val_f1": best_val_f1,
+        "best_val_loss": best_val_loss,
+        "stop_epoch": stop_epoch,
+        "feedback_weight_mean": float(np.mean(weights_np)) if weights_np.size else 0.0,
+        "feedback_weight_std": float(np.std(weights_np)) if weights_np.size else 0.0,
+        "last_orig_ce_loss": float(last_orig_ce_loss),
+        "last_weighted_aug_ce_loss": float(last_weighted_aug_ce_loss),
+        "last_aug_margin_mean": float(last_aug_margin_mean),
+    }
+
 def fit_eval_resnet1d(
     X_train,
     y_train,
@@ -265,6 +433,48 @@ def fit_eval_resnet1d(
         patience,
         device,
         return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
+
+
+def fit_eval_resnet1d_weighted_aug_ce(
+    X_train,
+    y_train,
+    X_aug,
+    y_aug,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=30,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    feedback_margin_temperature: float = 1.0,
+    aug_loss_weight: float = 1.0,
+    loader_seed: Optional[int] = None,
+):
+    in_channels = X_train.shape[1]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    model = ResNet1DClassifier(in_channels, num_classes)
+    return fit_eval_pytorch_model_weighted_aug_ce(
+        model,
+        X_train,
+        y_train,
+        X_aug,
+        y_aug,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=device,
+        feedback_margin_temperature=feedback_margin_temperature,
+        aug_loss_weight=aug_loss_weight,
         loader_seed=loader_seed,
     )
 
@@ -305,6 +515,50 @@ def fit_eval_patchtst(
         loader_seed=loader_seed,
     )
 
+
+def fit_eval_patchtst_weighted_aug_ce(
+    X_train,
+    y_train,
+    X_aug,
+    y_aug,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=5e-4,
+    batch_size=64,
+    patience=15,
+    device="cuda",
+    feedback_margin_temperature: float = 1.0,
+    aug_loss_weight: float = 1.0,
+    loader_seed: Optional[int] = None,
+):
+    in_channels = X_train.shape[1]
+    seq_len = X_train.shape[2]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    model = PatchTST(in_channels, seq_len, num_classes)
+    return fit_eval_pytorch_model_weighted_aug_ce(
+        model,
+        X_train,
+        y_train,
+        X_aug,
+        y_aug,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=device,
+        use_cosine_annealing=True,
+        feedback_margin_temperature=feedback_margin_temperature,
+        aug_loss_weight=aug_loss_weight,
+        loader_seed=loader_seed,
+    )
+
 def fit_eval_timesnet(
     X_train,
     y_train,
@@ -338,5 +592,48 @@ def fit_eval_timesnet(
         patience,
         device,
         return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
+
+
+def fit_eval_timesnet_weighted_aug_ce(
+    X_train,
+    y_train,
+    X_aug,
+    y_aug,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=5e-4,
+    batch_size=32,
+    patience=15,
+    device="cuda",
+    feedback_margin_temperature: float = 1.0,
+    aug_loss_weight: float = 1.0,
+    loader_seed: Optional[int] = None,
+):
+    in_channels = X_train.shape[1]
+    seq_len = X_train.shape[2]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    model = TimesNet(in_channels, seq_len, num_classes)
+    return fit_eval_pytorch_model_weighted_aug_ce(
+        model,
+        X_train,
+        y_train,
+        X_aug,
+        y_aug,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=device,
+        feedback_margin_temperature=feedback_margin_temperature,
+        aug_loss_weight=aug_loss_weight,
         loader_seed=loader_seed,
     )

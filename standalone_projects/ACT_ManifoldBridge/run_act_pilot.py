@@ -23,14 +23,25 @@ from core.pia import (
     build_lraes_direction_bank,
     build_pia_direction_bank,
 )
+from core.wavelet_mba import (
+    WaveletTrialRecord,
+    build_step_tier_candidates,
+    build_wavelet_trial_records,
+    compute_identity_checks,
+    parse_step_tier_ratios,
+    realize_wavelet_candidates,
+)
 from host_alignment_probe import compute_gradient_alignment
 from utils.datasets import AEON_FIXED_SPLIT_SPECS, load_trials_for_dataset, make_trial_split
 from utils.evaluators import (
     build_model,
     fit_eval_minirocket,
     fit_eval_patchtst,
+    fit_eval_patchtst_weighted_aug_ce,
     fit_eval_resnet1d,
+    fit_eval_resnet1d_weighted_aug_ce,
     fit_eval_timesnet,
+    fit_eval_timesnet_weighted_aug_ce,
 )
 
 
@@ -120,6 +131,48 @@ def _fit_host_model(
 
     model = build_model(n_kernels=args.n_kernels, random_state=loader_seed or 42)
     return fit_eval_minirocket(model, X_tr, y_tr, X_test_raw, y_test)
+
+
+def _fit_host_model_weighted_aug_ce(
+    *,
+    args,
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    X_aug: Optional[np.ndarray],
+    y_aug: Optional[np.ndarray],
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+    loader_seed: Optional[int] = None,
+) -> Dict[str, object]:
+    kwargs = {
+        "epochs": epochs,
+        "lr": lr,
+        "batch_size": batch_size,
+        "patience": patience,
+        "device": args.device,
+        "feedback_margin_temperature": args.feedback_margin_temperature,
+        "aug_loss_weight": args.aug_loss_weight,
+        "loader_seed": loader_seed,
+    }
+    if args.model == "resnet1d":
+        return fit_eval_resnet1d_weighted_aug_ce(
+            X_tr, y_tr, X_aug, y_aug, X_val_raw, y_val, X_test_raw, y_test, **kwargs
+        )
+    if args.model == "patchtst":
+        return fit_eval_patchtst_weighted_aug_ce(
+            X_tr, y_tr, X_aug, y_aug, X_val_raw, y_val, X_test_raw, y_test, **kwargs
+        )
+    if args.model == "timesnet":
+        return fit_eval_timesnet_weighted_aug_ce(
+            X_tr, y_tr, X_aug, y_aug, X_val_raw, y_val, X_test_raw, y_test, **kwargs
+        )
+    raise ValueError("--pipeline wavelet_mba supports resnet1d, patchtst, and timesnet only.")
 
 
 def _build_act_realized_augmentations(
@@ -314,6 +367,161 @@ def _run_act_pipeline(
         "aug_total_count": aug_out["aug_total_count"],
         "effective_k": aug_out["effective_k"],
         "viz_payload": {
+            "Z_orig": X_train_z,
+            "Z_aug": aug_out["z_aug"],
+            "y_aug": aug_out["y_aug"],
+            "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
+        },
+    }
+
+
+def _build_wavelet_mba_realized_augmentations(
+    *,
+    args,
+    seed: int,
+    y_train: np.ndarray,
+    train_recs: List[WaveletTrialRecord],
+    mean_log_a: np.ndarray,
+) -> Dict[str, object]:
+    X_train_z = np.stack([record.z_a for record in train_recs])
+    tid_train = np.asarray([record.tid for record in train_recs], dtype=object)
+    direction_bank, _ = build_lraes_direction_bank(
+        X_train_z,
+        y_train,
+        k_dir=args.k_dir,
+        fisher_cfg=FisherPIAConfig(),
+        lraes_cfg=LRAESConfig(),
+    )
+    effective_k = int(direction_bank.shape[0])
+    gamma_budget = np.full((effective_k,), float(args.pia_gamma), dtype=np.float64)
+    tier_ratios = parse_step_tier_ratios(args.wavelet_step_tier_ratios)
+    eta_safe = None if args.disable_safe_step else 0.5
+
+    z_aug, y_aug, tid_aug, dir_aug, aug_meta = build_step_tier_candidates(
+        X_train_z,
+        y_train,
+        tid_train,
+        direction_bank=direction_bank,
+        gamma_by_dir=gamma_budget,
+        tier_ratios=tier_ratios,
+        seed=seed + 811,
+        eta_safe=eta_safe,
+    )
+    tid_to_rec = {record.tid: record for record in train_recs}
+    realized = realize_wavelet_candidates(
+        z_aug=z_aug,
+        y_aug=y_aug,
+        tid_aug=tid_aug,
+        candidate_rows=aug_meta.get("candidate_rows", []),
+        tid_to_rec=tid_to_rec,
+        mean_log=mean_log_a,
+        wavelet_name=args.wavelet_name,
+        wavelet_mode=args.wavelet_mode,
+    )
+    identity_meta = compute_identity_checks(
+        train_recs,
+        wavelet_name=args.wavelet_name,
+        wavelet_mode=args.wavelet_mode,
+    )
+    return {
+        "effective_k": effective_k,
+        "z_aug": z_aug,
+        "y_aug": y_aug,
+        "tid_aug": tid_aug,
+        "dir_aug": dir_aug,
+        "tid_to_rec": tid_to_rec,
+        "aug_trials": realized["aug_trials"],
+        "X_aug_raw": realized["X_aug_raw"],
+        "y_aug_np": realized["y_aug_np"],
+        "avg_bridge": realized["avg_bridge"],
+        "audit_rows": realized["audit_rows"],
+        "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
+        "safe_radius_ratio_min": aug_meta.get("safe_radius_ratio_min", 1.0),
+        "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
+        "candidate_total_count": int(aug_meta.get("aug_total_count", len(realized["aug_trials"]))),
+        "aug_total_count": int(aug_meta.get("aug_total_count", len(realized["aug_trials"]))),
+        "step_tier_count": int(aug_meta.get("step_tier_count", len(tier_ratios))),
+        **identity_meta,
+    }
+
+
+def _run_wavelet_mba_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    train_recs: List[WaveletTrialRecord],
+    wavelet_meta: Dict[str, object],
+    mean_log_a: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    aug_out = _build_wavelet_mba_realized_augmentations(
+        args=args,
+        seed=seed,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log_a=mean_log_a,
+    )
+
+    print("Fitting baseline...")
+    res_base = _fit_host_model(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=False,
+        loader_seed=seed,
+    )
+
+    print(f"Fitting wavelet_mba weighted CE model ({len(X_train_raw)} orig + {aug_out['aug_total_count']} aug)...")
+    res_act = _fit_host_model_weighted_aug_ce(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_aug=aug_out["X_aug_raw"],
+        y_aug=aug_out["y_aug_np"],
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        loader_seed=seed,
+    )
+
+    return {
+        "res_base": res_base,
+        "res_act": res_act,
+        "avg_bridge": aug_out["avg_bridge"],
+        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
+        "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "candidate_total_count": aug_out["candidate_total_count"],
+        "aug_total_count": aug_out["aug_total_count"],
+        "step_tier_count": aug_out["step_tier_count"],
+        "effective_k": aug_out["effective_k"],
+        "wavelet_meta": wavelet_meta,
+        "cA_identity_bridge_error_mean": aug_out["cA_identity_bridge_error_mean"],
+        "idwt_identity_recon_error_mean": aug_out["idwt_identity_recon_error_mean"],
+        "audit_rows": aug_out["audit_rows"],
+        "viz_payload": {
+            "Z_orig": np.stack([record.z_a for record in train_recs]),
             "Z_aug": aug_out["z_aug"],
             "y_aug": aug_out["y_aug"],
             "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
@@ -337,7 +545,7 @@ def run_experiment(dataset_name, args):
                 "effective_k_dir": 0,
                 "algo": args.algo,
                 "model": args.model,
-                "pipeline": "act",
+                "pipeline": "act" if args.pipeline == "mba" else args.pipeline,
             }
         ]
 
@@ -375,23 +583,51 @@ def run_experiment(dataset_name, args):
                 y_val = np.asarray([record.y for record in val_recs], dtype=np.int64)
 
             X_train_z = np.stack([record.z for record in train_recs])
-            pipeline_out = _run_act_pipeline(
-                args=args,
-                seed=seed,
-                X_train_raw=X_train_raw,
-                y_train=y_train,
-                X_val_raw=X_val_raw,
-                y_val=y_val,
-                X_test_raw=X_test_raw,
-                y_test=y_test,
-                X_train_z=X_train_z,
-                train_recs=train_recs,
-                mean_log=mean_log,
-                epochs=epochs,
-                lr=lr,
-                batch_size=batch_size,
-                patience=patience,
-            )
+            wavelet_meta: Dict[str, object] = {}
+            if args.pipeline == "wavelet_mba":
+                wavelet_train_recs, mean_log_a, wavelet_meta = build_wavelet_trial_records(
+                    train_trials,
+                    wavelet_name=args.wavelet_name,
+                    wavelet_level=args.wavelet_level,
+                    wavelet_mode=args.wavelet_mode,
+                )
+                if mean_log_a is None:
+                    raise ValueError("wavelet_mba could not build a cA mean log covariance.")
+                pipeline_out = _run_wavelet_mba_pipeline(
+                    args=args,
+                    seed=seed,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    train_recs=wavelet_train_recs,
+                    wavelet_meta=wavelet_meta,
+                    mean_log_a=mean_log_a,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                )
+            else:
+                pipeline_out = _run_act_pipeline(
+                    args=args,
+                    seed=seed,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                )
 
             res_base = pipeline_out["res_base"]
             res_act = pipeline_out["res_act"]
@@ -403,7 +639,7 @@ def run_experiment(dataset_name, args):
                 "status": "success",
                 "algo": args.algo,
                 "model": args.model,
-                "pipeline": "act",
+                "pipeline": "act" if args.pipeline == "mba" else args.pipeline,
                 "base_f1": float(res_base["macro_f1"]),
                 "act_f1": float(res_act["macro_f1"]),
                 "gain": gain,
@@ -425,6 +661,35 @@ def run_experiment(dataset_name, args):
                 "requested_k_dir": int(args.k_dir),
                 "effective_k_dir": int(pipeline_out.get("effective_k", 0)),
             }
+            if args.pipeline == "wavelet_mba":
+                summary.update(
+                    {
+                        "wavelet_name": args.wavelet_name,
+                        "wavelet_level": args.wavelet_level,
+                        "wavelet_level_eff": int(wavelet_meta.get("wavelet_level_eff", 0)),
+                        "cA_length": int(wavelet_meta.get("cA_length", 0)),
+                        "cD_frozen_count": int(wavelet_meta.get("cD_frozen_count", 0)),
+                        "wavelet_recon_error_mean": float(wavelet_meta.get("wavelet_recon_error_mean", 0.0)),
+                        "cA_identity_bridge_error_mean": float(pipeline_out.get("cA_identity_bridge_error_mean", 0.0)),
+                        "idwt_identity_recon_error_mean": float(pipeline_out.get("idwt_identity_recon_error_mean", 0.0)),
+                        "cA_transport_error_fro_mean": float(avg_bridge.get("cA_transport_error_fro", 0.0)),
+                        "cA_transport_error_logeuc_mean": float(avg_bridge.get("cA_transport_error_logeuc", 0.0)),
+                        "step_tier_count": int(pipeline_out.get("step_tier_count", 0)),
+                        "feedback_weight_mean": float(res_act.get("feedback_weight_mean", 0.0)),
+                        "feedback_weight_std": float(res_act.get("feedback_weight_std", 0.0)),
+                        "last_orig_ce_loss": float(res_act.get("last_orig_ce_loss", 0.0)),
+                        "last_weighted_aug_ce_loss": float(res_act.get("last_weighted_aug_ce_loss", 0.0)),
+                        "last_aug_margin_mean": float(res_act.get("last_aug_margin_mean", 0.0)),
+                    }
+                )
+                audit_rows = pipeline_out.get("audit_rows", [])
+                if audit_rows:
+                    audit_dir = os.path.join(args.out_root, "audit")
+                    os.makedirs(audit_dir, exist_ok=True)
+                    pd.DataFrame(audit_rows).to_csv(
+                        os.path.join(audit_dir, f"{dataset_name}_s{seed}_wavelet_candidates.csv"),
+                        index=False,
+                    )
             print(
                 f"Base: {summary['base_f1']:.4f} | "
                 f"ACT: {summary['act_f1']:.4f} | "
@@ -438,7 +703,7 @@ def run_experiment(dataset_name, args):
                 save_path = os.path.join(viz_dir, f"{dataset_name}_s{seed}_viz.npz")
                 np.savez(
                     save_path,
-                    Z_orig=X_train_z,
+                    Z_orig=pipeline_out["viz_payload"].get("Z_orig", X_train_z),
                     y_orig=y_train,
                     Z_aug=pipeline_out["viz_payload"]["Z_aug"],
                     y_aug=pipeline_out["viz_payload"]["y_aug"],
@@ -463,7 +728,7 @@ def run_experiment(dataset_name, args):
                     "effective_k_dir": 0,
                     "algo": args.algo,
                     "model": args.model,
-                    "pipeline": "act",
+                    "pipeline": "act" if args.pipeline == "mba" else args.pipeline,
                 }
             )
     return results
@@ -473,7 +738,7 @@ def main():
     parser = argparse.ArgumentParser(description="ACT_ManifoldBridge original ACT runner")
     parser.add_argument("--dataset", type=str, default="natops")
     parser.add_argument("--all-datasets", action="store_true")
-    parser.add_argument("--pipeline", type=str, choices=["act", "mba"], default="act")
+    parser.add_argument("--pipeline", type=str, choices=["act", "mba", "wavelet_mba"], default="act")
     parser.add_argument("--algo", type=str, choices=["pia", "lraes"], default="lraes")
     parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
     parser.add_argument("--host-config", type=str, choices=["none", "resnet1d_default", "patchtst_default", "timesnet_default"], default="none")
@@ -491,11 +756,22 @@ def main():
     parser.add_argument("--theory-diagnostics", action="store_true", help="Enable host-alignment diagnostics for sampled augmented trials")
     parser.add_argument("--disable-safe-step", action="store_true", help="Disable Safe-Step constraint")
     parser.add_argument("--save-viz-samples", action="store_true", help="Save latent and raw samples for visualization")
+    parser.add_argument("--wavelet-name", type=str, default="db4")
+    parser.add_argument("--wavelet-level", type=str, default="auto")
+    parser.add_argument("--wavelet-mode", type=str, default="symmetric")
+    parser.add_argument("--wavelet-step-tier-ratios", type=str, default="0.25,0.5,0.9")
+    parser.add_argument("--feedback-margin-temperature", type=float, default=1.0)
+    parser.add_argument("--aug-loss-weight", type=float, default=1.0)
     parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
 
     if args.pipeline == "mba":
         print("Using legacy pipeline alias 'mba' -> 'act'.")
+    if args.pipeline == "wavelet_mba":
+        if args.algo != "lraes":
+            raise ValueError("--pipeline wavelet_mba currently supports --algo lraes only.")
+        if args.model == "minirocket":
+            raise ValueError("--pipeline wavelet_mba supports resnet1d, patchtst, and timesnet only.")
 
     os.makedirs(args.out_root, exist_ok=True)
     datasets = [args.dataset]

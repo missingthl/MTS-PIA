@@ -1,49 +1,68 @@
 # ACT_ManifoldBridge
 
-`ACT_ManifoldBridge` has been cleaned back to the original ACT mainline.
-
-The repository now centers on a single geometric augmentation chain:
+`ACT_ManifoldBridge` is the standalone implementation of the original
+ManifoldBridge augmentation line. The publishable method body is intentionally
+kept small:
 
 `x -> z(x) -> z_aug -> x_aug`
 
-In practice, this means:
+The current mainline is the original ACT/MBA-style external augmentation:
 
-- each trial is embedded as a static SPD / Log-Euclidean point
-- local directions come from `PIA` or `LRAES`
-- augmented latent points are generated with the original curriculum sampler
-- `bridge_single()` realizes them back into raw time-series samples
-- the host is trained on `orig + aug` in the standard supervised setting
+- embed each trial as one static SPD / Log-Euclidean state;
+- build a PIA or LRAES direction bank;
+- generate latent candidates with the curriculum sampler;
+- realize candidates back to raw time series through `bridge_single()`;
+- train the black-box host on `original + augmented` samples.
 
-The older heavy feedback / ACL exploration path has been removed from the main project entrypoints so the codebase stays focused on the original ACT method body.
+`wavelet_mba` is kept as an opt-in experimental path for the next round of
+object-layer tests. It applies the same ManifoldBridge idea only to the
+low-frequency wavelet skeleton `cA`, freezes all detail coefficients `cD`, and
+reconstructs each candidate with one final iDWT.
 
-## Main Entry
+## Entry Point
 
-Run the original ACT pipeline:
+Run the original ACT/MBA mainline:
 
 ```bash
-python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
   --dataset natops --pipeline act --algo lraes --model resnet1d
 ```
 
-`--pipeline mba` is still accepted as a legacy alias for the same original ACT path.
+`--pipeline mba` is accepted as a legacy alias for `act`.
 
-## Project Structure
+Run the Wavelet-cA experimental path:
 
-- [run_act_pilot.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/run_act_pilot.py): single ACT protocol entrypoint
-- [core/pia.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core/pia.py): direction-bank construction
-- [core/curriculum.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core/curriculum.py): original latent candidate generation
-- [core/bridge.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core/bridge.py): whitening-coloring bridge
-- [utils/evaluators.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/utils/evaluators.py): host training and evaluation
+```bash
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset basicmotions --pipeline wavelet_mba --algo lraes --model resnet1d \
+  --wavelet-name db4 --wavelet-level auto --wavelet-mode symmetric
+```
+
+All experiments in this folder should be launched from the `pia` conda
+environment.
+
+## Project Layout
+
+- [run_act_pilot.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/run_act_pilot.py): single runnable protocol entrypoint.
+- [core/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core): geometric operators, bridge realization, and host backbones.
+- [utils/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/utils): dataset loading and host evaluators.
+- [scripts/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/scripts): paper/table/visualization helpers plus legacy sweep scripts.
+- [docs/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/docs): architecture and maintenance notes.
+- [results/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/results): tracked evidence tables and historical experiment outputs.
+
+See [docs/PROJECT_STRUCTURE.md](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/docs/PROJECT_STRUCTURE.md)
+for the cleaned project map.
 
 ## Supported Hosts
 
 - `resnet1d`
 - `patchtst`
 - `timesnet`
-- `minirocket`
+- `minirocket` for the original ACT/MBA path only
 
 ## Core Options
 
+- `--pipeline {act,mba,wavelet_mba}`
 - `--algo {pia,lraes}`
 - `--model {minirocket,resnet1d,patchtst,timesnet}`
 - `--k-dir`
@@ -52,20 +71,28 @@ python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
 - `--theory-diagnostics`
 - `--disable-safe-step`
 
-## Quick Start
+Wavelet-only options:
 
-Run a small smoke:
+- `--wavelet-name`
+- `--wavelet-level`
+- `--wavelet-mode`
+- `--wavelet-step-tier-ratios`
+- `--feedback-margin-temperature`
+- `--aug-loss-weight`
+
+## Quick Smoke
 
 ```bash
-python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
   --dataset basicmotions --pipeline act --algo lraes --model resnet1d \
-  --seeds 1 --epochs 30 --device cuda
+  --seeds 1 --epochs 15 --device cuda
 ```
 
-Run a full sweep over AEON fixed-split datasets:
+Wavelet smoke:
 
 ```bash
-python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
-  --all-datasets --pipeline act --algo lraes --model resnet1d \
-  --out-root standalone_projects/ACT_ManifoldBridge/results/act_core
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset basicmotions --pipeline wavelet_mba --algo lraes --model resnet1d \
+  --seeds 1 --epochs 15 --device cuda \
+  --out-root standalone_projects/ACT_ManifoldBridge/results/wavelet_mba_v1/basicmotions
 ```

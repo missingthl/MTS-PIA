@@ -16,3 +16,4 @@ dependencies:
   - pip
   - pip:
       - aeon>=1.0.0
+      - PyWavelets>=1.5.0
