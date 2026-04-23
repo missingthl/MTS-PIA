@@ -27,13 +27,22 @@ Relevant files:
 - `core/pia.py`: PIA and LRAES direction-bank construction.
 - `core/curriculum.py`: original latent candidate generation.
 - `core/bridge.py`: whitening-coloring realization.
+- `core/whitened_edit.py`: VNext white-space line edit and recoloring helpers.
 - `run_act_pilot.py`: baseline-vs-ACT experiment orchestration.
 
 ## Experimental Path
 
-`core/wavelet_mba.py` and `--pipeline wavelet_mba` are retained as an opt-in
-object-layer experiment. They should not be treated as replacing the original
-ACT/MBA method body until a separate result matrix supports that change.
+`--pipeline mba_white_edit` is the MBA-VNext realization experiment. It keeps
+the original raw SPD object and LRAES target-state generator, inserts a rank-1
+line edit in whitened coordinates, and then trains via the existing weighted
+aug-CE host path. It is opt-in and does not replace the publishable ACT/MBA
+mainline.
+
+`core/wavelet_mba.py` and `--pipeline wavelet_mba` are retained as opt-in
+object-layer experiments. `ca_only` is the V1 low-frequency skeleton path.
+`dual_a_dm` is the V2 dual-object path with `cA_2` plus `cD_2` and frozen
+`cD_1`. Neither should be treated as replacing the original ACT/MBA method body
+until a separate result matrix supports that change.
 
 ## Legacy / Historical Material
 
@@ -46,6 +55,8 @@ experiments should write to a clearly named subfolder such as:
 
 ```text
 results/wavelet_mba_v1/<dataset-or-matrix-name>/
+results/wavelet_dual_object_v2/<dataset-or-matrix-name>/
+results/mba_white_edit_vnext/<dataset-or-matrix-name>/
 ```
 
 ## Environment Rule

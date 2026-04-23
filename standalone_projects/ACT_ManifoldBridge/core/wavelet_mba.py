@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -30,8 +30,22 @@ class WaveletTrialRecord:
     cA: np.ndarray
     sigma_a: np.ndarray
     z_a: np.ndarray
+    cDm: Optional[np.ndarray]
+    sigma_dm: Optional[np.ndarray]
+    z_dm: Optional[np.ndarray]
+    secondary_detail_level: int
+    secondary_coeff_index: int
     wavelet_level_eff: int
     wavelet_recon_error: float
+
+
+def detail_level_to_coeff_index(level_eff: int, detail_level: int) -> int:
+    """Map pywt detail level m to wavedec coefficient index for [cA_L, cD_L, ..., cD_1]."""
+    level_eff = int(level_eff)
+    detail_level = int(detail_level)
+    if detail_level < 1 or detail_level > level_eff:
+        raise ValueError(f"detail_level must be in [1, {level_eff}], got {detail_level}.")
+    return int(level_eff - detail_level + 1)
 
 
 def parse_step_tier_ratios(text: str) -> List[float]:
@@ -134,6 +148,7 @@ def build_wavelet_trial_records(
     wavelet_name: str,
     wavelet_level: str | int,
     wavelet_mode: str,
+    secondary_detail_level: int = 2,
     spd_eps: float = 1e-4,
 ) -> Tuple[List[WaveletTrialRecord], np.ndarray | None, Dict[str, object]]:
     if not trials:
@@ -141,9 +156,13 @@ def build_wavelet_trial_records(
 
     raw_rows: List[Dict[str, object]] = []
     log_covs: List[np.ndarray] = []
+    log_covs_dm: List[np.ndarray] = []
     cA_shape = None
+    cDm_shape = None
     level_eff = None
+    secondary_coeff_index = -1
     recon_errors: List[float] = []
+    cDm_energy_values: List[float] = []
     for t in trials:
         coeffs, level_i, recon_error = decompose_signal(
             t.x,
@@ -159,6 +178,19 @@ def build_wavelet_trial_records(
             raise ValueError(f"Inconsistent cA shape: got {tuple(cA.shape)}, expected {cA_shape}.")
         if int(level_i) != int(level_eff):
             raise ValueError(f"Inconsistent effective wavelet level: got {level_i}, expected {level_eff}.")
+        if int(secondary_detail_level) <= int(level_eff):
+            secondary_coeff_index = detail_level_to_coeff_index(int(level_eff), int(secondary_detail_level))
+            cDm = coeffs[secondary_coeff_index]
+            if cDm_shape is None:
+                cDm_shape = tuple(cDm.shape)
+            elif tuple(cDm.shape) != cDm_shape:
+                raise ValueError(f"Inconsistent cD_{secondary_detail_level} shape: got {tuple(cDm.shape)}, expected {cDm_shape}.")
+            sigma_dm, log_cov_dm, _ = covariance_and_logvec(cDm, mean_log=None, spd_eps=spd_eps)
+            log_covs_dm.append(log_cov_dm)
+            cDm_energy_values.append(float(np.mean(np.square(cDm))))
+        else:
+            cDm = None
+            sigma_dm = None
         sigma_a, log_cov, _ = covariance_and_logvec(cA, mean_log=None, spd_eps=spd_eps)
         log_covs.append(log_cov)
         recon_errors.append(recon_error)
@@ -170,15 +202,23 @@ def build_wavelet_trial_records(
                 "coeffs": coeffs,
                 "cA": cA,
                 "sigma_a": sigma_a,
+                "cDm": cDm,
+                "sigma_dm": sigma_dm,
                 "recon_error": recon_error,
             }
         )
 
     mean_log = np.mean(log_covs, axis=0)
+    mean_log_dm = np.mean(log_covs_dm, axis=0) if log_covs_dm else None
     records: List[WaveletTrialRecord] = []
     for row, log_cov in zip(raw_rows, log_covs):
         idx = np.triu_indices(mean_log.shape[0])
         z_a = (log_cov - mean_log)[idx].astype(np.float64)
+        z_dm = None
+        if mean_log_dm is not None and row["cDm"] is not None:
+            _, log_cov_dm, _ = covariance_and_logvec(np.asarray(row["cDm"]), mean_log=None, spd_eps=spd_eps)
+            idx_dm = np.triu_indices(mean_log_dm.shape[0])
+            z_dm = (log_cov_dm - mean_log_dm)[idx_dm].astype(np.float64)
         records.append(
             WaveletTrialRecord(
                 tid=str(row["tid"]),
@@ -188,6 +228,11 @@ def build_wavelet_trial_records(
                 cA=np.asarray(row["cA"], dtype=np.float64),
                 sigma_a=np.asarray(row["sigma_a"], dtype=np.float64),
                 z_a=z_a,
+                cDm=None if row["cDm"] is None else np.asarray(row["cDm"], dtype=np.float64),
+                sigma_dm=None if row["sigma_dm"] is None else np.asarray(row["sigma_dm"], dtype=np.float64),
+                z_dm=z_dm,
+                secondary_detail_level=int(secondary_detail_level),
+                secondary_coeff_index=int(secondary_coeff_index),
                 wavelet_level_eff=int(level_eff),
                 wavelet_recon_error=float(row["recon_error"]),
             )
@@ -197,16 +242,30 @@ def build_wavelet_trial_records(
         "wavelet_level_eff": int(level_eff),
         "cA_shape": tuple(cA_shape or ()),
         "cA_length": int(cA_shape[-1]) if cA_shape else 0,
+        "cDm_shape": tuple(cDm_shape or ()),
+        "cDm_length": int(cDm_shape[-1]) if cDm_shape else 0,
+        "cDm_energy_mean": float(np.mean(cDm_energy_values)) if cDm_energy_values else 0.0,
+        "secondary_detail_level": int(secondary_detail_level),
+        "secondary_coeff_index": int(secondary_coeff_index),
+        "mean_log_dm": mean_log_dm,
         "cD_frozen_count": int(level_eff),
         "wavelet_recon_error_mean": float(np.mean(recon_errors)),
     }
     return records, mean_log, meta
 
 
-def assert_frozen_details(original_coeffs: Sequence[np.ndarray], candidate_coeffs: Sequence[np.ndarray]) -> None:
+def assert_frozen_details(
+    original_coeffs: Sequence[np.ndarray],
+    candidate_coeffs: Sequence[np.ndarray],
+    *,
+    mutable_detail_indices: Optional[Sequence[int]] = None,
+) -> None:
     if len(original_coeffs) != len(candidate_coeffs):
         raise AssertionError("DWT coefficient list length changed during wavelet_mba realization.")
+    mutable = set(int(i) for i in (mutable_detail_indices or []))
     for level_idx, (orig, cand) in enumerate(zip(original_coeffs[1:], candidate_coeffs[1:]), start=1):
+        if level_idx in mutable:
+            continue
         if not np.array_equal(np.asarray(orig), np.asarray(cand)):
             raise AssertionError(f"Frozen cD mismatch at coefficient index {level_idx}.")
 
@@ -216,11 +275,17 @@ def compute_identity_checks(
     *,
     wavelet_name: str,
     wavelet_mode: str,
+    object_mode: str = "ca_only",
     max_items: int = 32,
 ) -> Dict[str, float]:
     if not records:
-        return {"cA_identity_bridge_error_mean": 0.0, "idwt_identity_recon_error_mean": 0.0}
+        return {
+            "cA_identity_bridge_error_mean": 0.0,
+            "cDm_identity_bridge_error_mean": 0.0,
+            "idwt_identity_recon_error_mean": 0.0,
+        }
     cA_errs: List[float] = []
+    cDm_errs: List[float] = []
     idwt_errs: List[float] = []
     for rec in list(records)[: int(max_items)]:
         cA_same, _ = bridge_single(
@@ -231,7 +296,20 @@ def compute_identity_checks(
         cA_np = cA_same.numpy().astype(np.float64)
         cA_errs.append(float(np.mean(np.abs(cA_np - rec.cA))))
         cand_coeffs = [cA_np] + [np.asarray(c, dtype=np.float64).copy() for c in rec.coeffs[1:]]
-        assert_frozen_details(rec.coeffs, cand_coeffs)
+        mutable_detail_indices: List[int] = []
+        if str(object_mode) == "dual_a_dm":
+            if rec.cDm is None or rec.sigma_dm is None:
+                raise ValueError("dual_a_dm identity check requires cD_m object fields.")
+            cDm_same, _ = bridge_single(
+                torch.from_numpy(rec.cDm),
+                torch.from_numpy(rec.sigma_dm),
+                torch.from_numpy(rec.sigma_dm),
+            )
+            cDm_np = cDm_same.numpy().astype(np.float64)
+            cDm_errs.append(float(np.mean(np.abs(cDm_np - rec.cDm))))
+            cand_coeffs[rec.secondary_coeff_index] = cDm_np
+            mutable_detail_indices.append(int(rec.secondary_coeff_index))
+        assert_frozen_details(rec.coeffs, cand_coeffs, mutable_detail_indices=mutable_detail_indices)
         x_recon = reconstruct_signal(
             cand_coeffs,
             original_length=rec.x_raw.shape[-1],
@@ -241,6 +319,7 @@ def compute_identity_checks(
         idwt_errs.append(float(np.mean(np.abs(x_recon.astype(np.float64) - rec.x_raw.astype(np.float64)))))
     return {
         "cA_identity_bridge_error_mean": float(np.mean(cA_errs)),
+        "cDm_identity_bridge_error_mean": float(np.mean(cDm_errs)) if cDm_errs else 0.0,
         "idwt_identity_recon_error_mean": float(np.mean(idwt_errs)),
     }
 
@@ -348,10 +427,17 @@ def realize_wavelet_candidates(
     mean_log: np.ndarray,
     wavelet_name: str,
     wavelet_mode: str,
+    object_mode: str = "ca_only",
+    z_dm_aug: Optional[np.ndarray] = None,
+    mean_log_dm: Optional[np.ndarray] = None,
 ) -> Dict[str, object]:
     aug_trials: List[Dict[str, object]] = []
-    bridge_metrics: List[Dict[str, object]] = []
+    bridge_metrics_a: List[Dict[str, object]] = []
+    bridge_metrics_dm: List[Dict[str, object]] = []
     audit_rows: List[Dict[str, object]] = []
+    dual_mode = str(object_mode) == "dual_a_dm"
+    if dual_mode and (z_dm_aug is None or mean_log_dm is None):
+        raise ValueError("dual_a_dm realization requires z_dm_aug and mean_log_dm.")
     for i in range(len(z_aug)):
         src = tid_to_rec[str(tid_aug[i])]
         sigma_aug = logvec_to_spd(z_aug[i], mean_log)
@@ -362,7 +448,21 @@ def realize_wavelet_candidates(
         )
         cA_np = cA_aug.numpy().astype(np.float64)
         cand_coeffs = [cA_np] + [np.asarray(c, dtype=np.float64).copy() for c in src.coeffs[1:]]
-        assert_frozen_details(src.coeffs, cand_coeffs)
+        mutable_detail_indices: List[int] = []
+        if dual_mode:
+            if src.cDm is None or src.sigma_dm is None:
+                raise ValueError(f"Missing cD_m object for tid={src.tid}.")
+            sigma_dm_aug = logvec_to_spd(np.asarray(z_dm_aug)[i], mean_log_dm)
+            cDm_aug, bridge_meta_dm = bridge_single(
+                torch.from_numpy(src.cDm),
+                torch.from_numpy(src.sigma_dm),
+                torch.from_numpy(sigma_dm_aug),
+            )
+            cDm_np = cDm_aug.numpy().astype(np.float64)
+            cand_coeffs[src.secondary_coeff_index] = cDm_np
+            mutable_detail_indices.append(int(src.secondary_coeff_index))
+            bridge_metrics_dm.append(bridge_meta_dm)
+        assert_frozen_details(src.coeffs, cand_coeffs, mutable_detail_indices=mutable_detail_indices)
         x_aug = reconstruct_signal(
             cand_coeffs,
             original_length=src.x_raw.shape[-1],
@@ -370,7 +470,7 @@ def realize_wavelet_candidates(
             wavelet_mode=wavelet_mode,
         )
         aug_trials.append({"x": x_aug, "y": int(y_aug[i]), "tid": str(tid_aug[i])})
-        bridge_metrics.append(bridge_meta)
+        bridge_metrics_a.append(bridge_meta)
         row = dict(candidate_rows[i]) if i < len(candidate_rows) else {}
         row.update(
             {
@@ -379,11 +479,37 @@ def realize_wavelet_candidates(
                 "cA_transport_error_fro": float(bridge_meta.get("transport_error_fro", 0.0)),
             }
         )
+        if dual_mode:
+            bridge_meta_dm = bridge_metrics_dm[-1]
+            row.update(
+                {
+                    "cDm_transport_error_logeuc": float(bridge_meta_dm.get("transport_error_logeuc", 0.0)),
+                    "cDm_transport_error_fro": float(bridge_meta_dm.get("transport_error_fro", 0.0)),
+                    "dual_transport_error_logeuc": 0.5
+                    * (
+                        float(bridge_meta.get("transport_error_logeuc", 0.0))
+                        + float(bridge_meta_dm.get("transport_error_logeuc", 0.0))
+                    ),
+                }
+            )
         audit_rows.append(row)
-    if bridge_metrics:
+    if bridge_metrics_a:
         import pandas as pd
 
-        avg_bridge = {f"cA_{k}": float(v) for k, v in pd.DataFrame(bridge_metrics).mean(numeric_only=True).to_dict().items()}
+        avg_bridge = {
+            f"cA_{k}": float(v)
+            for k, v in pd.DataFrame(bridge_metrics_a).mean(numeric_only=True).to_dict().items()
+        }
+        if bridge_metrics_dm:
+            dm_avg = {
+                f"cDm_{k}": float(v)
+                for k, v in pd.DataFrame(bridge_metrics_dm).mean(numeric_only=True).to_dict().items()
+            }
+            avg_bridge.update(dm_avg)
+            avg_bridge["dual_transport_error_logeuc"] = 0.5 * (
+                float(avg_bridge.get("cA_transport_error_logeuc", 0.0))
+                + float(avg_bridge.get("cDm_transport_error_logeuc", 0.0))
+            )
     else:
         avg_bridge = {}
     return {

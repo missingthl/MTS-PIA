@@ -189,3 +189,114 @@ def build_pia_direction_bank(
     W = rs.randn(k_dir, d).astype(np.float32)
     W /= np.linalg.norm(W, axis=1, keepdims=True) + 1e-12
     return W, {"bank_source": "random", "k_dir": k_dir}
+
+
+def build_zpia_direction_bank(
+    X_train_z: np.ndarray,
+    k_dir: int = 10,
+    seed: int = 42,
+    *,
+    telm2_n_iters: int = 3,
+    telm2_c_repr: float = 1.0,
+    telm2_activation: str = "sine",
+    telm2_bias_update_mode: str = "residual",
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Build native Log-Euclidean template directions with TELM2.
+
+    ``zpia`` keeps the original MBA realization path intact. TELM2 only learns
+    template axes in the train-only Log-Euclidean ``z`` cloud; every returned
+    row is L2-normalized so ``pia_gamma`` remains comparable to LRAES.
+    """
+    try:
+        from PIA.telm2 import TELM2Config, TELM2Transformer
+    except ModuleNotFoundError:
+        import sys
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[3]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from PIA.telm2 import TELM2Config, TELM2Transformer
+
+    X = np.asarray(X_train_z, dtype=np.float64)
+    if X.ndim != 2:
+        raise ValueError("X_train_z must be a 2D matrix of Log-Euclidean states.")
+    if X.shape[0] <= 0 or X.shape[1] <= 0:
+        raise ValueError("X_train_z must have at least one row and one feature.")
+    if not np.isfinite(X).all():
+        raise ValueError("X_train_z contains NaN or inf values.")
+
+    k = int(k_dir)
+    if k <= 0:
+        raise ValueError("k_dir must be positive for zpia.")
+
+    cfg = TELM2Config(
+        r_dimension=k,
+        n_iters=int(telm2_n_iters),
+        C_repr=float(telm2_c_repr),
+        activation=str(telm2_activation),
+        orthogonalize=True,
+        enable_repr_learning=True,
+        bias_update_mode=str(telm2_bias_update_mode),
+        seed=int(seed),
+    )
+    transformer = TELM2Transformer(cfg).fit(X)
+    artifacts = transformer.get_artifacts()
+    W_raw = np.asarray(artifacts.W, dtype=np.float64)
+    expected_shape = (k, int(X.shape[1]))
+    if W_raw.shape != expected_shape:
+        raise ValueError(f"TELM2 W shape mismatch: expected {expected_shape}, got {W_raw.shape}.")
+    if not np.isfinite(W_raw).all():
+        raise ValueError("TELM2 W contains NaN or inf values.")
+
+    W_centered = W_raw - np.mean(W_raw, axis=0, keepdims=True)
+    bank = np.zeros_like(W_centered, dtype=np.float64)
+    fallback_row_count = 0
+    for row_idx in range(k):
+        row = np.asarray(W_centered[row_idx], dtype=np.float64).copy()
+        norm = float(np.linalg.norm(row))
+        if (not np.isfinite(norm)) or norm < 1e-12:
+            row = np.asarray(W_raw[row_idx], dtype=np.float64).copy()
+            norm = float(np.linalg.norm(row))
+            fallback_row_count += 1
+        if (not np.isfinite(norm)) or norm < 1e-12:
+            row = np.zeros((X.shape[1],), dtype=np.float64)
+            row[row_idx % X.shape[1]] = 1.0
+            norm = 1.0
+        row = row / (norm + 1e-12)
+        bank[row_idx] = _canonicalize_axis(row)
+
+    row_norms = np.linalg.norm(bank, axis=1)
+    if (not np.isfinite(bank).all()) or (not np.isfinite(row_norms).all()):
+        raise ValueError("zpia direction bank contains NaN or inf values after normalization.")
+    if not np.allclose(row_norms, 1.0, atol=1e-5, rtol=1e-5):
+        raise ValueError("zpia direction rows are not L2-normalized.")
+
+    recon = np.asarray(list(artifacts.recon_err), dtype=np.float64)
+    recon_finite = recon[np.isfinite(recon)]
+    if recon_finite.size == 0:
+        recon_last = recon_mean = recon_std = 0.0
+    else:
+        recon_last = float(recon_finite[-1])
+        recon_mean = float(np.mean(recon_finite))
+        recon_std = float(np.std(recon_finite))
+
+    meta: Dict[str, object] = {
+        "bank_source": "zpia_telm2",
+        "k_dir": int(k),
+        "z_dim": int(X.shape[1]),
+        "n_train": int(X.shape[0]),
+        "n_train_lt_z_dim": bool(int(X.shape[0]) < int(X.shape[1])),
+        "row_norm_min": float(np.min(row_norms)),
+        "row_norm_max": float(np.max(row_norms)),
+        "row_norm_mean": float(np.mean(row_norms)),
+        "fallback_row_count": int(fallback_row_count),
+        "telm2_recon_last": recon_last,
+        "telm2_recon_mean": recon_mean,
+        "telm2_recon_std": recon_std,
+        "telm2_n_iters": int(telm2_n_iters),
+        "telm2_c_repr": float(telm2_c_repr),
+        "telm2_activation": str(telm2_activation),
+        "telm2_bias_update_mode": str(telm2_bias_update_mode),
+    }
+    return bank.astype(np.float32), meta

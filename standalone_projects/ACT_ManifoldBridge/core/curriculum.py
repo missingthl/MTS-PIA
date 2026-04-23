@@ -130,6 +130,7 @@ def build_curriculum_aug_candidates(
     tid_to_idx = {tid: i for i, tid in enumerate(tid_arr)}
 
     aug_X, aug_y, aug_tid, aug_src, aug_dir, aug_gamma = [], [], [], [], [], []
+    candidate_rows = []
     tids = sorted(list(set(tid_arr.tolist())))
     
     safe_ratios = []
@@ -151,7 +152,9 @@ def build_curriculum_aug_candidates(
             u_norm = np.linalg.norm(u_k)
             
             # Apply Proposition 2: SafeStep Constraint (Manifold Margin Buffer)
+            safe_upper_bound = float("inf")
             if eta_safe is not None:
+                safe_upper_bound = float(eta_safe) * float(d_min) / (float(u_norm) + 1e-12)
                 g_safe, ratio = apply_safe_step_constraint(g0, u_norm, d_min, eta=eta_safe)
             else:
                 g_safe, ratio = g0, 1.0
@@ -166,6 +169,22 @@ def build_curriculum_aug_candidates(
             aug_src.append(X_sample[None, :])
             aug_dir.append(dir_id)
             aug_gamma.append(g_safe)
+            candidate_rows.append(
+                {
+                    "anchor_index": int(idx_global),
+                    "tid": tid,
+                    "class_id": int(y_sample),
+                    "candidate_order": int(m),
+                    "direction_id": int(dir_id),
+                    "sign": float(sign),
+                    "gamma_requested": float(g0),
+                    "gamma_used": float(g_safe),
+                    "direction_norm": float(u_norm),
+                    "safe_upper_bound": float(safe_upper_bound),
+                    "safe_radius_ratio": float(ratio),
+                    "manifold_margin": float(d_min),
+                }
+            )
 
     if not aug_X:
         return (np.empty((0, X_train.shape[1]), dtype=np.float32), 
@@ -177,7 +196,8 @@ def build_curriculum_aug_candidates(
         "aug_total_count": len(aug_y),
         "safe_radius_ratio_mean": float(np.mean(safe_ratios)),
         "safe_radius_ratio_min": float(np.min(safe_ratios)),
-        "manifold_margin_mean": float(np.mean(margins_diagnostic))
+        "manifold_margin_mean": float(np.mean(margins_diagnostic)),
+        "candidate_rows": candidate_rows,
     }
 
     return (np.vstack(aug_X).astype(np.float32), 
