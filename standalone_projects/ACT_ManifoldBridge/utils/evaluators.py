@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import itertools
+import math
 import os
 import random
+import copy
+from typing import Any, Dict, List, Tuple, Optional
+
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
-import copy
-from typing import Dict, List, Tuple, Optional
 from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from aeon.classification.convolution_based import MultiRocketHydraClassifier
@@ -16,6 +20,117 @@ from aeon.classification.convolution_based import MultiRocketHydraClassifier
 from core.resnet1d import ResNet1DClassifier
 from core.patchtst import PatchTST
 from core.timesnet import TimesNet
+
+
+# ---------------------------------------------------------------------------
+# V2 Components: On-the-fly Dataset, Temperature Scheduler, Focal Weighting
+# ---------------------------------------------------------------------------
+
+class ManifoldAugDataset(Dataset):
+    """
+    On-the-fly augmentation dataset for ACT ManifoldBridge V2.
+
+    Memory layout: stores only lightweight (x_raw, sigma_orig, z_cand) tuples.
+    The full bridge computation (logvec_to_spd + bridge_single) is deferred
+    to __getitem__, eliminating the need to pre-materialise X_aug_raw in memory.
+
+    This directly resolves the 'cold-start OOM' and low augmentation throughput
+    issues present in the static-array pipeline.
+    """
+
+    def __init__(
+        self,
+        anchor_x_raws: List[np.ndarray],
+        anchor_sigma_origs: List[np.ndarray],
+        z_cands: np.ndarray,
+        y_cands: np.ndarray,
+        mean_log: np.ndarray,
+    ) -> None:
+        assert len(anchor_x_raws) == len(anchor_sigma_origs) == len(z_cands) == len(y_cands), (
+            "ManifoldAugDataset: all input lists must have equal length"
+        )
+        self._x_raws = anchor_x_raws
+        self._sigma_origs = anchor_sigma_origs
+        self._z_cands = np.asarray(z_cands, dtype=np.float32)
+        self._y_cands = np.asarray(y_cands, dtype=np.int64)
+        self._mean_log = np.asarray(mean_log, dtype=np.float64)
+
+    def __len__(self) -> int:
+        return int(self._z_cands.shape[0])
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Lazy import to avoid circular dependency at module load time
+        from core.bridge import bridge_single, logvec_to_spd  # noqa: PLC0415
+        sigma_aug = logvec_to_spd(self._z_cands[idx], self._mean_log)
+        x_aug, _ = bridge_single(
+            torch.from_numpy(self._x_raws[idx]),
+            torch.from_numpy(self._sigma_origs[idx]),
+            torch.from_numpy(sigma_aug),
+        )
+        return x_aug.float(), torch.tensor(int(self._y_cands[idx]), dtype=torch.long)
+
+
+class TauScheduler:
+    """
+    Cosine-annealing temperature scheduler for augmentation soft-gating.
+
+    - Exploration phase  [0, warmup_epochs):        tau = tau_max  (high temp, permissive)
+    - Annealing phase    [warmup_epochs, total]:    cosine decay tau_max -> tau_min
+
+    Usage::
+
+        sched = TauScheduler(total_epochs=30, tau_max=2.0, tau_min=0.1, warmup_ratio=0.3)
+        for epoch in range(30):
+            tau = sched.get_tau(epoch)   # use per epoch
+    """
+
+    def __init__(
+        self,
+        total_epochs: int,
+        tau_max: float = 2.0,
+        tau_min: float = 0.1,
+        warmup_ratio: float = 0.3,
+    ) -> None:
+        self.total_epochs = max(1, int(total_epochs))
+        self.tau_max = float(tau_max)
+        self.tau_min = float(tau_min)
+        self.warmup_epochs = int(self.total_epochs * max(0.0, min(1.0, float(warmup_ratio))))
+
+    def get_tau(self, epoch: int) -> float:
+        if int(epoch) < self.warmup_epochs:
+            return self.tau_max
+        anneal_epochs = max(1, self.total_epochs - self.warmup_epochs)
+        progress = min(1.0, float(epoch - self.warmup_epochs) / float(anneal_epochs))
+        cosine_val = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return float(self.tau_min + (self.tau_max - self.tau_min) * cosine_val)
+
+
+def _focal_margin_weight(
+    margin: torch.Tensor,
+    tau: float,
+    low_clip: float = -5.0,
+    high_clip: float = 5.0,
+    easy_floor: float = 0.1,
+) -> torch.Tensor:
+    """
+    U-shape (Focal Margin) weighting for augmented samples.
+
+    Assigns:
+    - Weight ≈ 1.0  for samples near the decision boundary  (margin ≈ 0)
+    - Weight ≈ easy_floor  for trivially-easy samples       (margin >> 0)
+    - Weight ≈ 0.0  for clearly-wrong/noise samples         (margin << 0)
+
+    This drives the model to expand its decision boundary instead of
+    over-protecting already-mastered regions.
+    """
+    tau_val = max(float(tau), 1e-6)
+    m = margin.clamp(float(low_clip), float(high_clip))
+    # Rising portion: weight grows from 0 as margin increases from low_clip
+    hard_weight = torch.sigmoid((m - float(low_clip) / 2.0) / tau_val)
+    # Falling portion: penalise samples that are too easy (margin >> 0)
+    easy_penalty = torch.sigmoid((m - float(high_clip) / 2.0) / tau_val)
+    w = hard_weight * (1.0 - (1.0 - float(easy_floor)) * easy_penalty)
+    return w.clamp(0.0, 1.0).detach()
 
 class EarlyStopping:
     def __init__(self, patience=10, min_delta=0, mode='min'):
@@ -278,54 +393,57 @@ def fit_eval_pytorch_model_weighted_aug_ce(
     feedback_margin_temperature: float = 1.0,
     aug_loss_weight: float = 1.0,
     loader_seed: Optional[int] = None,
+    # --- V2 parameters (all default to V1-compatible behaviour) ---
+    aug_dataset: Optional[ManifoldAugDataset] = None,
+    weight_mode: str = "sigmoid",
+    tau_scheduler: Optional[TauScheduler] = None,
+    steps_per_epoch: int = 0,
 ) -> Dict[str, float]:
     _set_training_seed(loader_seed)
     dev = _get_dev(device)
     model.to(dev)
 
     orig_loader = _make_tensor_loader(
-        X_train,
-        y_train,
-        batch_size=batch_size,
-        shuffle=True,
-        indexed=False,
-        seed=loader_seed,
+        X_train, y_train,
+        batch_size=batch_size, shuffle=True, indexed=False, seed=loader_seed,
     )
-    aug_loader = None
-    if X_aug is not None and y_aug is not None and len(y_aug) > 0:
+
+    # Build aug loader — prefer on-the-fly dataset over pre-materialised arrays
+    _use_onthefly = False
+    if aug_dataset is not None:
+        _aug_gen = (
+            torch.Generator().manual_seed(int(loader_seed) + 991)
+            if loader_seed is not None else None
+        )
+        aug_loader: Optional[DataLoader] = DataLoader(
+            aug_dataset, batch_size=batch_size, shuffle=True, generator=_aug_gen
+        )
+        _use_onthefly = True
+    elif X_aug is not None and y_aug is not None and len(y_aug) > 0:
         aug_loader = _make_tensor_loader(
-            X_aug,
-            y_aug,
-            batch_size=batch_size,
-            shuffle=True,
-            indexed=False,
+            X_aug, y_aug,
+            batch_size=batch_size, shuffle=True, indexed=False,
             seed=None if loader_seed is None else int(loader_seed) + 991,
         )
+    else:
+        aug_loader = None
 
     val_loader = None
     if X_val is not None:
         val_loader = _make_tensor_loader(
-            X_val,
-            y_val,
-            batch_size=batch_size,
-            shuffle=False,
-            indexed=False,
+            X_val, y_val, batch_size=batch_size, shuffle=False, indexed=False,
         )
-
     test_loader = _make_tensor_loader(
-        X_test,
-        y_test,
-        batch_size=batch_size,
-        shuffle=False,
-        indexed=False,
+        X_test, y_test, batch_size=batch_size, shuffle=False, indexed=False,
     )
 
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
     criterion_per_sample = nn.CrossEntropyLoss(reduction="none")
-    scheduler = None
-    if use_cosine_annealing:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    lr_scheduler = (
+        optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        if use_cosine_annealing else None
+    )
 
     early_stopping = EarlyStopping(patience=patience, mode="max")
     best_val_f1 = 0
@@ -335,34 +453,50 @@ def fit_eval_pytorch_model_weighted_aug_ce(
     last_weighted_aug_ce_loss = 0.0
     last_aug_margin_mean = 0.0
     weight_values: List[float] = []
-
-    tau = max(1e-6, float(feedback_margin_temperature))
     lambda_aug = float(aug_loss_weight)
+    current_tau = max(1e-6, float(feedback_margin_temperature))  # updated per epoch below
 
     for epoch in range(epochs):
         model.train()
-        aug_iter = iter(aug_loader) if aug_loader is not None else None
+
+        # Resolve current tau: scheduler overrides fixed temperature
+        if tau_scheduler is not None:
+            current_tau = max(1e-6, tau_scheduler.get_tau(epoch))
+        else:
+            current_tau = max(1e-6, float(feedback_margin_temperature))
+
         epoch_orig_losses: List[float] = []
         epoch_aug_losses: List[float] = []
         epoch_margins: List[float] = []
-        for bx, by in orig_loader:
-            bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
-            optimizer.zero_grad()
-            logits = model(bx)
-            loss_orig = criterion(logits, by)
-            loss = loss_orig
-            epoch_orig_losses.append(float(loss_orig.item()))
 
-            if aug_iter is not None and aug_loader is not None:
+        if _use_onthefly and aug_loader is not None:
+            # ── On-the-fly mode: aug stream drives the loop ─────────────────
+            # orig data cycles infinitely so every aug step sees fresh orig data
+            orig_cycle = itertools.cycle(orig_loader)
+            n_steps = int(steps_per_epoch) if int(steps_per_epoch) > 0 else len(aug_loader)
+            aug_iter_e: Any = iter(aug_loader)
+
+            for _step in range(n_steps):
+                bx, by = next(orig_cycle)
+                bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
+                optimizer.zero_grad()
+                logits = model(bx)
+                loss_orig = criterion(logits, by)
+                loss = loss_orig
+                epoch_orig_losses.append(float(loss_orig.item()))
+
                 try:
-                    ax, ay = next(aug_iter)
+                    ax, ay = next(aug_iter_e)
                 except StopIteration:
-                    aug_iter = iter(aug_loader)
-                    ax, ay = next(aug_iter)
+                    aug_iter_e = iter(aug_loader)
+                    ax, ay = next(aug_iter_e)
                 ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
                 logits_aug = model(ax)
                 margin = _true_class_margin(logits_aug, ay)
-                weights = torch.sigmoid(margin / tau).detach()
+                if weight_mode == "focal":
+                    weights = _focal_margin_weight(margin, current_tau)
+                else:
+                    weights = torch.sigmoid(margin / current_tau).detach()
                 ce_aug = criterion_per_sample(logits_aug, ay)
                 weighted_aug = torch.mean(weights * ce_aug)
                 loss = loss + lambda_aug * weighted_aug
@@ -370,22 +504,49 @@ def fit_eval_pytorch_model_weighted_aug_ce(
                 epoch_margins.append(float(torch.mean(margin.detach()).item()))
                 weight_values.extend(weights.detach().cpu().numpy().astype(float).tolist())
 
-            loss.backward()
-            optimizer.step()
+                loss.backward()
+                optimizer.step()
 
-        if epoch_orig_losses:
-            last_orig_ce_loss = float(np.mean(epoch_orig_losses))
-        if epoch_aug_losses:
-            last_weighted_aug_ce_loss = float(np.mean(epoch_aug_losses))
         else:
-            last_weighted_aug_ce_loss = 0.0
-        if epoch_margins:
-            last_aug_margin_mean = float(np.mean(epoch_margins))
-        else:
-            last_aug_margin_mean = 0.0
+            # ── Legacy mode: orig stream drives the loop (V1 behaviour) ────
+            aug_iter = iter(aug_loader) if aug_loader is not None else None
+            for bx, by in orig_loader:
+                bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
+                optimizer.zero_grad()
+                logits = model(bx)
+                loss_orig = criterion(logits, by)
+                loss = loss_orig
+                epoch_orig_losses.append(float(loss_orig.item()))
 
-        if scheduler:
-            scheduler.step()
+                if aug_iter is not None and aug_loader is not None:
+                    try:
+                        ax, ay = next(aug_iter)
+                    except StopIteration:
+                        aug_iter = iter(aug_loader)
+                        ax, ay = next(aug_iter)
+                    ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
+                    logits_aug = model(ax)
+                    margin = _true_class_margin(logits_aug, ay)
+                    if weight_mode == "focal":
+                        weights = _focal_margin_weight(margin, current_tau)
+                    else:
+                        weights = torch.sigmoid(margin / current_tau).detach()
+                    ce_aug = criterion_per_sample(logits_aug, ay)
+                    weighted_aug = torch.mean(weights * ce_aug)
+                    loss = loss + lambda_aug * weighted_aug
+                    epoch_aug_losses.append(float(weighted_aug.item()))
+                    epoch_margins.append(float(torch.mean(margin.detach()).item()))
+                    weight_values.extend(weights.detach().cpu().numpy().astype(float).tolist())
+
+                loss.backward()
+                optimizer.step()
+
+        last_orig_ce_loss = float(np.mean(epoch_orig_losses)) if epoch_orig_losses else 0.0
+        last_weighted_aug_ce_loss = float(np.mean(epoch_aug_losses)) if epoch_aug_losses else 0.0
+        last_aug_margin_mean = float(np.mean(epoch_margins)) if epoch_margins else 0.0
+
+        if lr_scheduler:
+            lr_scheduler.step()
 
         if val_loader:
             v_loss, v_acc, v_f1 = _evaluate(model, val_loader, dev, criterion)
@@ -415,6 +576,8 @@ def fit_eval_pytorch_model_weighted_aug_ce(
         "last_orig_ce_loss": float(last_orig_ce_loss),
         "last_weighted_aug_ce_loss": float(last_weighted_aug_ce_loss),
         "last_aug_margin_mean": float(last_aug_margin_mean),
+        "weight_mode": str(weight_mode),
+        "tau_final": float(current_tau),
     }
 
 
@@ -501,40 +664,59 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
     router_min_prob: float = 0.10,
     router_smoothing: float = 0.5,
     loader_seed: Optional[int] = None,
+    # --- V2 Sprint 1+2 parameters ---
+    aug_dataset_lraes: Optional[ManifoldAugDataset] = None,
+    aug_dataset_zpia: Optional[ManifoldAugDataset] = None,
+    weight_mode: str = "sigmoid",
+    tau_scheduler: Optional[TauScheduler] = None,
+    steps_per_epoch: int = 0,
+    # --- V2 Sprint 3 parameters ---
+    lambda_consistency: float = 0.0,
+    consistency_mode: str = "mse",
 ) -> Dict[str, float]:
     _set_training_seed(loader_seed)
     dev = _get_dev(device)
     model.to(dev)
 
     orig_loader = _make_tensor_loader(
-        X_train,
-        y_train,
-        batch_size=batch_size,
-        shuffle=True,
-        indexed=False,
-        seed=loader_seed,
+        X_train, y_train,
+        batch_size=batch_size, shuffle=True, indexed=False, seed=loader_seed,
     )
 
-    aug_loaders = {
-        "lraes": None,
-        "zpia": None,
-    }
-    if X_aug_lraes is not None and y_aug_lraes is not None and len(y_aug_lraes) > 0:
+    # Build per-engine aug loaders — prefer on-the-fly datasets
+    _use_onthefly_lraes = False
+    _use_onthefly_zpia = False
+    aug_loaders: Dict[str, Optional[DataLoader]] = {"lraes": None, "zpia": None}
+
+    if aug_dataset_lraes is not None:
+        _gen_l = (
+            torch.Generator().manual_seed(int(loader_seed) + 991)
+            if loader_seed is not None else None
+        )
+        aug_loaders["lraes"] = DataLoader(
+            aug_dataset_lraes, batch_size=batch_size, shuffle=True, generator=_gen_l
+        )
+        _use_onthefly_lraes = True
+    elif X_aug_lraes is not None and y_aug_lraes is not None and len(y_aug_lraes) > 0:
         aug_loaders["lraes"] = _make_tensor_loader(
-            X_aug_lraes,
-            y_aug_lraes,
-            batch_size=batch_size,
-            shuffle=True,
-            indexed=False,
+            X_aug_lraes, y_aug_lraes,
+            batch_size=batch_size, shuffle=True, indexed=False,
             seed=None if loader_seed is None else int(loader_seed) + 991,
         )
-    if X_aug_zpia is not None and y_aug_zpia is not None and len(y_aug_zpia) > 0:
+
+    if aug_dataset_zpia is not None:
+        _gen_z = (
+            torch.Generator().manual_seed(int(loader_seed) + 1991)
+            if loader_seed is not None else None
+        )
+        aug_loaders["zpia"] = DataLoader(
+            aug_dataset_zpia, batch_size=batch_size, shuffle=True, generator=_gen_z
+        )
+        _use_onthefly_zpia = True
+    elif X_aug_zpia is not None and y_aug_zpia is not None and len(y_aug_zpia) > 0:
         aug_loaders["zpia"] = _make_tensor_loader(
-            X_aug_zpia,
-            y_aug_zpia,
-            batch_size=batch_size,
-            shuffle=True,
-            indexed=False,
+            X_aug_zpia, y_aug_zpia,
+            batch_size=batch_size, shuffle=True, indexed=False,
             seed=None if loader_seed is None else int(loader_seed) + 1991,
         )
 
@@ -559,9 +741,10 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
     criterion_per_sample = nn.CrossEntropyLoss(reduction="none")
-    scheduler = None
-    if use_cosine_annealing:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    lr_scheduler = (
+        optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        if use_cosine_annealing else None
+    )
 
     early_stopping = EarlyStopping(patience=patience, mode="max")
     best_val_f1 = 0
@@ -575,7 +758,7 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
     last_aug_margin_mean_lraes = 0.0
     last_aug_margin_mean_zpia = 0.0
 
-    tau = max(1e-6, float(feedback_margin_temperature))
+    current_tau = max(1e-6, float(feedback_margin_temperature))
     lambda_aug = float(aug_loss_weight)
     active_mask = np.asarray(
         [aug_loaders["lraes"] is not None, aug_loaders["zpia"] is not None],
@@ -596,6 +779,11 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
 
     for epoch in range(epochs):
         model.train()
+        # Resolve current tau per epoch
+        if tau_scheduler is not None:
+            current_tau = max(1e-6, tau_scheduler.get_tau(epoch))
+        else:
+            current_tau = max(1e-6, float(feedback_margin_temperature))
         aug_iters = {name: (iter(loader) if loader is not None else None) for name, loader in aug_loaders.items()}
         epoch_orig_losses: List[float] = []
         epoch_engine_losses: Dict[str, List[float]] = {"lraes": [], "zpia": []}
@@ -603,6 +791,7 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
         epoch_engine_margins: Dict[str, List[float]] = {"lraes": [], "zpia": []}
         epoch_probs = router_probs.copy()
         epoch_prob_tensor = torch.tensor(epoch_probs, dtype=torch.float32, device=dev).detach()
+        epoch_consistency_losses: List[float] = []
 
         for bx, by in orig_loader:
             bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
@@ -611,6 +800,8 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
             loss_orig = criterion(logits, by)
             loss = loss_orig
             epoch_orig_losses.append(float(loss_orig.item()))
+            _engine_ax: Dict[str, Optional[torch.Tensor]] = {"lraes": None, "zpia": None}
+            _engine_logits_aug: Dict[str, Optional[torch.Tensor]] = {"lraes": None, "zpia": None}
 
             for engine_idx, engine_name in enumerate(["lraes", "zpia"]):
                 aug_loader = aug_loaders[engine_name]
@@ -626,16 +817,45 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
                 ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
                 logits_aug = model(ax)
                 margin = _true_class_margin(logits_aug, ay)
-                weights = torch.sigmoid(margin / tau).detach()
+                if weight_mode == "focal":
+                    weights = _focal_margin_weight(margin, current_tau)
+                else:
+                    weights = torch.sigmoid(margin / current_tau).detach()
                 ce_aug = criterion_per_sample(logits_aug, ay)
                 weighted_aug = torch.mean(weights * ce_aug)
                 loss = loss + lambda_aug * epoch_prob_tensor[engine_idx] * weighted_aug
                 epoch_engine_losses[engine_name].append(float(weighted_aug.item()))
-                epoch_engine_rewards[engine_name].append(float(torch.mean(weights).item()))
+                # Sprint 4.1: reward = relative loss drop (how much this engine reduced loss)
+                # reward = 1 - (weighted_aug / (loss_orig_item + eps))
+                _orig_loss_val = float(loss_orig.detach().item())
+                _relative_drop = 1.0 - float(weighted_aug.detach().item()) / max(_orig_loss_val, 1e-8)
+                epoch_engine_rewards[engine_name].append(float(np.clip(_relative_drop, -1.0, 1.0)))
                 epoch_engine_margins[engine_name].append(float(torch.mean(margin.detach()).item()))
                 weights_np = weights.detach().cpu().numpy().astype(float)
                 weight_values_all.extend(weights_np.tolist())
                 weight_values_by_engine[engine_name].extend(weights_np.tolist())
+                # Cache per-engine features for consistency check
+                _engine_ax[engine_name] = ax
+                _engine_logits_aug[engine_name] = logits_aug
+
+            # --- Sprint 3.1: Cross-engine consistency regularization ---
+            if (
+                float(lambda_consistency) > 0.0
+                and _engine_ax["lraes"] is not None
+                and _engine_ax["zpia"] is not None
+                and hasattr(model, "encode")
+            ):
+                _min_b = min(_engine_ax["lraes"].shape[0], _engine_ax["zpia"].shape[0])
+                feat_l = model.encode(_engine_ax["lraes"][:_min_b])
+                feat_z = model.encode(_engine_ax["zpia"][:_min_b])
+                if consistency_mode == "kl":
+                    p = F.softmax(feat_l, dim=-1).clamp(1e-8, 1.0)
+                    q = F.softmax(feat_z.detach(), dim=-1).clamp(1e-8, 1.0)
+                    consistency_loss = F.kl_div(p.log(), q, reduction="batchmean")
+                else:  # default: mse (feat_z stop-grad to avoid gradient conflict)
+                    consistency_loss = F.mse_loss(feat_l, feat_z.detach())
+                loss = loss + float(lambda_consistency) * consistency_loss
+                epoch_consistency_losses.append(float(consistency_loss.detach().item()))
 
             loss.backward()
             optimizer.step()
@@ -694,8 +914,8 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
             }
         )
 
-        if scheduler:
-            scheduler.step()
+        if lr_scheduler:
+            lr_scheduler.step()
 
         if val_loader:
             v_loss, v_acc, v_f1 = _evaluate(model, val_loader, dev, criterion)
@@ -739,6 +959,9 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
         "router_reward_zpia_last": float(last_rewards["zpia"]),
         "adaptive_best_engine_final": "lraes" if float(router_probs[0]) >= float(router_probs[1]) else "zpia",
         "router_trace": router_trace,
+        "weight_mode": str(weight_mode),
+        "consistency_loss_mean": float(np.mean(epoch_consistency_losses)) if epoch_consistency_losses else 0.0,
+        "lambda_consistency": float(lambda_consistency),
     }
 
 def fit_eval_resnet1d(
@@ -795,6 +1018,10 @@ def fit_eval_resnet1d_weighted_aug_ce(
     feedback_margin_temperature: float = 1.0,
     aug_loss_weight: float = 1.0,
     loader_seed: Optional[int] = None,
+    aug_dataset: Optional[ManifoldAugDataset] = None,
+    weight_mode: str = "sigmoid",
+    tau_scheduler: Optional[TauScheduler] = None,
+    steps_per_epoch: int = 0,
 ):
     _set_training_seed(loader_seed)
     in_channels = X_train.shape[1]
@@ -802,22 +1029,16 @@ def fit_eval_resnet1d_weighted_aug_ce(
     model = ResNet1DClassifier(in_channels, num_classes)
     return fit_eval_pytorch_model_weighted_aug_ce(
         model,
-        X_train,
-        y_train,
-        X_aug,
-        y_aug,
-        X_val,
-        y_val,
-        X_test,
-        y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
+        X_train, y_train, X_aug, y_aug, X_val, y_val, X_test, y_test,
+        epochs=epochs, lr=lr, batch_size=batch_size, patience=patience,
         device=device,
         feedback_margin_temperature=feedback_margin_temperature,
         aug_loss_weight=aug_loss_weight,
         loader_seed=loader_seed,
+        aug_dataset=aug_dataset,
+        weight_mode=weight_mode,
+        tau_scheduler=tau_scheduler,
+        steps_per_epoch=steps_per_epoch,
     )
 
 
@@ -843,6 +1064,13 @@ def fit_eval_resnet1d_adaptive_aug_ce(
     router_min_prob: float = 0.10,
     router_smoothing: float = 0.5,
     loader_seed: Optional[int] = None,
+    aug_dataset_lraes: Optional[ManifoldAugDataset] = None,
+    aug_dataset_zpia: Optional[ManifoldAugDataset] = None,
+    weight_mode: str = "sigmoid",
+    tau_scheduler: Optional[TauScheduler] = None,
+    steps_per_epoch: int = 0,
+    lambda_consistency: float = 0.0,
+    consistency_mode: str = "mse",
 ):
     _set_training_seed(loader_seed)
     in_channels = X_train.shape[1]
@@ -850,20 +1078,11 @@ def fit_eval_resnet1d_adaptive_aug_ce(
     model = ResNet1DClassifier(in_channels, num_classes)
     return fit_eval_pytorch_model_adaptive_aug_ce(
         model,
-        X_train,
-        y_train,
-        X_aug_lraes,
-        y_aug_lraes,
-        X_aug_zpia,
-        y_aug_zpia,
-        X_val,
-        y_val,
-        X_test,
-        y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
+        X_train, y_train,
+        X_aug_lraes, y_aug_lraes,
+        X_aug_zpia, y_aug_zpia,
+        X_val, y_val, X_test, y_test,
+        epochs=epochs, lr=lr, batch_size=batch_size, patience=patience,
         device=device,
         feedback_margin_temperature=feedback_margin_temperature,
         aug_loss_weight=aug_loss_weight,
@@ -871,6 +1090,13 @@ def fit_eval_resnet1d_adaptive_aug_ce(
         router_min_prob=router_min_prob,
         router_smoothing=router_smoothing,
         loader_seed=loader_seed,
+        aug_dataset_lraes=aug_dataset_lraes,
+        aug_dataset_zpia=aug_dataset_zpia,
+        weight_mode=weight_mode,
+        tau_scheduler=tau_scheduler,
+        steps_per_epoch=steps_per_epoch,
+        lambda_consistency=lambda_consistency,
+        consistency_mode=consistency_mode,
     )
 
 
@@ -929,6 +1155,10 @@ def fit_eval_patchtst_weighted_aug_ce(
     feedback_margin_temperature: float = 1.0,
     aug_loss_weight: float = 1.0,
     loader_seed: Optional[int] = None,
+    aug_dataset: Optional[ManifoldAugDataset] = None,
+    weight_mode: str = "sigmoid",
+    tau_scheduler: Optional[TauScheduler] = None,
+    steps_per_epoch: int = 0,
 ):
     in_channels = X_train.shape[1]
     seq_len = X_train.shape[2]
@@ -936,23 +1166,16 @@ def fit_eval_patchtst_weighted_aug_ce(
     model = PatchTST(in_channels, seq_len, num_classes)
     return fit_eval_pytorch_model_weighted_aug_ce(
         model,
-        X_train,
-        y_train,
-        X_aug,
-        y_aug,
-        X_val,
-        y_val,
-        X_test,
-        y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        device=device,
-        use_cosine_annealing=True,
+        X_train, y_train, X_aug, y_aug, X_val, y_val, X_test, y_test,
+        epochs=epochs, lr=lr, batch_size=batch_size, patience=patience,
+        device=device, use_cosine_annealing=True,
         feedback_margin_temperature=feedback_margin_temperature,
         aug_loss_weight=aug_loss_weight,
         loader_seed=loader_seed,
+        aug_dataset=aug_dataset,
+        weight_mode=weight_mode,
+        tau_scheduler=tau_scheduler,
+        steps_per_epoch=steps_per_epoch,
     )
 
 def fit_eval_timesnet(
@@ -1009,6 +1232,10 @@ def fit_eval_timesnet_weighted_aug_ce(
     feedback_margin_temperature: float = 1.0,
     aug_loss_weight: float = 1.0,
     loader_seed: Optional[int] = None,
+    aug_dataset: Optional[ManifoldAugDataset] = None,
+    weight_mode: str = "sigmoid",
+    tau_scheduler: Optional[TauScheduler] = None,
+    steps_per_epoch: int = 0,
 ):
     in_channels = X_train.shape[1]
     seq_len = X_train.shape[2]
@@ -1016,20 +1243,14 @@ def fit_eval_timesnet_weighted_aug_ce(
     model = TimesNet(in_channels, seq_len, num_classes)
     return fit_eval_pytorch_model_weighted_aug_ce(
         model,
-        X_train,
-        y_train,
-        X_aug,
-        y_aug,
-        X_val,
-        y_val,
-        X_test,
-        y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
+        X_train, y_train, X_aug, y_aug, X_val, y_val, X_test, y_test,
+        epochs=epochs, lr=lr, batch_size=batch_size, patience=patience,
         device=device,
         feedback_margin_temperature=feedback_margin_temperature,
         aug_loss_weight=aug_loss_weight,
         loader_seed=loader_seed,
+        aug_dataset=aug_dataset,
+        weight_mode=weight_mode,
+        tau_scheduler=tau_scheduler,
+        steps_per_epoch=steps_per_epoch,
     )

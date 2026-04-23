@@ -36,6 +36,8 @@ from core.whitened_edit import white_edit_single, white_identity_error
 from host_alignment_probe import compute_gradient_alignment
 from utils.datasets import AEON_FIXED_SPLIT_SPECS, load_trials_for_dataset, make_trial_split
 from utils.evaluators import (
+    ManifoldAugDataset,
+    TauScheduler,
     build_model,
     fit_eval_minirocket,
     fit_eval_patchtst,
@@ -152,6 +154,8 @@ def _fit_host_model_weighted_aug_ce(
     batch_size: int,
     patience: int,
     loader_seed: Optional[int] = None,
+    aug_dataset: Optional[ManifoldAugDataset] = None,
+    tau_scheduler: Optional[TauScheduler] = None,
 ) -> Dict[str, object]:
     kwargs = {
         "epochs": epochs,
@@ -162,6 +166,11 @@ def _fit_host_model_weighted_aug_ce(
         "feedback_margin_temperature": args.feedback_margin_temperature,
         "aug_loss_weight": args.aug_loss_weight,
         "loader_seed": loader_seed,
+        # V2 params
+        "aug_dataset": aug_dataset,
+        "weight_mode": args.aug_weight_mode,
+        "tau_scheduler": tau_scheduler,
+        "steps_per_epoch": args.steps_per_epoch,
     }
     if args.model == "resnet1d":
         return fit_eval_resnet1d_weighted_aug_ce(
@@ -196,24 +205,18 @@ def _fit_host_model_adaptive_aug_ce(
     batch_size: int,
     patience: int,
     loader_seed: Optional[int] = None,
+    aug_dataset_lraes: Optional[ManifoldAugDataset] = None,
+    aug_dataset_zpia: Optional[ManifoldAugDataset] = None,
+    tau_scheduler: Optional[TauScheduler] = None,
 ) -> Dict[str, object]:
     if args.model != "resnet1d":
         raise ValueError("Adaptive router v1 currently supports resnet1d only.")
     return fit_eval_resnet1d_adaptive_aug_ce(
-        X_tr,
-        y_tr,
-        X_aug_lraes,
-        y_aug_lraes,
-        X_aug_zpia,
-        y_aug_zpia,
-        X_val_raw,
-        y_val,
-        X_test_raw,
-        y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
+        X_tr, y_tr,
+        X_aug_lraes, y_aug_lraes,
+        X_aug_zpia, y_aug_zpia,
+        X_val_raw, y_val, X_test_raw, y_test,
+        epochs=epochs, lr=lr, batch_size=batch_size, patience=patience,
         device=args.device,
         feedback_margin_temperature=args.feedback_margin_temperature,
         aug_loss_weight=args.aug_loss_weight,
@@ -221,6 +224,13 @@ def _fit_host_model_adaptive_aug_ce(
         router_min_prob=args.router_min_prob,
         router_smoothing=args.router_smoothing,
         loader_seed=loader_seed,
+        aug_dataset_lraes=aug_dataset_lraes,
+        aug_dataset_zpia=aug_dataset_zpia,
+        weight_mode=getattr(args, "aug_weight_mode", "sigmoid"),
+        tau_scheduler=tau_scheduler,
+        steps_per_epoch=getattr(args, "steps_per_epoch", 0),
+        lambda_consistency=getattr(args, "lambda_consistency", 0.0),
+        consistency_mode=getattr(args, "consistency_mode", "mse"),
     )
 
 
@@ -382,6 +392,19 @@ def _build_act_realized_augmentations(
     y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
     avg_bridge = pd.DataFrame(bridge_metrics).mean().to_dict() if bridge_metrics else {}
 
+    # --- V2: build on-the-fly dataset (only when --onthefly-aug is set) ---
+    aug_dataset_out: Optional[ManifoldAugDataset] = None
+    if getattr(args, "onthefly_aug", False) and len(z_aug) > 0:
+        anchor_x_raws = [tid_to_rec[tid_aug[i]].x_raw for i in range(len(z_aug))]
+        anchor_sigma_origs = [tid_to_rec[tid_aug[i]].sigma_orig for i in range(len(z_aug))]
+        aug_dataset_out = ManifoldAugDataset(
+            anchor_x_raws=anchor_x_raws,
+            anchor_sigma_origs=anchor_sigma_origs,
+            z_cands=z_aug,
+            y_cands=y_aug,
+            mean_log=mean_log,
+        )
+
     return {
         "effective_k": effective_k,
         "z_aug": z_aug,
@@ -398,6 +421,8 @@ def _build_act_realized_augmentations(
         "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
         "candidate_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
         "aug_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
+        # V2 on-the-fly dataset (None when --onthefly-aug not set)
+        "aug_dataset": aug_dataset_out,
     }
 
 
@@ -584,13 +609,23 @@ def _run_mba_feedback_pipeline(
         row["margin_aug"] = float(margins[idx]) if idx < len(margins) else 0.0
         row["feedback_weight"] = float(weights[idx]) if idx < len(weights) else 0.0
 
+    # Build TauScheduler if requested
+    _tau_sched: Optional[TauScheduler] = None
+    if getattr(args, "aug_weight_mode", "sigmoid") != "sigmoid" or getattr(args, "tau_max", None) is not None:
+        _tau_sched = TauScheduler(
+            total_epochs=epochs,
+            tau_max=getattr(args, "tau_max", 2.0),
+            tau_min=getattr(args, "tau_min", 0.1),
+            warmup_ratio=getattr(args, "tau_warmup_ratio", 0.3),
+        )
+
     print(f"Fitting MBA feedback model ({len(y_train)} orig + {len(aug_out['y_aug_np']) if aug_out['y_aug_np'] is not None else 0} aug stream)...")
     res_act = _fit_host_model_weighted_aug_ce(
         args=args,
         X_tr=X_train_raw,
         y_tr=y_train,
-        X_aug=aug_out["X_aug_raw"],
-        y_aug=aug_out["y_aug_np"],
+        X_aug=aug_out["X_aug_raw"] if aug_out["aug_dataset"] is None else None,
+        y_aug=aug_out["y_aug_np"] if aug_out["aug_dataset"] is None else None,
         X_val_raw=X_val_raw,
         y_val=y_val,
         X_test_raw=X_test_raw,
@@ -600,6 +635,8 @@ def _run_mba_feedback_pipeline(
         batch_size=batch_size,
         patience=patience,
         loader_seed=seed,
+        aug_dataset=aug_out["aug_dataset"],
+        tau_scheduler=_tau_sched,
     )
 
     return {
@@ -702,14 +739,24 @@ def _run_mba_feedback_adaptive_pipeline(
         f"Fitting adaptive MBA feedback model "
         f"({len(y_train)} orig + {int(aug_out_lraes['aug_total_count'])} lraes + {int(aug_out_zpia['aug_total_count'])} zpia aug)..."
     )
+    # Build TauScheduler if Sprint 2 is activated
+    _tau_sched_adaptive: Optional[TauScheduler] = None
+    if getattr(args, "aug_weight_mode", "sigmoid") != "sigmoid" or getattr(args, "tau_max", None) is not None:
+        _tau_sched_adaptive = TauScheduler(
+            total_epochs=epochs,
+            tau_max=getattr(args, "tau_max", 2.0),
+            tau_min=getattr(args, "tau_min", 0.1),
+            warmup_ratio=getattr(args, "tau_warmup_ratio", 0.3),
+        )
+
     res_act = _fit_host_model_adaptive_aug_ce(
         args=args,
         X_tr=X_train_raw,
         y_tr=y_train,
-        X_aug_lraes=aug_out_lraes["X_aug_raw"],
-        y_aug_lraes=aug_out_lraes["y_aug_np"],
-        X_aug_zpia=aug_out_zpia["X_aug_raw"],
-        y_aug_zpia=aug_out_zpia["y_aug_np"],
+        X_aug_lraes=aug_out_lraes["X_aug_raw"] if aug_out_lraes["aug_dataset"] is None else None,
+        y_aug_lraes=aug_out_lraes["y_aug_np"] if aug_out_lraes["aug_dataset"] is None else None,
+        X_aug_zpia=aug_out_zpia["X_aug_raw"] if aug_out_zpia["aug_dataset"] is None else None,
+        y_aug_zpia=aug_out_zpia["y_aug_np"] if aug_out_zpia["aug_dataset"] is None else None,
         X_val_raw=X_val_raw,
         y_val=y_val,
         X_test_raw=X_test_raw,
@@ -719,6 +766,9 @@ def _run_mba_feedback_adaptive_pipeline(
         batch_size=batch_size,
         patience=patience,
         loader_seed=seed,
+        aug_dataset_lraes=aug_out_lraes["aug_dataset"],
+        aug_dataset_zpia=aug_out_zpia["aug_dataset"],
+        tau_scheduler=_tau_sched_adaptive,
     )
 
     def _weighted_bridge_mean(key: str) -> float:
@@ -1670,6 +1720,26 @@ def main():
     parser.add_argument("--router-min-prob", type=float, default=0.10)
     parser.add_argument("--router-smoothing", type=float, default=0.5)
     parser.add_argument("--router-reward", type=str, choices=["feedback_weight"], default="feedback_weight")
+    # --- V2 Sprint 1+2 parameters ---
+    parser.add_argument("--onthefly-aug", action="store_true",
+                        help="Use on-the-fly ManifoldAugDataset instead of pre-materialised X_aug_raw (Sprint 1)")
+    parser.add_argument("--steps-per-epoch", type=int, default=0,
+                        help="Fix step count per epoch when using on-the-fly aug (0 = len(aug_loader))")
+    parser.add_argument("--aug-weight-mode", type=str, choices=["sigmoid", "focal"], default="sigmoid",
+                        help="Augmented sample weighting: sigmoid (V1) or focal U-shape (Sprint 2)")
+    parser.add_argument("--tau-max", type=float, default=2.0,
+                        help="TauScheduler: initial (high) temperature during exploration phase")
+    parser.add_argument("--tau-min", type=float, default=0.1,
+                        help="TauScheduler: final (low) temperature after annealing")
+    parser.add_argument("--tau-warmup-ratio", type=float, default=0.3,
+                        help="TauScheduler: fraction of epochs to keep tau at tau_max before annealing")
+    # --- V2 Sprint 3 parameters ---
+    parser.add_argument("--consistency-regularization", action="store_true",
+                        help="Enable cross-engine consistency regularization (Task 3.1, adaptive only)")
+    parser.add_argument("--lambda-consistency", type=float, default=0.1,
+                        help="Weight for cross-engine consistency loss (default 0.1)")
+    parser.add_argument("--consistency-mode", type=str, choices=["mse", "kl"], default="mse",
+                        help="Consistency loss type: mse (stop-grad on zpia feats) or kl divergence")
     parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
 
