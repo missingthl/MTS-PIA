@@ -469,75 +469,60 @@ def fit_eval_pytorch_model_weighted_aug_ce(
         epoch_aug_losses: List[float] = []
         epoch_margins: List[float] = []
 
-        if _use_onthefly and aug_loader is not None:
-            # ── On-the-fly mode: aug stream drives the loop ─────────────────
-            # orig data cycles infinitely so every aug step sees fresh orig data
-            orig_cycle = itertools.cycle(orig_loader)
-            n_steps = int(steps_per_epoch) if int(steps_per_epoch) > 0 else len(aug_loader)
-            aug_iter_e: Any = iter(aug_loader)
-
-            for _step in range(n_steps):
-                bx, by = next(orig_cycle)
+        if aug_loader is not None:
+            # ── Anchor-Shield: Balanced Batch Sampling (Sprint 5) ────────────────
+            # Orig loader drives the epoch. Aug loader cycles infinitely to fill the batch.
+            aug_iter = itertools.cycle(aug_loader)
+            for bx, by in orig_loader:
                 bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
-                optimizer.zero_grad()
-                logits = model(bx)
-                loss_orig = criterion(logits, by)
-                loss = loss_orig
-                epoch_orig_losses.append(float(loss_orig.item()))
-
+                
                 try:
-                    ax, ay = next(aug_iter_e)
+                    ax, ay = next(aug_iter)
                 except StopIteration:
-                    aug_iter_e = iter(aug_loader)
-                    ax, ay = next(aug_iter_e)
+                    # cycle handles this, but next() might still fail if empty
+                    continue
                 ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
-                logits_aug = model(ax)
+                
+                # Use concatenated forward for efficiency
+                curr_bs_orig = len(bx)
+                curr_bs_aug = len(ax)
+                x_combined = torch.cat([bx, ax], dim=0)
+                
+                optimizer.zero_grad()
+                logits_combined = model(x_combined)
+                
+                logits_orig = logits_combined[:curr_bs_orig]
+                logits_aug = logits_combined[curr_bs_orig:]
+                
+                # Loss for original data (Stability Anchor)
+                loss_orig = criterion(logits_orig, by)
+                epoch_orig_losses.append(float(loss_orig.item()))
+                
+                # Loss for augmented data (Dynamic Exploration)
                 margin = _true_class_margin(logits_aug, ay)
                 if weight_mode == "focal":
                     weights = _focal_margin_weight(margin, current_tau)
                 else:
                     weights = torch.sigmoid(margin / current_tau).detach()
+                
                 ce_aug = criterion_per_sample(logits_aug, ay)
                 weighted_aug = torch.mean(weights * ce_aug)
-                loss = loss + lambda_aug * weighted_aug
+                
+                loss = loss_orig + lambda_aug * weighted_aug
                 epoch_aug_losses.append(float(weighted_aug.item()))
                 epoch_margins.append(float(torch.mean(margin.detach()).item()))
                 weight_values.extend(weights.detach().cpu().numpy().astype(float).tolist())
 
                 loss.backward()
                 optimizer.step()
-
         else:
-            # ── Legacy mode: orig stream drives the loop (V1 behaviour) ────
-            aug_iter = iter(aug_loader) if aug_loader is not None else None
+            # Fallback for pure baseline/legacy if no aug loader exists
             for bx, by in orig_loader:
                 bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
                 optimizer.zero_grad()
                 logits = model(bx)
-                loss_orig = criterion(logits, by)
-                loss = loss_orig
-                epoch_orig_losses.append(float(loss_orig.item()))
-
-                if aug_iter is not None and aug_loader is not None:
-                    try:
-                        ax, ay = next(aug_iter)
-                    except StopIteration:
-                        aug_iter = iter(aug_loader)
-                        ax, ay = next(aug_iter)
-                    ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
-                    logits_aug = model(ax)
-                    margin = _true_class_margin(logits_aug, ay)
-                    if weight_mode == "focal":
-                        weights = _focal_margin_weight(margin, current_tau)
-                    else:
-                        weights = torch.sigmoid(margin / current_tau).detach()
-                    ce_aug = criterion_per_sample(logits_aug, ay)
-                    weighted_aug = torch.mean(weights * ce_aug)
-                    loss = loss + lambda_aug * weighted_aug
-                    epoch_aug_losses.append(float(weighted_aug.item()))
-                    epoch_margins.append(float(torch.mean(margin.detach()).item()))
-                    weight_values.extend(weights.detach().cpu().numpy().astype(float).tolist())
-
+                loss = criterion(logits, by)
+                epoch_orig_losses.append(float(loss.item()))
                 loss.backward()
                 optimizer.step()
 
@@ -784,80 +769,106 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
             current_tau = max(1e-6, tau_scheduler.get_tau(epoch))
         else:
             current_tau = max(1e-6, float(feedback_margin_temperature))
-        aug_iters = {name: (iter(loader) if loader is not None else None) for name, loader in aug_loaders.items()}
-        epoch_orig_losses: List[float] = []
-        epoch_engine_losses: Dict[str, List[float]] = {"lraes": [], "zpia": []}
-        epoch_engine_rewards: Dict[str, List[float]] = {"lraes": [], "zpia": []}
-        epoch_engine_margins: Dict[str, List[float]] = {"lraes": [], "zpia": []}
-        epoch_probs = router_probs.copy()
-        epoch_prob_tensor = torch.tensor(epoch_probs, dtype=torch.float32, device=dev).detach()
-        epoch_consistency_losses: List[float] = []
+        # Pre-initialize cycle iterators for all engines (Sprint 5)
+        engine_iters = {}
+        for name, loader in aug_loaders.items():
+            if loader is not None:
+                engine_iters[name] = itertools.cycle(loader)
+            else:
+                engine_iters[name] = None
 
         for bx, by in orig_loader:
             bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
             optimizer.zero_grad()
-            logits = model(bx)
-            loss_orig = criterion(logits, by)
-            loss = loss_orig
+            
+            # 1. Gather all data for concatenated forward
+            x_list = [bx]
+            y_aug_dict = {}
+            engine_batch_sizes = {}
+            for name, e_iter in engine_iters.items():
+                if e_iter is not None:
+                    ax, ay = next(e_iter)
+                    ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
+                    x_list.append(ax)
+                    y_aug_dict[name] = ay
+                    engine_batch_sizes[name] = len(ax)
+            
+            # 2. Single Forward Pass
+            logits_combined = model(torch.cat(x_list, dim=0))
+            
+            # 3. Slice and calculate local losses
+            start_ptr = 0
+            logits_orig = logits_combined[start_ptr : start_ptr + len(bx)]
+            start_ptr += len(bx)
+            
+            loss_orig = criterion(logits_orig, by)
+            loss_total = loss_orig
             epoch_orig_losses.append(float(loss_orig.item()))
-            _engine_ax: Dict[str, Optional[torch.Tensor]] = {"lraes": None, "zpia": None}
+            
+            _engine_ax_cached: Dict[str, Optional[torch.Tensor]] = {"lraes": None, "zpia": None}
             _engine_logits_aug: Dict[str, Optional[torch.Tensor]] = {"lraes": None, "zpia": None}
 
             for engine_idx, engine_name in enumerate(["lraes", "zpia"]):
-                aug_loader = aug_loaders[engine_name]
-                aug_iter = aug_iters[engine_name]
-                if aug_loader is None or aug_iter is None:
+                if engine_name not in y_aug_dict:
                     continue
-                try:
-                    ax, ay = next(aug_iter)
-                except StopIteration:
-                    aug_iter = iter(aug_loader)
-                    aug_iters[engine_name] = aug_iter
-                    ax, ay = next(aug_iter)
-                ax, ay = ax.to(dev, non_blocking=True), ay.to(dev, non_blocking=True)
-                logits_aug = model(ax)
+                
+                bs_eng = engine_batch_sizes[engine_name]
+                logits_aug = logits_combined[start_ptr : start_ptr + bs_eng]
+                # Update start_ptr after slicing
+                # We need to slice x_list too for consistency regularization cache
+                # Since x_list[0] is bx, engine indices are shifted by 1
+                ax_cached = x_list[engine_idx + 1]
+                start_ptr += bs_eng
+                
+                ay = y_aug_dict[engine_name]
                 margin = _true_class_margin(logits_aug, ay)
+                
                 if weight_mode == "focal":
                     weights = _focal_margin_weight(margin, current_tau)
                 else:
                     weights = torch.sigmoid(margin / current_tau).detach()
+                    
                 ce_aug = criterion_per_sample(logits_aug, ay)
                 weighted_aug = torch.mean(weights * ce_aug)
-                loss = loss + lambda_aug * epoch_prob_tensor[engine_idx] * weighted_aug
+                
+                # Apply router probability and lambda_aug
+                loss_total = loss_total + lambda_aug * epoch_prob_tensor[engine_idx] * weighted_aug
+                
+                # Logging & Router Reward
                 epoch_engine_losses[engine_name].append(float(weighted_aug.item()))
-                # Sprint 4.1: reward = relative loss drop (how much this engine reduced loss)
-                # reward = 1 - (weighted_aug / (loss_orig_item + eps))
                 _orig_loss_val = float(loss_orig.detach().item())
                 _relative_drop = 1.0 - float(weighted_aug.detach().item()) / max(_orig_loss_val, 1e-8)
                 epoch_engine_rewards[engine_name].append(float(np.clip(_relative_drop, -1.0, 1.0)))
                 epoch_engine_margins[engine_name].append(float(torch.mean(margin.detach()).item()))
+                
                 weights_np = weights.detach().cpu().numpy().astype(float)
                 weight_values_all.extend(weights_np.tolist())
                 weight_values_by_engine[engine_name].extend(weights_np.tolist())
-                # Cache per-engine features for consistency check
-                _engine_ax[engine_name] = ax
+                
+                # Cache for consistency check
+                _engine_ax_cached[engine_name] = ax_cached
                 _engine_logits_aug[engine_name] = logits_aug
 
             # --- Sprint 3.1: Cross-engine consistency regularization ---
             if (
                 float(lambda_consistency) > 0.0
-                and _engine_ax["lraes"] is not None
-                and _engine_ax["zpia"] is not None
+                and _engine_ax_cached["lraes"] is not None
+                and _engine_ax_cached["zpia"] is not None
                 and hasattr(model, "encode")
             ):
-                _min_b = min(_engine_ax["lraes"].shape[0], _engine_ax["zpia"].shape[0])
-                feat_l = model.encode(_engine_ax["lraes"][:_min_b])
-                feat_z = model.encode(_engine_ax["zpia"][:_min_b])
+                _min_b = min(_engine_ax_cached["lraes"].shape[0], _engine_ax_cached["zpia"].shape[0])
+                feat_l = model.encode(_engine_ax_cached["lraes"][:_min_b])
+                feat_z = model.encode(_engine_ax_cached["zpia"][:_min_b])
                 if consistency_mode == "kl":
                     p = F.softmax(feat_l, dim=-1).clamp(1e-8, 1.0)
                     q = F.softmax(feat_z.detach(), dim=-1).clamp(1e-8, 1.0)
                     consistency_loss = F.kl_div(p.log(), q, reduction="batchmean")
                 else:  # default: mse (feat_z stop-grad to avoid gradient conflict)
                     consistency_loss = F.mse_loss(feat_l, feat_z.detach())
-                loss = loss + float(lambda_consistency) * consistency_loss
+                loss_total = loss_total + float(lambda_consistency) * consistency_loss
                 epoch_consistency_losses.append(float(consistency_loss.detach().item()))
 
-            loss.backward()
+            loss_total.backward()
             optimizer.step()
 
         last_orig_ce_loss = float(np.mean(epoch_orig_losses)) if epoch_orig_losses else 0.0

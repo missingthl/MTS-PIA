@@ -739,6 +739,62 @@ def _run_mba_feedback_adaptive_pipeline(
         f"Fitting adaptive MBA feedback model "
         f"({len(y_train)} orig + {int(aug_out_lraes['aug_total_count'])} lraes + {int(aug_out_zpia['aug_total_count'])} zpia aug)..."
     )
+
+    # -------------------------------------------------------------------------
+    # Sprint 5: Orthogonal Subspace Fusion (OSF)
+    # -------------------------------------------------------------------------
+    if getattr(args, "direction_bank_source", "lraes") == "orthogonal_fusion":
+        print("Executing Orthogonal Subspace Fusion (Sprint 5)...")
+        # Match anchors between lraes and zpia streams
+        z_o_list = []
+        for tid in aug_out_lraes["tid_aug"]:
+            z_o_list.append(aug_out_lraes["tid_to_rec"][tid].z)
+        z_o = torch.from_numpy(np.stack(z_o_list)) # [N_aug, F]
+        
+        z_z = torch.from_numpy(aug_out_zpia["z_aug"])   # [N_aug, F]
+        z_l = torch.from_numpy(aug_out_lraes["z_aug"]) # [N_aug, F]
+        
+        W = z_z - z_o
+        U = z_l - z_o
+        
+        # Projection U onto W
+        dot_uw = torch.sum(U * W, dim=-1, keepdim=True)
+        norm_w = torch.sum(W * W, dim=-1, keepdim=True) + 1e-8
+        U_perp = U - (dot_uw / norm_w) * W
+        
+        alpha = getattr(args, "osf_alpha", 1.0)
+        beta  = getattr(args, "osf_beta", 1.0)
+        z_f = z_o + alpha * W + beta * U_perp
+        
+        # Update lraes as the fused stream
+        aug_out_lraes["z_aug"] = z_f.numpy()
+        # Regenerate on-the-fly dataset with fused z
+        if aug_out_lraes["aug_dataset"] is not None:
+            aug_out_lraes["aug_dataset"].z_cands = z_f.numpy()
+            
+        # Re-build static X_aug_raw if needed
+        if not getattr(args, "onthefly_aug", False):
+            print("Re-materializing fused waveforms (Static mode)...")
+            new_x_list = []
+            for i in range(len(z_f)):
+                src = aug_out_lraes["tid_to_rec"][aug_out_lraes["tid_aug"][i]]
+                sigma_f = logvec_to_spd(z_f[i].numpy(), mean_log)
+                xf, _ = bridge_single(
+                    torch.from_numpy(src.x_raw),
+                    torch.from_numpy(src.sigma_orig),
+                    torch.from_numpy(sigma_f)
+                )
+                new_x_list.append(xf.numpy())
+            aug_out_lraes["X_aug_raw"] = np.stack(new_x_list)
+            
+        # Disable zpia stream to avoid redundancy
+        aug_out_zpia = {
+            "X_aug_raw": None, "y_aug_np": None, "aug_dataset": None, 
+            "aug_total_count": 0, "tid_aug": [], "audit_rows": []
+        }
+        print("Fusion complete. Continuing with single fused stream.")
+
+
     # Build TauScheduler if Sprint 2 is activated
     _tau_sched_adaptive: Optional[TauScheduler] = None
     if getattr(args, "aug_weight_mode", "sigmoid") != "sigmoid" or getattr(args, "tau_max", None) is not None:
@@ -1740,6 +1796,9 @@ def main():
                         help="Weight for cross-engine consistency loss (default 0.1)")
     parser.add_argument("--consistency-mode", type=str, choices=["mse", "kl"], default="mse",
                         help="Consistency loss type: mse (stop-grad on zpia feats) or kl divergence")
+    parser.add_argument("--direction-bank-source", type=str, choices=["lraes", "zpia_telm2", "orthogonal_fusion"], default="lraes")
+    parser.add_argument("--osf-alpha", type=float, default=1.0)
+    parser.add_argument("--osf-beta", type=float, default=1.0)
     parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
 
