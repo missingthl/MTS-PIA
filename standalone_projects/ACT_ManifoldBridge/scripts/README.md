@@ -1,20 +1,23 @@
 # Scripts
 
-Scripts in this folder are helpers around the canonical entrypoint
-`../run_act_pilot.py`.
+Scripts in this folder support the canonical entrypoint
+[`../run_act_pilot.py`](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/run_act_pilot.py).
 
-## Current Helpers
+## Current Active Scripts
 
-- `analyze_v2_taxonomy.py`: summarize result regimes.
-- `gamma_scan.py`: gamma sensitivity utility.
+- `run_v2_grand_sweep.sh`: ACT-V2 RC grand sweep launcher.
+- `run_mba_vs_rc4_matrix.py`: 4-GPU queue runner for the 20-dataset MBA vs RC-4 census.
+- `summarize_mba_vs_rc4_matrix.py`: normalize the 3 actual arms into 4 logical arms and emit reproduction / drift / gap reports.
+- `aggregate_v2_grand_sweep.py`: aggregate per-dataset result files into one summary.
+- `analyze_v2_taxonomy.py`: summarize emerging regime taxonomy.
 - `generate_paper_assets.py`: generate paper-facing assets.
-- `gen_paper_tables.py`: generate paper tables.
+- `gen_paper_tables.py`: produce paper tables.
+- `gamma_scan.py`: gamma sensitivity utility.
 - `viz_manifold.py`: latent-space visualization.
 - `viz_theory_stats.py`: theory-stat plots.
 - `viz_time_series.py`: waveform visualization.
 
-## Legacy
+## Historical / Legacy
 
-`legacy/` contains older sweep/evidence utilities kept for reproducibility.
-They are intentionally separated from the main script list so the project
-surface stays readable.
+`legacy/` contains older one-off sweep and evidence helpers kept only for
+reproducibility. They are not the current project API.

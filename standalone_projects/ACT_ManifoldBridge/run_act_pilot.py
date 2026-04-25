@@ -20,19 +20,11 @@ from core.curriculum import active_direction_probs, build_curriculum_aug_candida
 from core.pia import (
     FisherPIAConfig,
     LRAESConfig,
+    _build_spectral_structure_basis_from_zpia_bank,
     build_lraes_direction_bank,
     build_pia_direction_bank,
     build_zpia_direction_bank,
 )
-from core.wavelet_mba import (
-    WaveletTrialRecord,
-    build_step_tier_candidates,
-    build_wavelet_trial_records,
-    compute_identity_checks,
-    parse_step_tier_ratios,
-    realize_wavelet_candidates,
-)
-from core.whitened_edit import white_edit_single, white_identity_error
 from host_alignment_probe import compute_gradient_alignment
 from utils.datasets import AEON_FIXED_SPLIT_SPECS, load_trials_for_dataset, make_trial_split
 from utils.evaluators import (
@@ -98,6 +90,208 @@ def _build_trial_records(trials, spd_eps: float = 1e-4):
             )
         )
     return final_records, mean_log
+
+
+def _apply_rc4_safe_governance(
+    *,
+    W: torch.Tensor,
+    U: torch.Tensor,
+    U_perp: torch.Tensor,
+    r_shared: torch.Tensor,
+    alpha: float,
+    beta: float,
+    kappa: float,
+    eps: float = 1e-8,
+    tol: float = 1e-6,
+) -> Dict[str, torch.Tensor]:
+    norm_u = torch.norm(U, p=2, dim=-1, keepdim=True)
+    norm_u_perp = torch.norm(U_perp, p=2, dim=-1, keepdim=True)
+    has_perp = norm_u_perp > eps
+
+    U_hat_perp = torch.where(has_perp, U_perp / (norm_u_perp + eps), torch.zeros_like(U_perp))
+    U_restored = U_hat_perp * (float(kappa) * norm_u)
+    norm_u_restored = torch.norm(U_restored, p=2, dim=-1, keepdim=True)
+
+    delta_s_raw = float(alpha) * W
+    norm_delta_s_raw = torch.norm(delta_s_raw, p=2, dim=-1, keepdim=True)
+    alpha_base = torch.full_like(r_shared, float(alpha))
+    alpha_eff = torch.where(
+        norm_delta_s_raw > r_shared,
+        alpha_base * (r_shared / (norm_delta_s_raw + eps)),
+        alpha_base,
+    )
+    delta_s = alpha_eff * W
+    norm_delta_s = torch.norm(delta_s, p=2, dim=-1, keepdim=True)
+
+    r_risk = torch.sqrt(torch.clamp(r_shared * r_shared - norm_delta_s * norm_delta_s, min=0.0))
+    delta_r_raw = float(beta) * U_restored
+    norm_delta_r_raw = torch.norm(delta_r_raw, p=2, dim=-1, keepdim=True)
+    risk_scale = torch.where(
+        norm_delta_r_raw > eps,
+        torch.minimum(torch.ones_like(norm_delta_r_raw), r_risk / (norm_delta_r_raw + eps)),
+        torch.zeros_like(norm_delta_r_raw),
+    )
+    delta_r = delta_r_raw * risk_scale
+
+    delta_z = delta_s + delta_r
+    norm_final = torch.norm(delta_z, p=2, dim=-1, keepdim=True)
+    if torch.any(norm_final > (r_shared + tol)):
+        max_overshoot = torch.max(norm_final - r_shared).item()
+        raise RuntimeError(
+            f"RC-4 OSF final norm exceeded shared radius by {max_overshoot:.6e}; "
+            "this indicates a bug in the structure-first risk-budget logic."
+        )
+
+    zero_perp_mask = (~has_perp).reshape(-1)
+    clipped_mask = ((~zero_perp_mask) & ((norm_delta_r_raw.reshape(-1) - r_risk.reshape(-1)) > tol))
+    restored_mask = (~zero_perp_mask) & (~clipped_mask)
+
+    return {
+        "delta_z": delta_z,
+        "U_perp": U_perp,
+        "norm_u": norm_u,
+        "norm_u_perp": norm_u_perp,
+        "U_restored": U_restored,
+        "norm_u_restored": norm_u_restored,
+        "alpha_eff": alpha_eff,
+        "delta_s_raw": delta_s_raw,
+        "norm_delta_s_raw": norm_delta_s_raw,
+        "delta_s": delta_s,
+        "norm_delta_s": norm_delta_s,
+        "r_risk": r_risk,
+        "delta_r_raw": delta_r_raw,
+        "norm_delta_r_raw": norm_delta_r_raw,
+        "risk_scale": risk_scale,
+        "delta_r": delta_r,
+        "norm_final": norm_final,
+        "zero_perp_mask": zero_perp_mask,
+        "restored_mask": restored_mask,
+        "clipped_mask": clipped_mask,
+        "structure_overflow_mask": (norm_delta_s_raw.reshape(-1) > (r_shared.reshape(-1) + tol)),
+    }
+
+
+def _project_rank1_structure_out(
+    *,
+    W: torch.Tensor,
+    U: torch.Tensor,
+    eps: float = 1e-8,
+) -> Dict[str, torch.Tensor]:
+    dot_uw = torch.sum(U * W, dim=-1, keepdim=True)
+    norm_w_sq = torch.sum(W * W, dim=-1, keepdim=True) + eps
+    proj = (dot_uw / norm_w_sq) * W
+    U_perp = U - proj
+    return {"proj": proj, "U_perp": U_perp}
+
+
+def _project_spectral_structure_out(
+    *,
+    U: torch.Tensor,
+    spectral_basis: torch.Tensor,
+    eps: float = 1e-8,
+) -> Dict[str, torch.Tensor]:
+    del eps  # kept for interface symmetry with rank-1 projection helper
+    proj = (U @ spectral_basis) @ spectral_basis.transpose(0, 1)
+    U_perp = U - proj
+    return {"proj": proj, "U_perp": U_perp}
+
+
+def _compute_osf_rc4_fusion(
+    *,
+    W: torch.Tensor,
+    U: torch.Tensor,
+    r_shared: torch.Tensor,
+    alpha: float,
+    beta: float,
+    kappa: float,
+    eps: float = 1e-8,
+    tol: float = 1e-6,
+) -> Dict[str, torch.Tensor]:
+    proj_out = _project_rank1_structure_out(W=W, U=U, eps=eps)
+    govern = _apply_rc4_safe_governance(
+        W=W,
+        U=U,
+        U_perp=proj_out["U_perp"],
+        r_shared=r_shared,
+        alpha=alpha,
+        beta=beta,
+        kappa=kappa,
+        eps=eps,
+        tol=tol,
+    )
+    govern.update(
+        {
+            "proj": proj_out["proj"],
+            "norm_proj": torch.norm(proj_out["proj"], p=2, dim=-1, keepdim=True),
+        }
+    )
+    return govern
+
+
+def _summarize_osf_audit_rows(audit_rows: List[Dict[str, object]]) -> Dict[str, float]:
+    if not audit_rows:
+        return {
+            "osf_structure_overflow_rate": 0.0,
+            "osf_alpha_eff_mean": 0.0,
+            "osf_risk_scale_mean": 0.0,
+            "osf_risk_zero_perp_rate": 0.0,
+            "osf_risk_clipped_rate": 0.0,
+        }
+
+    df = pd.DataFrame(audit_rows)
+    out: Dict[str, float] = {}
+    if "osf_structure_overflow" in df.columns:
+        out["osf_structure_overflow_rate"] = float(pd.to_numeric(df["osf_structure_overflow"], errors="coerce").fillna(0.0).mean())
+    if "osf_alpha_eff" in df.columns:
+        out["osf_alpha_eff_mean"] = float(pd.to_numeric(df["osf_alpha_eff"], errors="coerce").dropna().mean())
+    if "osf_risk_scale" in df.columns:
+        out["osf_risk_scale_mean"] = float(pd.to_numeric(df["osf_risk_scale"], errors="coerce").dropna().mean())
+    if "osf_risk_status" in df.columns:
+        status = df["osf_risk_status"].astype(str)
+        out["osf_risk_zero_perp_rate"] = float((status == "zero_perp").mean())
+        out["osf_risk_clipped_rate"] = float((status == "clipped").mean())
+    return {
+        "osf_structure_overflow_rate": float(out.get("osf_structure_overflow_rate", 0.0)),
+        "osf_alpha_eff_mean": float(out.get("osf_alpha_eff_mean", 0.0)),
+        "osf_risk_scale_mean": float(out.get("osf_risk_scale_mean", 0.0)),
+        "osf_risk_zero_perp_rate": float(out.get("osf_risk_zero_perp_rate", 0.0)),
+        "osf_risk_clipped_rate": float(out.get("osf_risk_clipped_rate", 0.0)),
+    }
+
+
+def _summarize_spectral_audit_rows(audit_rows: List[Dict[str, object]]) -> Dict[str, float]:
+    if not audit_rows:
+        return {
+            "spectral_proj_norm_ratio_mean": 0.0,
+            "spectral_perp_norm_ratio_mean": 0.0,
+            "spectral_zero_perp_rate": 0.0,
+            "spectral_risk_clipped_rate": 0.0,
+            "spectral_risk_scale_mean": 0.0,
+            "spectral_structure_overflow_rate": 0.0,
+            "spectral_alpha_eff_mean": 0.0,
+        }
+
+    df = pd.DataFrame(audit_rows)
+    status = df["osf_risk_status"].astype(str) if "osf_risk_status" in df.columns else pd.Series([], dtype=str)
+    return {
+        "spectral_proj_norm_ratio_mean": float(
+            pd.to_numeric(df.get("spectral_proj_norm_ratio"), errors="coerce").dropna().mean()
+        ) if "spectral_proj_norm_ratio" in df.columns else 0.0,
+        "spectral_perp_norm_ratio_mean": float(
+            pd.to_numeric(df.get("spectral_perp_norm_ratio"), errors="coerce").dropna().mean()
+        ) if "spectral_perp_norm_ratio" in df.columns else 0.0,
+        "spectral_zero_perp_rate": float((status == "zero_perp").mean()) if not status.empty else 0.0,
+        "spectral_risk_clipped_rate": float((status == "clipped").mean()) if not status.empty else 0.0,
+        "spectral_risk_scale_mean": float(
+            pd.to_numeric(df.get("osf_risk_scale"), errors="coerce").dropna().mean()
+        ) if "osf_risk_scale" in df.columns else 0.0,
+        "spectral_structure_overflow_rate": float(
+            pd.to_numeric(df.get("osf_structure_overflow"), errors="coerce").fillna(0.0).mean()
+        ) if "osf_structure_overflow" in df.columns else 0.0,
+        "spectral_alpha_eff_mean": float(
+            pd.to_numeric(df.get("osf_alpha_eff"), errors="coerce").dropna().mean()
+        ) if "osf_alpha_eff" in df.columns else 0.0,
+    }
 
 
 def _fit_host_model(
@@ -266,6 +460,32 @@ def _score_aug_margins(
     return np.concatenate(margins) if margins else np.empty((0,), dtype=np.float64)
 
 
+def _attach_feedback_scores_to_aug_out(
+    *,
+    aug_out: Dict[str, object],
+    model_obj,
+    device: str,
+    batch_size: int,
+    feedback_margin_temperature: float,
+    engine_id: Optional[str] = None,
+) -> Dict[str, np.ndarray]:
+    margins = _score_aug_margins(
+        model_obj=model_obj,
+        X_aug=aug_out.get("X_aug_raw"),
+        y_aug=aug_out.get("y_aug_np"),
+        device=device,
+        batch_size=batch_size,
+    )
+    scaled_margins = np.clip(margins / max(float(feedback_margin_temperature), 1e-6), -60.0, 60.0)
+    weights = 1.0 / (1.0 + np.exp(-scaled_margins))
+    for idx, row in enumerate(aug_out.get("audit_rows", [])):
+        if engine_id is not None:
+            row["engine_id"] = str(engine_id)
+        row["margin_aug"] = float(margins[idx]) if idx < len(margins) else 0.0
+        row["feedback_weight"] = float(weights[idx]) if idx < len(weights) else 0.0
+    return {"margins": margins, "weights": weights}
+
+
 def _clone_args_with_updates(args, **updates):
     cloned = argparse.Namespace(**vars(args))
     for key, value in updates.items():
@@ -407,6 +627,7 @@ def _build_act_realized_augmentations(
 
     return {
         "effective_k": effective_k,
+        "direction_bank": direction_bank,
         "z_aug": z_aug,
         "y_aug": y_aug,
         "tid_aug": tid_aug,
@@ -419,11 +640,283 @@ def _build_act_realized_augmentations(
         "direction_bank_meta": direction_meta,
         "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
         "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
+        "eta_safe": eta_safe,
         "candidate_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
         "aug_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
         # V2 on-the-fly dataset (None when --onthefly-aug not set)
         "aug_dataset": aug_dataset_out,
     }
+
+
+def _build_rc4_fused_aug_out(
+    *,
+    args,
+    seed: int,
+    X_train_z: np.ndarray,
+    y_train: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    model_obj,
+    batch_size: int,
+    include_feedback_scores: bool,
+    algo_label: str,
+    fusion_mode: str = "rank1_osf",
+) -> Dict[str, object]:
+    aug_out_lraes = _build_act_realized_augmentations(
+        args=_clone_args_with_updates(args, algo="lraes"),
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        algo_override="lraes",
+        engine_id="lraes",
+    )
+    aug_out_zpia = _build_act_realized_augmentations(
+        args=_clone_args_with_updates(args, algo="zpia"),
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        algo_override="zpia",
+        engine_id="zpia",
+    )
+
+    if include_feedback_scores:
+        _attach_feedback_scores_to_aug_out(
+            aug_out=aug_out_lraes,
+            model_obj=model_obj,
+            device=args.device,
+            batch_size=batch_size,
+            feedback_margin_temperature=args.feedback_margin_temperature,
+            engine_id="lraes",
+        )
+        _attach_feedback_scores_to_aug_out(
+            aug_out=aug_out_zpia,
+            model_obj=model_obj,
+            device=args.device,
+            batch_size=batch_size,
+            feedback_margin_temperature=args.feedback_margin_temperature,
+            engine_id="zpia",
+        )
+
+    if args.disable_safe_step:
+        raise ValueError("orthogonal_fusion requires safe-step metadata; do not use --disable-safe-step.")
+    if len(aug_out_lraes["tid_aug"]) != len(aug_out_zpia["tid_aug"]):
+        raise ValueError("orthogonal_fusion requires aligned lraes/zpia candidate counts.")
+    if len(aug_out_lraes.get("audit_rows", [])) != len(aug_out_zpia.get("audit_rows", [])):
+        raise ValueError("orthogonal_fusion requires aligned lraes/zpia audit rows.")
+
+    for idx, (tid_l, tid_z) in enumerate(zip(aug_out_lraes["tid_aug"], aug_out_zpia["tid_aug"])):
+        if tid_l != tid_z:
+            raise ValueError(
+                f"orthogonal_fusion requires aligned candidate anchors; mismatch at index {idx}: {tid_l} != {tid_z}"
+            )
+    if not np.array_equal(aug_out_lraes["y_aug"], aug_out_zpia["y_aug"]):
+        raise ValueError("orthogonal_fusion requires aligned candidate labels between lraes and zpia.")
+
+    eta_l = aug_out_lraes.get("eta_safe", None)
+    eta_z = aug_out_zpia.get("eta_safe", None)
+    if eta_l is None or eta_z is None:
+        raise ValueError("orthogonal_fusion requires finite eta_safe from both engines.")
+    if abs(float(eta_l) - float(eta_z)) > 1e-12:
+        raise ValueError(f"orthogonal_fusion requires shared eta_safe; got {eta_l} vs {eta_z}.")
+    eta_safe = float(eta_l)
+
+    z_o = torch.from_numpy(
+        np.stack([aug_out_lraes["tid_to_rec"][tid].z for tid in aug_out_lraes["tid_aug"]])
+    )
+    z_z = torch.from_numpy(aug_out_zpia["z_aug"])
+    z_l = torch.from_numpy(aug_out_lraes["z_aug"])
+
+    W = z_z - z_o
+    U = z_l - z_o
+
+    shared_margin = []
+    for idx, (row_l, row_z) in enumerate(zip(aug_out_lraes["audit_rows"], aug_out_zpia["audit_rows"])):
+        margin_l = float(row_l.get("manifold_margin", np.nan))
+        margin_z = float(row_z.get("manifold_margin", np.nan))
+        if (not np.isfinite(margin_l)) or (not np.isfinite(margin_z)):
+            raise ValueError(
+                f"orthogonal_fusion requires finite manifold_margin on both engines; failed at candidate {idx}."
+            )
+        if margin_l < 0.0 or margin_z < 0.0:
+            raise ValueError(
+                f"orthogonal_fusion received negative manifold_margin at candidate {idx}: {margin_l}, {margin_z}"
+            )
+        shared_margin.append(min(margin_l, margin_z))
+    r_shared_np = eta_safe * np.asarray(shared_margin, dtype=np.float64)
+    r_shared = torch.from_numpy(r_shared_np).to(dtype=z_o.dtype).unsqueeze(-1)
+
+    spectral_meta: Dict[str, object] = {}
+    spectral_basis_np: Optional[np.ndarray] = None
+    spectral_proj = None
+    if fusion_mode == "rank1_osf":
+        proj_out = _project_rank1_structure_out(W=W, U=U)
+        rc4 = _apply_rc4_safe_governance(
+            W=W,
+            U=U,
+            U_perp=proj_out["U_perp"],
+            r_shared=r_shared,
+            alpha=float(args.osf_alpha),
+            beta=float(args.osf_beta),
+            kappa=float(getattr(args, "osf_kappa", 1.0)),
+        )
+        rc4["proj"] = proj_out["proj"]
+        rc4["norm_proj"] = torch.norm(proj_out["proj"], p=2, dim=-1, keepdim=True)
+        direction_bank_source = "orthogonal_fusion"
+    elif fusion_mode == "spectral_osf":
+        zpia_bank = np.asarray(aug_out_zpia.get("direction_bank"), dtype=np.float64)
+        spectral_basis_np, spectral_meta = _build_spectral_structure_basis_from_zpia_bank(
+            zpia_bank,
+            energy_ratio=float(getattr(args, "spectral_osf_rho", 0.90)),
+        )
+        spectral_basis = torch.from_numpy(spectral_basis_np).to(dtype=z_o.dtype)
+        spectral_proj = _project_spectral_structure_out(U=U, spectral_basis=spectral_basis)
+        rc4 = _apply_rc4_safe_governance(
+            W=W,
+            U=U,
+            U_perp=spectral_proj["U_perp"],
+            r_shared=r_shared,
+            alpha=float(args.osf_alpha),
+            beta=float(args.osf_beta),
+            kappa=float(getattr(args, "osf_kappa", 1.0)),
+        )
+        rc4["proj"] = spectral_proj["proj"]
+        rc4["norm_proj"] = torch.norm(spectral_proj["proj"], p=2, dim=-1, keepdim=True)
+        direction_bank_source = "spectral_osf"
+    else:
+        raise ValueError(f"Unsupported fusion_mode: {fusion_mode}")
+    z_f = z_o + rc4["delta_z"]
+
+    fused_x_list: List[np.ndarray] = []
+    fused_bridge_metrics: List[Dict[str, object]] = []
+    fused_audit_rows: List[Dict[str, object]] = []
+    for i in range(len(z_f)):
+        src = aug_out_lraes["tid_to_rec"][aug_out_lraes["tid_aug"][i]]
+        sigma_f = logvec_to_spd(z_f[i].numpy(), mean_log)
+        xf, bridge_meta = bridge_single(
+            torch.from_numpy(src.x_raw),
+            torch.from_numpy(src.sigma_orig),
+            torch.from_numpy(sigma_f),
+        )
+        xf_np = xf.numpy()
+        fused_x_list.append(xf_np)
+        fused_bridge_metrics.append(bridge_meta)
+
+        base_row = dict(aug_out_lraes["audit_rows"][i])
+        row_z = aug_out_zpia["audit_rows"][i]
+        final_norm = float(rc4["norm_final"][i].item())
+        shared_r = float(r_shared_np[i])
+        if rc4["zero_perp_mask"][i].item():
+            risk_status = "zero_perp"
+        elif rc4["clipped_mask"][i].item():
+            risk_status = "clipped"
+        else:
+            risk_status = "restored"
+
+        base_row.update(
+            {
+                "algo": str(algo_label),
+                "engine_id": "osf_fused",
+                "direction_bank_source": direction_bank_source,
+                "manifold_margin": float(shared_margin[i]),
+                "safe_radius_ratio": float(final_norm / (shared_r + 1e-12)) if shared_r > 0.0 else 0.0,
+                "transport_error_fro": float(bridge_meta.get("transport_error_fro", 0.0)),
+                "transport_error_logeuc": float(bridge_meta.get("transport_error_logeuc", 0.0)),
+                "bridge_cond_A": float(bridge_meta.get("bridge_cond_A", 0.0)),
+                "metric_preservation_error": float(bridge_meta.get("metric_preservation_error", 0.0)),
+                "osf_direction_id_lraes": int(base_row.get("direction_id", -1)),
+                "osf_direction_id_zpia": int(row_z.get("direction_id", -1)),
+                "osf_sign_lraes": float(base_row.get("sign", 0.0)),
+                "osf_sign_zpia": float(row_z.get("sign", 0.0)),
+                "osf_gamma_used_lraes": float(base_row.get("gamma_used", 0.0)),
+                "osf_gamma_used_zpia": float(row_z.get("gamma_used", 0.0)),
+                "direction_id_lraes": int(base_row.get("direction_id", -1)),
+                "direction_id_zpia": int(row_z.get("direction_id", -1)),
+                "gamma_lraes": float(base_row.get("gamma_used", 0.0)),
+                "gamma_zpia": float(row_z.get("gamma_used", 0.0)),
+                "manifold_margin_lraes": float(aug_out_lraes["audit_rows"][i].get("manifold_margin", np.nan)),
+                "manifold_margin_zpia": float(row_z.get("manifold_margin", np.nan)),
+                "osf_r_shared": shared_r,
+                "osf_alpha_eff": float(rc4["alpha_eff"][i].item()),
+                "osf_structure_norm_raw": float(rc4["norm_delta_s_raw"][i].item()),
+                "osf_structure_norm_eff": float(rc4["norm_delta_s"][i].item()),
+                "osf_risk_norm_restored": float(rc4["norm_u_restored"][i].item()),
+                "osf_risk_budget": float(rc4["r_risk"][i].item()),
+                "osf_risk_scale": float(rc4["risk_scale"][i].item()),
+                "osf_final_norm": final_norm,
+                "osf_structure_overflow": bool(rc4["structure_overflow_mask"][i].item()),
+                "osf_risk_status": risk_status,
+            }
+        )
+        if fusion_mode == "spectral_osf":
+            norm_u = float(rc4["norm_u"][i].item())
+            proj_norm = float(rc4["norm_proj"][i].item())
+            perp_norm = float(rc4["norm_u_perp"][i].item())
+            base_row.update(
+                {
+                    "spectral_k_eff": int(spectral_meta.get("spectral_k_eff", 0)),
+                    "spectral_energy_ratio_eff": float(spectral_meta.get("spectral_energy_ratio_eff", 0.0)),
+                    "spectral_proj_norm": proj_norm,
+                    "spectral_perp_norm": perp_norm,
+                    "spectral_proj_norm_ratio": float(proj_norm / (norm_u + 1e-12)),
+                    "spectral_perp_norm_ratio": float(perp_norm / (norm_u + 1e-12)),
+                }
+            )
+        fused_audit_rows.append(base_row)
+
+    fused_x = np.stack(fused_x_list) if fused_x_list else None
+    fused_aug_out = {
+        "effective_k": int(max(aug_out_lraes.get("effective_k", 0), aug_out_zpia.get("effective_k", 0))),
+        "effective_k_lraes": int(aug_out_lraes.get("effective_k", 0)),
+        "effective_k_zpia": int(aug_out_zpia.get("effective_k", 0)),
+        "z_aug": z_f.numpy(),
+        "y_aug": aug_out_lraes["y_aug"],
+        "tid_aug": aug_out_lraes["tid_aug"],
+        "aug_trials": [
+            {"x": fused_x_list[i], "y": int(aug_out_lraes["y_aug"][i]), "tid": aug_out_lraes["tid_aug"][i]}
+            for i in range(len(fused_x_list))
+        ],
+        "X_aug_raw": fused_x,
+        "y_aug_np": aug_out_lraes["y_aug_np"],
+        "tid_to_rec": aug_out_lraes["tid_to_rec"],
+        "avg_bridge": pd.DataFrame(fused_bridge_metrics).mean().to_dict() if fused_bridge_metrics else {},
+        "audit_rows": fused_audit_rows,
+        "direction_bank_meta": {
+            "bank_source": direction_bank_source,
+            "engine_sources": [
+                aug_out_lraes.get("direction_bank_meta", {}).get("bank_source", "lraes"),
+                aug_out_zpia.get("direction_bank_meta", {}).get("bank_source", "zpia_telm2"),
+            ],
+            "lraes_meta": aug_out_lraes.get("direction_bank_meta", {}),
+            "zpia_meta": aug_out_zpia.get("direction_bank_meta", {}),
+            **spectral_meta,
+        },
+        "safe_radius_ratio_mean": float(
+            np.mean([row["safe_radius_ratio"] for row in fused_audit_rows])
+        ) if fused_audit_rows else 0.0,
+        "manifold_margin_mean": float(np.mean(shared_margin)) if shared_margin else 0.0,
+        "eta_safe": eta_safe,
+        "candidate_total_count": int(aug_out_lraes.get("candidate_total_count", len(fused_x_list))),
+        "aug_total_count": int(aug_out_lraes.get("aug_total_count", len(fused_x_list))),
+        "aug_dataset": aug_out_lraes.get("aug_dataset"),
+    }
+    if fused_aug_out["aug_dataset"] is not None:
+        fused_aug_out["aug_dataset"]._z_cands = z_f.numpy().astype(np.float32)
+
+    if include_feedback_scores:
+        _attach_feedback_scores_to_aug_out(
+            aug_out=fused_aug_out,
+            model_obj=model_obj,
+            device=args.device,
+            batch_size=batch_size,
+            feedback_margin_temperature=args.feedback_margin_temperature,
+            engine_id="osf_fused",
+        )
+
+    return fused_aug_out
 
 
 def _run_analysis_probe(
@@ -596,18 +1089,15 @@ def _run_mba_feedback_pipeline(
         train_recs=train_recs,
         mean_log=mean_log,
     )
-    margins = _score_aug_margins(
+    score_out = _attach_feedback_scores_to_aug_out(
+        aug_out=aug_out,
         model_obj=res_base.get("model_obj"),
-        X_aug=aug_out["X_aug_raw"],
-        y_aug=aug_out["y_aug_np"],
         device=args.device,
         batch_size=batch_size,
+        feedback_margin_temperature=args.feedback_margin_temperature,
     )
-    scaled_margins = np.clip(margins / max(float(args.feedback_margin_temperature), 1e-6), -60.0, 60.0)
-    weights = 1.0 / (1.0 + np.exp(-scaled_margins))
-    for idx, row in enumerate(aug_out.get("audit_rows", [])):
-        row["margin_aug"] = float(margins[idx]) if idx < len(margins) else 0.0
-        row["feedback_weight"] = float(weights[idx]) if idx < len(weights) else 0.0
+    margins = score_out["margins"]
+    weights = score_out["weights"]
 
     # Build TauScheduler if requested
     _tau_sched: Optional[TauScheduler] = None
@@ -661,7 +1151,196 @@ def _run_mba_feedback_pipeline(
             "y_aug": aug_out["y_aug"],
             "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
         },
+}
+
+
+def _run_act_fused_core_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+    fusion_mode: str,
+    algo_label: str,
+) -> Dict[str, object]:
+    print("Fitting baseline...")
+    res_base = _fit_host_model(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=args.theory_diagnostics,
+        loader_seed=seed,
+    )
+
+    fused_aug_out = _build_rc4_fused_aug_out(
+        args=args,
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        model_obj=res_base.get("model_obj"),
+        batch_size=batch_size,
+        include_feedback_scores=False,
+        algo_label=algo_label,
+        fusion_mode=fusion_mode,
+    )
+
+    if fused_aug_out["aug_trials"]:
+        X_mix = np.concatenate([X_train_raw, fused_aug_out["X_aug_raw"]], axis=0)
+        y_mix = np.concatenate([y_train, fused_aug_out["y_aug_np"]], axis=0)
+    else:
+        X_mix = X_train_raw
+        y_mix = y_train
+
+    alignment_metrics = _run_analysis_probe(
+        args=args,
+        model_obj=res_base.get("model_obj"),
+        tid_aug=fused_aug_out["tid_aug"],
+        aug_trials=fused_aug_out["aug_trials"],
+        tid_to_rec=fused_aug_out["tid_to_rec"],
+    )
+
+    print(f"Fitting {algo_label} core model ({len(X_mix)} samples)...")
+    res_act = _fit_host_model(
+        args=args,
+        X_tr=X_mix,
+        y_tr=y_mix,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=False,
+        loader_seed=seed,
+    )
+
+    return {
+        "res_base": res_base,
+        "res_act": res_act,
+        "avg_bridge": fused_aug_out["avg_bridge"],
+        "safe_radius_ratio_mean": fused_aug_out["safe_radius_ratio_mean"],
+        "manifold_margin_mean": fused_aug_out["manifold_margin_mean"],
+        "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
+        "host_conflict_rate": alignment_metrics["host_conflict_rate"],
+        "candidate_total_count": fused_aug_out["candidate_total_count"],
+        "aug_total_count": fused_aug_out["aug_total_count"],
+        "effective_k": fused_aug_out["effective_k"],
+        "effective_k_lraes": fused_aug_out.get("effective_k_lraes", 0),
+        "effective_k_zpia": fused_aug_out.get("effective_k_zpia", 0),
+        "direction_bank_meta": fused_aug_out.get("direction_bank_meta", {}),
+        "audit_rows": fused_aug_out.get("audit_rows", []),
+        **_summarize_osf_audit_rows(fused_aug_out.get("audit_rows", [])),
+        **(_summarize_spectral_audit_rows(fused_aug_out.get("audit_rows", [])) if fusion_mode == "spectral_osf" else {}),
+        "viz_payload": {
+            "Z_orig": X_train_z,
+            "Z_aug": fused_aug_out["z_aug"],
+            "y_aug": fused_aug_out["y_aug"],
+            "X_aug_raw": np.stack([trial["x"] for trial in fused_aug_out["aug_trials"][:20]])
+            if fused_aug_out["aug_trials"]
+            else None,
+        },
     }
+
+
+def _run_act_rc4_fused_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    return _run_act_fused_core_pipeline(
+        args=args,
+        seed=seed,
+        X_train_raw=X_train_raw,
+        y_train=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        X_train_z=X_train_z,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        fusion_mode="rank1_osf",
+        algo_label="rc4_fused",
+    )
+
+
+def _run_act_spectral_osf_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    return _run_act_fused_core_pipeline(
+        args=args,
+        seed=seed,
+        X_train_raw=X_train_raw,
+        y_train=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        X_train_z=X_train_z,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        fusion_mode="spectral_osf",
+        algo_label="spectral_osf",
+    )
 
 
 def _run_mba_feedback_adaptive_pipeline(
@@ -699,100 +1378,72 @@ def _run_mba_feedback_adaptive_pipeline(
         loader_seed=seed,
     )
 
-    aug_out_lraes = _build_act_realized_augmentations(
-        args=_clone_args_with_updates(args, algo="lraes"),
-        seed=seed,
-        X_train_z=X_train_z,
-        y_train=y_train,
-        train_recs=train_recs,
-        mean_log=mean_log,
-        algo_override="lraes",
-        engine_id="lraes",
-    )
-    aug_out_zpia = _build_act_realized_augmentations(
-        args=_clone_args_with_updates(args, algo="zpia"),
-        seed=seed,
-        X_train_z=X_train_z,
-        y_train=y_train,
-        train_recs=train_recs,
-        mean_log=mean_log,
-        algo_override="zpia",
-        engine_id="zpia",
-    )
-
-    for engine_name, aug_out in [("lraes", aug_out_lraes), ("zpia", aug_out_zpia)]:
-        margins = _score_aug_margins(
+    if getattr(args, "direction_bank_source", "lraes") == "orthogonal_fusion":
+        print("Executing Orthogonal Subspace Fusion (Sprint 5)...")
+        aug_out_lraes = _build_rc4_fused_aug_out(
+            args=args,
+            seed=seed,
+            X_train_z=X_train_z,
+            y_train=y_train,
+            train_recs=train_recs,
+            mean_log=mean_log,
             model_obj=res_base.get("model_obj"),
-            X_aug=aug_out["X_aug_raw"],
-            y_aug=aug_out["y_aug_np"],
-            device=args.device,
             batch_size=batch_size,
+            include_feedback_scores=True,
+            algo_label="adaptive",
         )
-        scaled_margins = np.clip(margins / max(float(args.feedback_margin_temperature), 1e-6), -60.0, 60.0)
-        weights = 1.0 / (1.0 + np.exp(-scaled_margins))
-        for idx, row in enumerate(aug_out.get("audit_rows", [])):
-            row["engine_id"] = engine_name
-            row["margin_aug"] = float(margins[idx]) if idx < len(margins) else 0.0
-            row["feedback_weight"] = float(weights[idx]) if idx < len(weights) else 0.0
+        aug_out_zpia = {
+            "X_aug_raw": None,
+            "y_aug_np": None,
+            "aug_dataset": None,
+            "aug_total_count": 0,
+            "candidate_total_count": 0,
+            "avg_bridge": {},
+            "audit_rows": [],
+            "direction_bank_meta": {},
+            "safe_radius_ratio_mean": 0.0,
+            "manifold_margin_mean": 0.0,
+            "eta_safe": aug_out_lraes.get("eta_safe", 0.5),
+            "effective_k": 0,
+            "z_aug": np.empty((0, aug_out_lraes["z_aug"].shape[-1]), dtype=np.float32),
+            "y_aug": np.empty((0,), dtype=np.int64),
+        }
+        print("RC-4 fusion complete. Continuing with single fused stream.")
+    else:
+        aug_out_lraes = _build_act_realized_augmentations(
+            args=_clone_args_with_updates(args, algo="lraes"),
+            seed=seed,
+            X_train_z=X_train_z,
+            y_train=y_train,
+            train_recs=train_recs,
+            mean_log=mean_log,
+            algo_override="lraes",
+            engine_id="lraes",
+        )
+        aug_out_zpia = _build_act_realized_augmentations(
+            args=_clone_args_with_updates(args, algo="zpia"),
+            seed=seed,
+            X_train_z=X_train_z,
+            y_train=y_train,
+            train_recs=train_recs,
+            mean_log=mean_log,
+            algo_override="zpia",
+            engine_id="zpia",
+        )
+        for engine_name, aug_out in [("lraes", aug_out_lraes), ("zpia", aug_out_zpia)]:
+            _attach_feedback_scores_to_aug_out(
+                aug_out=aug_out,
+                model_obj=res_base.get("model_obj"),
+                device=args.device,
+                batch_size=batch_size,
+                feedback_margin_temperature=args.feedback_margin_temperature,
+                engine_id=engine_name,
+            )
 
     print(
         f"Fitting adaptive MBA feedback model "
         f"({len(y_train)} orig + {int(aug_out_lraes['aug_total_count'])} lraes + {int(aug_out_zpia['aug_total_count'])} zpia aug)..."
     )
-
-    # -------------------------------------------------------------------------
-    # Sprint 5: Orthogonal Subspace Fusion (OSF)
-    # -------------------------------------------------------------------------
-    if getattr(args, "direction_bank_source", "lraes") == "orthogonal_fusion":
-        print("Executing Orthogonal Subspace Fusion (Sprint 5)...")
-        # Match anchors between lraes and zpia streams
-        z_o_list = []
-        for tid in aug_out_lraes["tid_aug"]:
-            z_o_list.append(aug_out_lraes["tid_to_rec"][tid].z)
-        z_o = torch.from_numpy(np.stack(z_o_list)) # [N_aug, F]
-        
-        z_z = torch.from_numpy(aug_out_zpia["z_aug"])   # [N_aug, F]
-        z_l = torch.from_numpy(aug_out_lraes["z_aug"]) # [N_aug, F]
-        
-        W = z_z - z_o
-        U = z_l - z_o
-        
-        # Projection U onto W
-        dot_uw = torch.sum(U * W, dim=-1, keepdim=True)
-        norm_w = torch.sum(W * W, dim=-1, keepdim=True) + 1e-8
-        U_perp = U - (dot_uw / norm_w) * W
-        
-        alpha = getattr(args, "osf_alpha", 1.0)
-        beta  = getattr(args, "osf_beta", 1.0)
-        z_f = z_o + alpha * W + beta * U_perp
-        
-        # Update lraes as the fused stream
-        aug_out_lraes["z_aug"] = z_f.numpy()
-        # Regenerate on-the-fly dataset with fused z
-        if aug_out_lraes["aug_dataset"] is not None:
-            aug_out_lraes["aug_dataset"].z_cands = z_f.numpy()
-            
-        # Re-build static X_aug_raw if needed
-        if not getattr(args, "onthefly_aug", False):
-            print("Re-materializing fused waveforms (Static mode)...")
-            new_x_list = []
-            for i in range(len(z_f)):
-                src = aug_out_lraes["tid_to_rec"][aug_out_lraes["tid_aug"][i]]
-                sigma_f = logvec_to_spd(z_f[i].numpy(), mean_log)
-                xf, _ = bridge_single(
-                    torch.from_numpy(src.x_raw),
-                    torch.from_numpy(src.sigma_orig),
-                    torch.from_numpy(sigma_f)
-                )
-                new_x_list.append(xf.numpy())
-            aug_out_lraes["X_aug_raw"] = np.stack(new_x_list)
-            
-        # Disable zpia stream to avoid redundancy
-        aug_out_zpia = {
-            "X_aug_raw": None, "y_aug_np": None, "aug_dataset": None, 
-            "aug_total_count": 0, "tid_aug": [], "audit_rows": []
-        }
-        print("Fusion complete. Continuing with single fused stream.")
 
 
     # Build TauScheduler if Sprint 2 is activated
@@ -845,6 +1496,18 @@ def _run_mba_feedback_adaptive_pipeline(
         "metric_preservation_error": _weighted_bridge_mean("metric_preservation_error"),
     }
     audit_rows = list(aug_out_lraes.get("audit_rows", [])) + list(aug_out_zpia.get("audit_rows", []))
+    osf_summary = _summarize_osf_audit_rows(audit_rows)
+
+    def _weighted_engine_mean(key: str) -> float:
+        count_l = float(aug_out_lraes.get("aug_total_count", 0))
+        count_z = float(aug_out_zpia.get("aug_total_count", 0))
+        total = count_l + count_z
+        if total <= 0.0:
+            return 0.0
+        return (
+            count_l * float(aug_out_lraes.get(key, 0.0))
+            + count_z * float(aug_out_zpia.get(key, 0.0))
+        ) / total
 
     return {
         "res_base": res_base,
@@ -852,7 +1515,9 @@ def _run_mba_feedback_adaptive_pipeline(
         "avg_bridge": avg_bridge,
         "audit_rows": audit_rows,
         "direction_bank_meta": {
-            "bank_source": "adaptive_dual",
+            "bank_source": "orthogonal_fusion"
+            if getattr(args, "direction_bank_source", "lraes") == "orthogonal_fusion"
+            else "adaptive_dual",
             "engine_sources": [
                 aug_out_lraes.get("direction_bank_meta", {}).get("bank_source", "lraes"),
                 aug_out_zpia.get("direction_bank_meta", {}).get("bank_source", "zpia_telm2"),
@@ -860,22 +1525,8 @@ def _run_mba_feedback_adaptive_pipeline(
             "lraes_meta": aug_out_lraes.get("direction_bank_meta", {}),
             "zpia_meta": aug_out_zpia.get("direction_bank_meta", {}),
         },
-        "safe_radius_ratio_mean": float(
-            np.mean(
-                [
-                    float(aug_out_lraes.get("safe_radius_ratio_mean", 1.0)),
-                    float(aug_out_zpia.get("safe_radius_ratio_mean", 1.0)),
-                ]
-            )
-        ),
-        "manifold_margin_mean": float(
-            np.mean(
-                [
-                    float(aug_out_lraes.get("manifold_margin_mean", 0.0)),
-                    float(aug_out_zpia.get("manifold_margin_mean", 0.0)),
-                ]
-            )
-        ),
+        "safe_radius_ratio_mean": float(_weighted_engine_mean("safe_radius_ratio_mean")),
+        "manifold_margin_mean": float(_weighted_engine_mean("manifold_margin_mean")),
         "host_geom_cosine_mean": 0.0,
         "host_conflict_rate": 0.0,
         "candidate_total_count": int(aug_out_lraes.get("candidate_total_count", 0)) + int(
@@ -885,6 +1536,7 @@ def _run_mba_feedback_adaptive_pipeline(
         "effective_k": int(max(aug_out_lraes.get("effective_k", 0), aug_out_zpia.get("effective_k", 0))),
         "effective_k_lraes": int(aug_out_lraes.get("effective_k", 0)),
         "effective_k_zpia": int(aug_out_zpia.get("effective_k", 0)),
+        **osf_summary,
         "router_trace": list(res_act.get("router_trace", [])),
         "viz_payload": {
             "Z_orig": X_train_z,
@@ -897,447 +1549,6 @@ def _run_mba_feedback_adaptive_pipeline(
                 ],
                 axis=0,
             ),
-        },
-    }
-
-
-def _build_mba_white_edit_realized_augmentations(
-    *,
-    args,
-    seed: int,
-    X_train_z: np.ndarray,
-    y_train: np.ndarray,
-    train_recs: List[TrialRecord],
-    mean_log: np.ndarray,
-) -> Dict[str, object]:
-    direction_bank, _ = build_lraes_direction_bank(
-        X_train_z,
-        y_train,
-        k_dir=args.k_dir,
-        fisher_cfg=FisherPIAConfig(),
-        lraes_cfg=LRAESConfig(),
-    )
-    effective_k = int(direction_bank.shape[0])
-    print(f"Requested K: {args.k_dir} | Effective K: {effective_k} | Classes: {len(np.unique(y_train))}")
-    identity_errors = [
-        white_identity_error(
-            torch.from_numpy(record.x_raw),
-            torch.from_numpy(record.sigma_orig),
-        )
-        for record in train_recs
-    ]
-    if effective_k == 0:
-        return {
-            "effective_k": 0,
-            "z_aug": np.empty((0, X_train_z.shape[1]), dtype=np.float32),
-            "y_aug": np.empty((0,), dtype=np.int64),
-            "tid_aug": np.empty((0,), dtype=object),
-            "aug_trials": [],
-            "X_aug_raw": None,
-            "y_aug_np": None,
-            "tid_to_rec": {record.tid: record for record in train_recs},
-            "avg_bridge": {},
-            "audit_rows": [],
-            "white_identity_error_mean": float(np.mean(identity_errors)) if identity_errors else 0.0,
-            "safe_radius_ratio_mean": 1.0,
-            "manifold_margin_mean": 0.0,
-            "candidate_total_count": 0,
-            "aug_total_count": 0,
-        }
-
-    gamma_budget = np.full((effective_k,), float(args.pia_gamma), dtype=np.float64)
-    direction_probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
-    eta_safe = None if args.disable_safe_step else 0.5
-    tid_train = np.asarray([record.tid for record in train_recs], dtype=object)
-
-    z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
-        X_train_z,
-        y_train,
-        tid_train,
-        direction_bank=direction_bank,
-        direction_probs=direction_probs,
-        gamma_by_dir=gamma_budget,
-        multiplier=args.multiplier,
-        seed=seed + 42,
-        eta_safe=eta_safe,
-    )
-    candidate_rows = list(aug_meta.get("candidate_rows", []))
-    if len(candidate_rows) != len(z_aug):
-        raise AssertionError("mba_white_edit requires one candidate metadata row per augmented sample.")
-
-    tid_to_rec = {record.tid: record for record in train_recs}
-    aug_trials: List[Dict[str, object]] = []
-    edit_metrics: List[Dict[str, float]] = []
-    audit_rows: List[Dict[str, object]] = []
-
-    for i in range(len(z_aug)):
-        row = candidate_rows[i]
-        src = tid_to_rec[tid_aug[i]]
-        sigma_aug = logvec_to_spd(z_aug[i], mean_log)
-        x_aug, edit_meta = white_edit_single(
-            torch.from_numpy(src.x_raw),
-            torch.from_numpy(src.sigma_orig),
-            torch.from_numpy(sigma_aug),
-            sign=float(row.get("sign", 1.0)),
-            edit_alpha_scale=float(args.edit_alpha_scale),
-        )
-        aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
-        edit_metrics.append(edit_meta)
-        audit = {
-            **row,
-            "edit_mode": args.edit_mode,
-            "edit_basis": args.edit_basis,
-            "edit_alpha_scale": float(args.edit_alpha_scale),
-            "edit_alpha": float(edit_meta.get("edit_alpha", 0.0)),
-            "edit_norm": float(edit_meta.get("edit_norm", 0.0)),
-            "edit_energy": float(edit_meta.get("edit_energy", 0.0)),
-            "edit_basis_fro_norm": float(edit_meta.get("edit_basis_fro_norm", 0.0)),
-            "edit_status_code": float(edit_meta.get("edit_status_code", 0.0)),
-            "transport_error_fro": float(edit_meta.get("transport_error_fro", 0.0)),
-            "transport_error_logeuc": float(edit_meta.get("transport_error_logeuc", 0.0)),
-            "recolor_transport_error_fro": float(edit_meta.get("recolor_transport_error_fro", 0.0)),
-            "recolor_transport_error_logeuc": float(edit_meta.get("recolor_transport_error_logeuc", 0.0)),
-            "bridge_cond_A": float(edit_meta.get("bridge_cond_A", 0.0)),
-        }
-        audit_rows.append(audit)
-
-    X_aug_raw = np.stack([trial["x"] for trial in aug_trials]) if aug_trials else None
-    y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
-    avg_bridge = pd.DataFrame(edit_metrics).mean().to_dict() if edit_metrics else {}
-
-    return {
-        "effective_k": effective_k,
-        "z_aug": z_aug,
-        "y_aug": y_aug,
-        "tid_aug": tid_aug,
-        "aug_trials": aug_trials,
-        "X_aug_raw": X_aug_raw,
-        "y_aug_np": y_aug_np,
-        "tid_to_rec": tid_to_rec,
-        "avg_bridge": avg_bridge,
-        "audit_rows": audit_rows,
-        "white_identity_error_mean": float(np.mean(identity_errors)) if identity_errors else 0.0,
-        "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
-        "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
-        "candidate_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
-        "aug_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
-    }
-
-
-def _run_mba_white_edit_pipeline(
-    *,
-    args,
-    seed: int,
-    X_train_raw: np.ndarray,
-    y_train: np.ndarray,
-    X_val_raw: Optional[np.ndarray],
-    y_val: Optional[np.ndarray],
-    X_test_raw: np.ndarray,
-    y_test: np.ndarray,
-    X_train_z: np.ndarray,
-    train_recs: List[TrialRecord],
-    mean_log: np.ndarray,
-    epochs: int,
-    lr: float,
-    batch_size: int,
-    patience: int,
-) -> Dict[str, object]:
-    print("Fitting baseline...")
-    res_base = _fit_host_model(
-        args=args,
-        X_tr=X_train_raw,
-        y_tr=y_train,
-        X_val_raw=X_val_raw,
-        y_val=y_val,
-        X_test_raw=X_test_raw,
-        y_test=y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        return_model_obj=True,
-        loader_seed=seed,
-    )
-
-    aug_out = _build_mba_white_edit_realized_augmentations(
-        args=args,
-        seed=seed,
-        X_train_z=X_train_z,
-        y_train=y_train,
-        train_recs=train_recs,
-        mean_log=mean_log,
-    )
-    margins = _score_aug_margins(
-        model_obj=res_base.get("model_obj"),
-        X_aug=aug_out["X_aug_raw"],
-        y_aug=aug_out["y_aug_np"],
-        device=args.device,
-        batch_size=batch_size,
-    )
-    if len(margins) == len(aug_out["audit_rows"]):
-        for row, margin in zip(aug_out["audit_rows"], margins):
-            row["margin_aug"] = float(margin)
-    else:
-        for row in aug_out["audit_rows"]:
-            row["margin_aug"] = 0.0
-
-    print(f"Fitting mba_white_edit weighted CE model ({len(X_train_raw)} orig + {aug_out['aug_total_count']} aug)...")
-    res_act = _fit_host_model_weighted_aug_ce(
-        args=args,
-        X_tr=X_train_raw,
-        y_tr=y_train,
-        X_aug=aug_out["X_aug_raw"],
-        y_aug=aug_out["y_aug_np"],
-        X_val_raw=X_val_raw,
-        y_val=y_val,
-        X_test_raw=X_test_raw,
-        y_test=y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        loader_seed=seed,
-    )
-
-    return {
-        "res_base": res_base,
-        "res_act": res_act,
-        "avg_bridge": aug_out["avg_bridge"],
-        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
-        "manifold_margin_mean": aug_out["manifold_margin_mean"],
-        "candidate_total_count": aug_out["candidate_total_count"],
-        "aug_total_count": aug_out["aug_total_count"],
-        "effective_k": aug_out["effective_k"],
-        "white_identity_error_mean": aug_out["white_identity_error_mean"],
-        "audit_rows": aug_out["audit_rows"],
-        "viz_payload": {
-            "Z_orig": X_train_z,
-            "Z_aug": aug_out["z_aug"],
-            "y_aug": aug_out["y_aug"],
-            "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
-        },
-    }
-
-
-def _build_wavelet_mba_realized_augmentations(
-    *,
-    args,
-    seed: int,
-    y_train: np.ndarray,
-    train_recs: List[WaveletTrialRecord],
-    mean_log_a: np.ndarray,
-    mean_log_dm: Optional[np.ndarray],
-) -> Dict[str, object]:
-    object_mode = str(args.wavelet_object_mode)
-    X_train_z = np.stack([record.z_a for record in train_recs])
-    tid_train = np.asarray([record.tid for record in train_recs], dtype=object)
-    direction_bank, _ = build_lraes_direction_bank(
-        X_train_z,
-        y_train,
-        k_dir=args.k_dir,
-        fisher_cfg=FisherPIAConfig(),
-        lraes_cfg=LRAESConfig(),
-    )
-    effective_k = int(direction_bank.shape[0])
-    gamma_budget = np.full((effective_k,), float(args.pia_gamma), dtype=np.float64)
-    tier_ratios = parse_step_tier_ratios(args.wavelet_step_tier_ratios)
-    eta_safe = None if args.disable_safe_step else 0.5
-
-    z_aug, y_aug, tid_aug, dir_aug, aug_meta = build_step_tier_candidates(
-        X_train_z,
-        y_train,
-        tid_train,
-        direction_bank=direction_bank,
-        gamma_by_dir=gamma_budget,
-        tier_ratios=tier_ratios,
-        seed=seed + 811,
-        eta_safe=eta_safe,
-    )
-    z_dm_aug = None
-    effective_k_dm = 0
-    if object_mode == "dual_a_dm":
-        if mean_log_dm is None:
-            raise ValueError("dual_a_dm requires a valid cD_m mean log covariance.")
-        if any(record.z_dm is None for record in train_recs):
-            raise ValueError("dual_a_dm requires z_dm for every wavelet trial record.")
-        X_train_z_dm = np.stack([np.asarray(record.z_dm) for record in train_recs])
-        direction_bank_dm, _ = build_lraes_direction_bank(
-            X_train_z_dm,
-            y_train,
-            k_dir=args.k_dir,
-            fisher_cfg=FisherPIAConfig(),
-            lraes_cfg=LRAESConfig(),
-        )
-        effective_k_dm = int(direction_bank_dm.shape[0])
-        gamma_budget_dm = np.full(
-            (effective_k_dm,),
-            float(args.pia_gamma) * float(args.wavelet_detail_gamma_scale),
-            dtype=np.float64,
-        )
-        z_dm_aug, y_dm_aug, tid_dm_aug, _, aug_meta_dm = build_step_tier_candidates(
-            X_train_z_dm,
-            y_train,
-            tid_train,
-            direction_bank=direction_bank_dm,
-            gamma_by_dir=gamma_budget_dm,
-            tier_ratios=tier_ratios,
-            seed=seed + 1811,
-            eta_safe=eta_safe,
-        )
-        if len(z_dm_aug) != len(z_aug) or not np.array_equal(y_dm_aug, y_aug) or not np.array_equal(tid_dm_aug, tid_aug):
-            raise AssertionError("dual_a_dm generated misaligned cA/cD_m candidate streams.")
-        combined_rows = []
-        for row_a, row_dm in zip(aug_meta.get("candidate_rows", []), aug_meta_dm.get("candidate_rows", [])):
-            combined = {
-                "anchor_index": int(row_a["anchor_index"]),
-                "tid": row_a["tid"],
-                "tier_ratio": float(row_a["tier_ratio"]),
-                "tier_label": row_a["tier_label"],
-                "cA_direction_id": int(row_a["direction_id"]),
-                "cA_sign": float(row_a["sign"]),
-                "cA_safe_upper_bound": float(row_a["safe_upper_bound"]),
-                "cA_gamma_used": float(row_a["gamma_used"]),
-                "safe_radius_ratio_A": float(row_a["safe_radius_ratio"]),
-                "cDm_direction_id": int(row_dm["direction_id"]),
-                "cDm_sign": float(row_dm["sign"]),
-                "cDm_safe_upper_bound": float(row_dm["safe_upper_bound"]),
-                "cDm_gamma_used": float(row_dm["gamma_used"]),
-                "safe_radius_ratio_Dm": float(row_dm["safe_radius_ratio"]),
-                "safe_radius_ratio": 0.5
-                * (float(row_a["safe_radius_ratio"]) + float(row_dm["safe_radius_ratio"])),
-            }
-            combined_rows.append(combined)
-        aug_meta["candidate_rows"] = combined_rows
-        aug_meta["safe_radius_ratio_mean"] = 0.5 * (
-            float(aug_meta.get("safe_radius_ratio_mean", 1.0))
-            + float(aug_meta_dm.get("safe_radius_ratio_mean", 1.0))
-        )
-    tid_to_rec = {record.tid: record for record in train_recs}
-    realized = realize_wavelet_candidates(
-        z_aug=z_aug,
-        y_aug=y_aug,
-        tid_aug=tid_aug,
-        candidate_rows=aug_meta.get("candidate_rows", []),
-        tid_to_rec=tid_to_rec,
-        mean_log=mean_log_a,
-        wavelet_name=args.wavelet_name,
-        wavelet_mode=args.wavelet_mode,
-        object_mode=object_mode,
-        z_dm_aug=z_dm_aug,
-        mean_log_dm=mean_log_dm,
-    )
-    identity_meta = compute_identity_checks(
-        train_recs,
-        wavelet_name=args.wavelet_name,
-        wavelet_mode=args.wavelet_mode,
-        object_mode=object_mode,
-    )
-    return {
-        "effective_k": effective_k,
-        "effective_k_dm": effective_k_dm,
-        "z_aug": z_aug,
-        "y_aug": y_aug,
-        "tid_aug": tid_aug,
-        "dir_aug": dir_aug,
-        "tid_to_rec": tid_to_rec,
-        "aug_trials": realized["aug_trials"],
-        "X_aug_raw": realized["X_aug_raw"],
-        "y_aug_np": realized["y_aug_np"],
-        "avg_bridge": realized["avg_bridge"],
-        "audit_rows": realized["audit_rows"],
-        "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
-        "safe_radius_ratio_min": aug_meta.get("safe_radius_ratio_min", 1.0),
-        "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
-        "candidate_total_count": int(aug_meta.get("aug_total_count", len(realized["aug_trials"]))),
-        "aug_total_count": int(aug_meta.get("aug_total_count", len(realized["aug_trials"]))),
-        "step_tier_count": int(aug_meta.get("step_tier_count", len(tier_ratios))),
-        **identity_meta,
-    }
-
-
-def _run_wavelet_mba_pipeline(
-    *,
-    args,
-    seed: int,
-    X_train_raw: np.ndarray,
-    y_train: np.ndarray,
-    X_val_raw: Optional[np.ndarray],
-    y_val: Optional[np.ndarray],
-    X_test_raw: np.ndarray,
-    y_test: np.ndarray,
-    train_recs: List[WaveletTrialRecord],
-    wavelet_meta: Dict[str, object],
-    mean_log_a: np.ndarray,
-    mean_log_dm: Optional[np.ndarray],
-    epochs: int,
-    lr: float,
-    batch_size: int,
-    patience: int,
-) -> Dict[str, object]:
-    aug_out = _build_wavelet_mba_realized_augmentations(
-        args=args,
-        seed=seed,
-        y_train=y_train,
-        train_recs=train_recs,
-        mean_log_a=mean_log_a,
-        mean_log_dm=mean_log_dm,
-    )
-
-    print("Fitting baseline...")
-    res_base = _fit_host_model(
-        args=args,
-        X_tr=X_train_raw,
-        y_tr=y_train,
-        X_val_raw=X_val_raw,
-        y_val=y_val,
-        X_test_raw=X_test_raw,
-        y_test=y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        return_model_obj=False,
-        loader_seed=seed,
-    )
-
-    print(f"Fitting wavelet_mba weighted CE model ({len(X_train_raw)} orig + {aug_out['aug_total_count']} aug)...")
-    res_act = _fit_host_model_weighted_aug_ce(
-        args=args,
-        X_tr=X_train_raw,
-        y_tr=y_train,
-        X_aug=aug_out["X_aug_raw"],
-        y_aug=aug_out["y_aug_np"],
-        X_val_raw=X_val_raw,
-        y_val=y_val,
-        X_test_raw=X_test_raw,
-        y_test=y_test,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-        patience=patience,
-        loader_seed=seed,
-    )
-
-    return {
-        "res_base": res_base,
-        "res_act": res_act,
-        "avg_bridge": aug_out["avg_bridge"],
-        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
-        "manifold_margin_mean": aug_out["manifold_margin_mean"],
-        "candidate_total_count": aug_out["candidate_total_count"],
-        "aug_total_count": aug_out["aug_total_count"],
-        "step_tier_count": aug_out["step_tier_count"],
-        "effective_k": aug_out["effective_k"],
-        "effective_k_dm": aug_out["effective_k_dm"],
-        "wavelet_meta": wavelet_meta,
-        "cA_identity_bridge_error_mean": aug_out["cA_identity_bridge_error_mean"],
-        "idwt_identity_recon_error_mean": aug_out["idwt_identity_recon_error_mean"],
-        "audit_rows": aug_out["audit_rows"],
-        "viz_payload": {
-            "Z_orig": np.stack([record.z_a for record in train_recs]),
-            "Z_aug": aug_out["z_aug"],
-            "y_aug": aug_out["y_aug"],
-            "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
         },
     }
 
@@ -1396,26 +1607,8 @@ def run_experiment(dataset_name, args):
                 y_val = np.asarray([record.y for record in val_recs], dtype=np.int64)
 
             X_train_z = np.stack([record.z for record in train_recs])
-            wavelet_meta: Dict[str, object] = {}
-            if args.pipeline == "wavelet_mba":
-                wavelet_train_recs, mean_log_a, wavelet_meta = build_wavelet_trial_records(
-                    train_trials,
-                    wavelet_name=args.wavelet_name,
-                    wavelet_level=args.wavelet_level,
-                    wavelet_mode=args.wavelet_mode,
-                    secondary_detail_level=args.wavelet_secondary_detail_level,
-                )
-                if mean_log_a is None:
-                    raise ValueError("wavelet_mba could not build a cA mean log covariance.")
-                mean_log_dm = wavelet_meta.get("mean_log_dm")
-                if args.wavelet_object_mode == "dual_a_dm":
-                    if int(wavelet_meta.get("wavelet_level_eff", 0)) != 2:
-                        raise ValueError("dual_a_dm V2 requires wavelet_level_eff == 2.")
-                    if int(args.wavelet_secondary_detail_level) != 2:
-                        raise ValueError("dual_a_dm V2 keeps cD_1 frozen and only supports cD_2 as the secondary object.")
-                    if float(wavelet_meta.get("cDm_energy_mean", 0.0)) <= 1e-10:
-                        raise ValueError("dual_a_dm skipped because cD_2 energy is near zero.")
-                pipeline_out = _run_wavelet_mba_pipeline(
+            if args.algo == "rc4_fused":
+                pipeline_out = _run_act_rc4_fused_pipeline(
                     args=args,
                     seed=seed,
                     X_train_raw=X_train_raw,
@@ -1424,17 +1617,16 @@ def run_experiment(dataset_name, args):
                     y_val=y_val,
                     X_test_raw=X_test_raw,
                     y_test=y_test,
-                    train_recs=wavelet_train_recs,
-                    wavelet_meta=wavelet_meta,
-                    mean_log_a=mean_log_a,
-                    mean_log_dm=mean_log_dm,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
                     epochs=epochs,
                     lr=lr,
                     batch_size=batch_size,
                     patience=patience,
                 )
-            elif args.pipeline == "mba_white_edit":
-                pipeline_out = _run_mba_white_edit_pipeline(
+            elif args.algo == "spectral_osf":
+                pipeline_out = _run_act_spectral_osf_pipeline(
                     args=args,
                     seed=seed,
                     X_train_raw=X_train_raw,
@@ -1561,6 +1753,56 @@ def run_experiment(dataset_name, args):
                         ),
                     }
                 )
+            if args.algo in {"rc4_fused", "spectral_osf"}:
+                summary.update(
+                    {
+                        "utilization_mode": "core_concat",
+                        "core_training_mode": "concat_all",
+                        "aug_train_ratio": float(pipeline_out.get("aug_total_count", 0)) / max(float(len(y_train)), 1.0),
+                        "osf_alpha": float(args.osf_alpha),
+                        "osf_beta": float(args.osf_beta),
+                        "osf_kappa": float(args.osf_kappa),
+                        "effective_k_dir_lraes": int(pipeline_out.get("effective_k_lraes", 0)),
+                        "effective_k_dir_zpia": int(pipeline_out.get("effective_k_zpia", 0)),
+                        "adaptive_engine_sources": ",".join(
+                            [str(x) for x in direction_meta.get("engine_sources", [])]
+                        ),
+                        "osf_structure_overflow_rate": float(
+                            pipeline_out.get("osf_structure_overflow_rate", 0.0)
+                        ),
+                        "osf_alpha_eff_mean": float(pipeline_out.get("osf_alpha_eff_mean", 0.0)),
+                        "osf_risk_scale_mean": float(pipeline_out.get("osf_risk_scale_mean", 0.0)),
+                        "osf_risk_zero_perp_rate": float(pipeline_out.get("osf_risk_zero_perp_rate", 0.0)),
+                        "osf_risk_clipped_rate": float(pipeline_out.get("osf_risk_clipped_rate", 0.0)),
+                    }
+                )
+            if args.algo == "spectral_osf":
+                summary.update(
+                    {
+                        "direction_bank_source": "spectral_osf",
+                        "spectral_osf_rho": float(args.spectral_osf_rho),
+                        "spectral_k_eff": int(direction_meta.get("spectral_k_eff", 0)),
+                        "spectral_rank_raw": int(direction_meta.get("spectral_rank_raw", 0)),
+                        "spectral_energy_ratio_eff": float(direction_meta.get("spectral_energy_ratio_eff", 0.0)),
+                        "spectral_basis_orth_error": float(direction_meta.get("spectral_basis_orth_error", 0.0)),
+                        "spectral_rank_deficient": bool(direction_meta.get("spectral_rank_deficient", False)),
+                        "spectral_proj_norm_ratio_mean": float(
+                            pipeline_out.get("spectral_proj_norm_ratio_mean", 0.0)
+                        ),
+                        "spectral_perp_norm_ratio_mean": float(
+                            pipeline_out.get("spectral_perp_norm_ratio_mean", 0.0)
+                        ),
+                        "spectral_zero_perp_rate": float(pipeline_out.get("spectral_zero_perp_rate", 0.0)),
+                        "spectral_risk_clipped_rate": float(
+                            pipeline_out.get("spectral_risk_clipped_rate", 0.0)
+                        ),
+                        "spectral_risk_scale_mean": float(pipeline_out.get("spectral_risk_scale_mean", 0.0)),
+                        "spectral_structure_overflow_rate": float(
+                            pipeline_out.get("spectral_structure_overflow_rate", 0.0)
+                        ),
+                        "spectral_alpha_eff_mean": float(pipeline_out.get("spectral_alpha_eff_mean", 0.0)),
+                    }
+                )
             if args.pipeline == "mba_feedback":
                 summary.update(
                     {
@@ -1602,92 +1844,40 @@ def run_experiment(dataset_name, args):
                             ),
                         }
                     )
-                audit_rows = pipeline_out.get("audit_rows", [])
-                if audit_rows:
-                    audit_dir = os.path.join(args.out_root, "audit")
-                    os.makedirs(audit_dir, exist_ok=True)
-                    pd.DataFrame(audit_rows).to_csv(
-                        os.path.join(audit_dir, f"{dataset_name}_s{seed}_{args.algo}_candidates.csv"),
-                        index=False,
-                    )
-                if args.algo == "adaptive":
-                    router_trace = pipeline_out.get("router_trace", [])
-                    if router_trace:
-                        trace_dir = os.path.join(args.out_root, "router")
-                        os.makedirs(trace_dir, exist_ok=True)
-                        pd.DataFrame(router_trace).to_csv(
-                            os.path.join(trace_dir, f"{dataset_name}_s{seed}_router_trace.csv"),
-                            index=False,
+                    if getattr(args, "direction_bank_source", "lraes") == "orthogonal_fusion":
+                        summary.update(
+                            {
+                                "osf_alpha": float(args.osf_alpha),
+                                "osf_beta": float(args.osf_beta),
+                                "osf_kappa": float(args.osf_kappa),
+                                "osf_structure_overflow_rate": float(
+                                    pipeline_out.get("osf_structure_overflow_rate", 0.0)
+                                ),
+                                "osf_alpha_eff_mean": float(pipeline_out.get("osf_alpha_eff_mean", 0.0)),
+                                "osf_risk_scale_mean": float(pipeline_out.get("osf_risk_scale_mean", 0.0)),
+                                "osf_risk_zero_perp_rate": float(
+                                    pipeline_out.get("osf_risk_zero_perp_rate", 0.0)
+                                ),
+                                "osf_risk_clipped_rate": float(
+                                    pipeline_out.get("osf_risk_clipped_rate", 0.0)
+                                ),
+                            }
                         )
-            if args.pipeline == "wavelet_mba":
-                cD_frozen_count = int(wavelet_meta.get("cD_frozen_count", 0))
-                if args.wavelet_object_mode == "dual_a_dm":
-                    cD_frozen_count = max(0, cD_frozen_count - 1)
-                summary.update(
-                    {
-                        "wavelet_object_mode": args.wavelet_object_mode,
-                        "wavelet_name": args.wavelet_name,
-                        "wavelet_level": args.wavelet_level,
-                        "wavelet_level_eff": int(wavelet_meta.get("wavelet_level_eff", 0)),
-                        "wavelet_secondary_detail_level": int(args.wavelet_secondary_detail_level),
-                        "wavelet_detail_gamma_scale": float(args.wavelet_detail_gamma_scale),
-                        "cA_length": int(wavelet_meta.get("cA_length", 0)),
-                        "cDm_length": int(wavelet_meta.get("cDm_length", 0)),
-                        "cDm_energy_mean": float(wavelet_meta.get("cDm_energy_mean", 0.0)),
-                        "cD_frozen_count": cD_frozen_count,
-                        "wavelet_recon_error_mean": float(wavelet_meta.get("wavelet_recon_error_mean", 0.0)),
-                        "cA_identity_bridge_error_mean": float(pipeline_out.get("cA_identity_bridge_error_mean", 0.0)),
-                        "cDm_identity_bridge_error_mean": float(pipeline_out.get("cDm_identity_bridge_error_mean", 0.0)),
-                        "idwt_identity_recon_error_mean": float(pipeline_out.get("idwt_identity_recon_error_mean", 0.0)),
-                        "cA_transport_error_fro_mean": float(avg_bridge.get("cA_transport_error_fro", 0.0)),
-                        "cA_transport_error_logeuc_mean": float(avg_bridge.get("cA_transport_error_logeuc", 0.0)),
-                        "cDm_transport_error_fro_mean": float(avg_bridge.get("cDm_transport_error_fro", 0.0)),
-                        "cDm_transport_error_logeuc_mean": float(avg_bridge.get("cDm_transport_error_logeuc", 0.0)),
-                        "dual_transport_error_logeuc_mean": float(avg_bridge.get("dual_transport_error_logeuc", 0.0)),
-                        "step_tier_count": int(pipeline_out.get("step_tier_count", 0)),
-                        "effective_k_dir_dm": int(pipeline_out.get("effective_k_dm", 0)),
-                        "feedback_weight_mean": float(res_act.get("feedback_weight_mean", 0.0)),
-                        "feedback_weight_std": float(res_act.get("feedback_weight_std", 0.0)),
-                        "last_orig_ce_loss": float(res_act.get("last_orig_ce_loss", 0.0)),
-                        "last_weighted_aug_ce_loss": float(res_act.get("last_weighted_aug_ce_loss", 0.0)),
-                        "last_aug_margin_mean": float(res_act.get("last_aug_margin_mean", 0.0)),
-                    }
+            audit_rows = pipeline_out.get("audit_rows", [])
+            if audit_rows:
+                audit_dir = os.path.join(args.out_root, "audit")
+                os.makedirs(audit_dir, exist_ok=True)
+                pd.DataFrame(audit_rows).to_csv(
+                    os.path.join(audit_dir, f"{dataset_name}_s{seed}_{args.algo}_candidates.csv"),
+                    index=False,
                 )
-                audit_rows = pipeline_out.get("audit_rows", [])
-                if audit_rows:
-                    audit_dir = os.path.join(args.out_root, "audit")
-                    os.makedirs(audit_dir, exist_ok=True)
-                    pd.DataFrame(audit_rows).to_csv(
-                        os.path.join(audit_dir, f"{dataset_name}_s{seed}_wavelet_candidates.csv"),
-                        index=False,
-                    )
-            if args.pipeline == "mba_white_edit":
-                summary.update(
-                    {
-                        "edit_mode": args.edit_mode,
-                        "edit_basis": args.edit_basis,
-                        "edit_alpha_scale": float(args.edit_alpha_scale),
-                        "white_identity_error_mean": float(pipeline_out.get("white_identity_error_mean", 0.0)),
-                        "recolor_transport_error_logeuc_mean": float(
-                            avg_bridge.get("recolor_transport_error_logeuc", 0.0)
-                        ),
-                        "recolor_transport_error_fro_mean": float(avg_bridge.get("recolor_transport_error_fro", 0.0)),
-                        "edit_energy_mean": float(avg_bridge.get("edit_energy", 0.0)),
-                        "edit_norm_mean": float(avg_bridge.get("edit_norm", 0.0)),
-                        "edit_alpha_mean": float(avg_bridge.get("edit_alpha", 0.0)),
-                        "feedback_weight_mean": float(res_act.get("feedback_weight_mean", 0.0)),
-                        "feedback_weight_std": float(res_act.get("feedback_weight_std", 0.0)),
-                        "last_orig_ce_loss": float(res_act.get("last_orig_ce_loss", 0.0)),
-                        "last_weighted_aug_ce_loss": float(res_act.get("last_weighted_aug_ce_loss", 0.0)),
-                        "last_aug_margin_mean": float(res_act.get("last_aug_margin_mean", 0.0)),
-                    }
-                )
-                audit_rows = pipeline_out.get("audit_rows", [])
-                if audit_rows:
-                    audit_dir = os.path.join(args.out_root, "audit")
-                    os.makedirs(audit_dir, exist_ok=True)
-                    pd.DataFrame(audit_rows).to_csv(
-                        os.path.join(audit_dir, f"{dataset_name}_s{seed}_white_edit_candidates.csv"),
+            if args.pipeline == "mba_feedback" and args.algo == "adaptive":
+                router_trace = pipeline_out.get("router_trace", [])
+                if router_trace:
+                    trace_dir = os.path.join(args.out_root, "router")
+                    os.makedirs(trace_dir, exist_ok=True)
+                    pd.DataFrame(router_trace).to_csv(
+                        os.path.join(trace_dir, f"{dataset_name}_s{seed}_router_trace.csv"),
                         index=False,
                     )
             print(
@@ -1738,8 +1928,13 @@ def main():
     parser = argparse.ArgumentParser(description="ACT_ManifoldBridge original ACT runner")
     parser.add_argument("--dataset", type=str, default="natops")
     parser.add_argument("--all-datasets", action="store_true")
-    parser.add_argument("--pipeline", type=str, choices=["act", "mba", "mba_feedback", "wavelet_mba", "mba_white_edit"], default="act")
-    parser.add_argument("--algo", type=str, choices=["pia", "lraes", "zpia", "adaptive"], default="lraes")
+    parser.add_argument("--pipeline", type=str, choices=["act", "mba", "mba_feedback"], default="act")
+    parser.add_argument(
+        "--algo",
+        type=str,
+        choices=["pia", "lraes", "zpia", "adaptive", "rc4_fused", "spectral_osf"],
+        default="lraes",
+    )
     parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
     parser.add_argument("--host-config", type=str, choices=["none", "resnet1d_default", "patchtst_default", "timesnet_default"], default="none")
     parser.add_argument("--seeds", type=str, default="1,2,3")
@@ -1756,16 +1951,6 @@ def main():
     parser.add_argument("--theory-diagnostics", action="store_true", help="Enable host-alignment diagnostics for sampled augmented trials")
     parser.add_argument("--disable-safe-step", action="store_true", help="Disable Safe-Step constraint")
     parser.add_argument("--save-viz-samples", action="store_true", help="Save latent and raw samples for visualization")
-    parser.add_argument("--wavelet-name", type=str, default="db4")
-    parser.add_argument("--wavelet-level", type=str, default="auto")
-    parser.add_argument("--wavelet-mode", type=str, default="symmetric")
-    parser.add_argument("--wavelet-object-mode", type=str, choices=["ca_only", "dual_a_dm"], default="ca_only")
-    parser.add_argument("--wavelet-secondary-detail-level", type=int, default=2)
-    parser.add_argument("--wavelet-detail-gamma-scale", type=float, default=0.5)
-    parser.add_argument("--wavelet-step-tier-ratios", type=str, default="0.25,0.5,0.9")
-    parser.add_argument("--edit-mode", type=str, choices=["line"], default="line")
-    parser.add_argument("--edit-basis", type=str, choices=["whitened_pca"], default="whitened_pca")
-    parser.add_argument("--edit-alpha-scale", type=float, default=0.25)
     parser.add_argument("--feedback-margin-temperature", type=float, default=1.0)
     parser.add_argument("--aug-loss-weight", type=float, default=1.0)
     parser.add_argument("--telm2-n-iters", type=int, default=3)
@@ -1799,6 +1984,8 @@ def main():
     parser.add_argument("--direction-bank-source", type=str, choices=["lraes", "zpia_telm2", "orthogonal_fusion"], default="lraes")
     parser.add_argument("--osf-alpha", type=float, default=1.0)
     parser.add_argument("--osf-beta", type=float, default=1.0)
+    parser.add_argument("--osf-kappa", type=float, default=1.0)
+    parser.add_argument("--spectral-osf-rho", type=float, default=0.90)
     parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
 
@@ -1826,24 +2013,33 @@ def main():
             raise ValueError("--router-min-prob must satisfy 0 <= value < 0.5.")
         if not (0.0 <= args.router_smoothing <= 1.0):
             raise ValueError("--router-smoothing must satisfy 0 <= value <= 1.")
+        if args.direction_bank_source == "orthogonal_fusion":
+            if args.disable_safe_step:
+                raise ValueError("--direction-bank-source orthogonal_fusion requires safe-step; do not pass --disable-safe-step.")
+            if args.osf_kappa < 0.0:
+                raise ValueError("--osf-kappa must satisfy value >= 0.")
+    if args.algo == "rc4_fused":
+        if args.pipeline not in {"act", "mba"}:
+            raise ValueError("--algo rc4_fused currently supports --pipeline act only.")
+        if args.model != "resnet1d":
+            raise ValueError("--algo rc4_fused currently supports --model resnet1d only.")
+        if args.disable_safe_step:
+            raise ValueError("--algo rc4_fused requires safe-step; do not pass --disable-safe-step.")
+        if args.osf_kappa < 0.0:
+            raise ValueError("--osf-kappa must satisfy value >= 0.")
+    if args.algo == "spectral_osf":
+        if args.pipeline not in {"act", "mba"}:
+            raise ValueError("--algo spectral_osf currently supports --pipeline act only.")
+        if args.model != "resnet1d":
+            raise ValueError("--algo spectral_osf currently supports --model resnet1d only.")
+        if args.disable_safe_step:
+            raise ValueError("--algo spectral_osf requires safe-step; do not pass --disable-safe-step.")
+        if args.osf_kappa < 0.0:
+            raise ValueError("--osf-kappa must satisfy value >= 0.")
+        if not (0.0 < float(args.spectral_osf_rho) <= 1.0):
+            raise ValueError("--spectral-osf-rho must satisfy 0 < value <= 1.")
     if args.pipeline == "mba_feedback" and args.model == "minirocket":
         raise ValueError("--pipeline mba_feedback supports resnet1d, patchtst, and timesnet only.")
-    if args.pipeline == "wavelet_mba":
-        if args.algo != "lraes":
-            raise ValueError("--pipeline wavelet_mba currently supports --algo lraes only.")
-        if args.model == "minirocket":
-            raise ValueError("--pipeline wavelet_mba supports resnet1d, patchtst, and timesnet only.")
-        if args.wavelet_detail_gamma_scale <= 0.0:
-            raise ValueError("--wavelet-detail-gamma-scale must be positive.")
-        if args.wavelet_object_mode == "dual_a_dm" and args.wavelet_secondary_detail_level != 2:
-            raise ValueError("--wavelet-object-mode dual_a_dm V2 only supports --wavelet-secondary-detail-level 2.")
-    if args.pipeline == "mba_white_edit":
-        if args.algo != "lraes":
-            raise ValueError("--pipeline mba_white_edit currently supports --algo lraes only.")
-        if args.model != "resnet1d":
-            raise ValueError("--pipeline mba_white_edit v1 supports --model resnet1d only.")
-        if args.edit_alpha_scale < 0.0:
-            raise ValueError("--edit-alpha-scale must be non-negative.")
 
     os.makedirs(args.out_root, exist_ok=True)
     datasets = [args.dataset]
@@ -1860,8 +2056,9 @@ def main():
             print(f"Failed {dataset_name}: {exc}")
 
     final_df = pd.DataFrame(all_results)
-    final_df.to_csv(os.path.join(args.out_root, "final_results.csv"), index=False)
-    print(f"\nSweep complete. Results saved to {os.path.join(args.out_root, 'final_results.csv')}")
+    out_csv = os.path.join(args.out_root, f"{datasets[0]}_results.csv")
+    final_df.to_csv(out_csv, index=False)
+    print(f"\nSweep complete. Results saved to {out_csv}")
 
 
 if __name__ == "__main__":

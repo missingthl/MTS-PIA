@@ -769,6 +769,15 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
             current_tau = max(1e-6, tau_scheduler.get_tau(epoch))
         else:
             current_tau = max(1e-6, float(feedback_margin_temperature))
+        
+        epoch_orig_losses: List[float] = []
+        epoch_engine_losses: Dict[str, List[float]] = {"lraes": [], "zpia": []}
+        epoch_engine_rewards: Dict[str, List[float]] = {"lraes": [], "zpia": []}
+        epoch_engine_margins: Dict[str, List[float]] = {"lraes": [], "zpia": []}
+        epoch_probs = router_probs.copy()
+        epoch_prob_tensor = torch.tensor(epoch_probs, dtype=torch.float32, device=dev).detach()
+        epoch_consistency_losses: List[float] = []
+
         # Pre-initialize cycle iterators for all engines (Sprint 5)
         engine_iters = {}
         for name, loader in aug_loaders.items():

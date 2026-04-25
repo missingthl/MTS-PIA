@@ -300,3 +300,67 @@ def build_zpia_direction_bank(
         "telm2_bias_update_mode": str(telm2_bias_update_mode),
     }
     return bank.astype(np.float32), meta
+
+
+def _build_spectral_structure_basis_from_zpia_bank(
+    zpia_bank: np.ndarray,
+    energy_ratio: float = 0.90,
+    rank_tol: float = 1e-8,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Build an orthonormal z-space structure basis from the zPIA bank.
+
+    The returned basis has shape ``[d, k_eff]`` and satisfies ``B.T @ B ≈ I``.
+    """
+    D = np.asarray(zpia_bank, dtype=np.float64)
+    if D.ndim != 2:
+        raise ValueError("zPIA bank must be a 2D matrix.")
+    if D.shape[0] <= 0 or D.shape[1] <= 0:
+        raise ValueError("zPIA bank must have at least one row and one feature.")
+    if not np.isfinite(D).all():
+        raise ValueError("zPIA bank contains NaN or inf values.")
+    if not (0.0 < float(energy_ratio) <= 1.0):
+        raise ValueError("energy_ratio must satisfy 0 < value <= 1.")
+
+    try:
+        _, singular_values, vh = np.linalg.svd(D, full_matrices=False)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(f"SVD failed while building spectral basis: {exc}") from exc
+
+    singular_values = np.asarray(singular_values, dtype=np.float64)
+    vh = np.asarray(vh, dtype=np.float64)
+    if singular_values.ndim != 1 or vh.ndim != 2:
+        raise ValueError("Unexpected SVD output shape while building spectral basis.")
+    if not np.isfinite(singular_values).all() or not np.isfinite(vh).all():
+        raise ValueError("SVD produced NaN or inf values for the spectral basis.")
+
+    valid = singular_values > float(rank_tol)
+    rank_raw = int(np.sum(valid))
+    if rank_raw < 1:
+        raise ValueError("zPIA bank is rank-deficient with no valid spectral directions.")
+
+    energies = np.square(singular_values[valid])
+    total_energy = float(np.sum(energies))
+    if not np.isfinite(total_energy) or total_energy <= 0.0:
+        raise ValueError("Spectral basis total energy is not finite and positive.")
+
+    cum_energy = np.cumsum(energies) / total_energy
+    target = float(energy_ratio)
+    k_eff = int(np.searchsorted(cum_energy, target, side="left") + 1)
+    k_eff = max(1, min(k_eff, rank_raw))
+
+    B = vh[valid][:k_eff].T.copy()
+    gram = B.T @ B
+    orth_error = float(np.linalg.norm(gram - np.eye(k_eff), ord="fro"))
+    if not np.isfinite(orth_error):
+        raise ValueError("Spectral basis orthogonality check produced NaN or inf.")
+
+    meta: Dict[str, object] = {
+        "spectral_k_eff": int(k_eff),
+        "spectral_rank_raw": int(rank_raw),
+        "spectral_energy_ratio_target": target,
+        "spectral_energy_ratio_eff": float(cum_energy[k_eff - 1]),
+        "spectral_singular_values": singular_values.tolist(),
+        "spectral_rank_deficient": bool(rank_raw < min(D.shape)),
+        "spectral_basis_orth_error": orth_error,
+    }
+    return B.astype(np.float32), meta

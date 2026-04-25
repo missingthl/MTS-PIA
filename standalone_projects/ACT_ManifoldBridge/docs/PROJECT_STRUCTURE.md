@@ -1,70 +1,81 @@
 # Project Structure
 
-This folder is the active home of `ACT_ManifoldBridge`. The cleaned structure is:
+`ACT_ManifoldBridge` is now organized around one stable core and one active
+experimental stack.
+
+## Cleaned Layout
 
 ```text
 ACT_ManifoldBridge/
-  run_act_pilot.py          # canonical experiment entrypoint
-  core/                     # method operators and host backbone definitions
-  utils/                    # datasets and evaluators
-  scripts/                  # analysis, table, visualization, and legacy runners
+  run_act_pilot.py          # canonical ACT / ACT-V2 experiment entrypoint
+  core/                     # manifold operators, bridge, direction banks, host backbones
+  utils/                    # datasets, loaders, evaluators, ACT-V2 trainers
+  scripts/                  # grand sweep, aggregation, paper assets, visualization
   docs/                     # architecture and maintenance notes
-  results/                  # tracked evidence tables and historical outputs
+  results/                  # tracked evidence tables and current result bundles
   requirements.txt
   environment.yml
 ```
 
-## Publishable Method Body
+## Stable Method Body
 
-The publishable core is the original ACT/MBA-style ManifoldBridge chain:
+The stable ACT/MBA method body is still:
 
 ```text
-raw trial -> SPD/Log-Euclidean state -> latent candidate -> raw candidate
+raw trial -> SPD / Log-Euclidean state -> latent candidate -> raw candidate
 ```
 
 Relevant files:
 
-- `core/pia.py`: PIA and LRAES direction-bank construction.
-- `core/curriculum.py`: original latent candidate generation.
+- `core/pia.py`: PIA, LRAES, and zPIA direction-bank construction.
+- `core/curriculum.py`: latent candidate generation and Safe-Step control.
 - `core/bridge.py`: whitening-coloring realization.
-- `core/whitened_edit.py`: VNext white-space line edit and recoloring helpers.
-- `run_act_pilot.py`: baseline-vs-ACT experiment orchestration.
+- `run_act_pilot.py`: baseline-vs-ACT orchestration.
 
-## Experimental Path
+## Active Experimental Stack
 
-`--pipeline mba_white_edit` is the MBA-VNext realization experiment. It keeps
-the original raw SPD object and LRAES target-state generator, inserts a rank-1
-line edit in whitened coordinates, and then trains via the existing weighted
-aug-CE host path. It is opt-in and does not replace the publishable ACT/MBA
-mainline.
-
-`core/wavelet_mba.py` and `--pipeline wavelet_mba` are retained as opt-in
-object-layer experiments. `ca_only` is the V1 low-frequency skeleton path.
-`dual_a_dm` is the V2 dual-object path with `cA_2` plus `cD_2` and frozen
-`cD_1`. Neither should be treated as replacing the original ACT/MBA method body
-until a separate result matrix supports that change.
-
-## Legacy / Historical Material
-
-Historical sweep managers and one-off evidence scripts live under
-`scripts/legacy/`. They are kept for reproducibility, but should not be read as
-the main project API.
-
-`results/` contains both publishable tables and old sweep folders. New
-experiments should write to a clearly named subfolder such as:
+The active follow-up stack is ACT-V2:
 
 ```text
-results/wavelet_mba_v1/<dataset-or-matrix-name>/
-results/wavelet_dual_object_v2/<dataset-or-matrix-name>/
-results/mba_white_edit_vnext/<dataset-or-matrix-name>/
+act state -> dual engines (lraes / zpia) -> adaptive utilization / OSF fusion -> host
 ```
+
+Relevant files:
+
+- `run_act_pilot.py`: `mba_feedback` + `adaptive` orchestration.
+- `utils/evaluators.py`: weighted aug-CE, adaptive routing, tau scheduling, focal weighting, consistency regularization.
+- `scripts/run_v2_grand_sweep.sh`: current large-scale launcher.
+- `scripts/aggregate_v2_grand_sweep.py`: sweep aggregation.
+
+## Removed From Active Surface
+
+Older failed side branches are no longer part of the active working surface:
+
+- wavelet object-layer branch
+- MBA white-edit realization branch
+- early adaptive validation folders that were superseded by ACT-V2 RC runs
+
+Git history still preserves them, but the current folder now reflects the work
+that is still being advanced.
+
+## Results Convention
+
+Active result roots should now look like:
+
+```text
+results/mba_zpia_vnext/
+results/v2_grand_sweep_rc3_osf_safeclip/
+results/v2_taxonomy_analysis/
+results/paper_matrix_v2_final/
+```
+
+Historical folders are kept only when they still serve audit or paper-evidence
+purposes.
 
 ## Environment Rule
 
-Use the `pia` conda environment for all commands in this project:
+Always run this project inside the `pia` conda environment:
 
 ```bash
 conda run -n pia python ...
 ```
-
-This avoids missing-dependency noise from the base Python environment.
