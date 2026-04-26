@@ -9,14 +9,14 @@ if "OMP_NUM_THREADS" not in os.environ:
 
 import argparse
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 
 from core.bridge import bridge_single, logvec_to_spd
-from core.curriculum import active_direction_probs, build_curriculum_aug_candidates
+from core.curriculum import active_direction_probs, build_curriculum_aug_candidates, estimate_local_manifold_margins
 from core.pia import (
     FisherPIAConfig,
     LRAESConfig,
@@ -294,6 +294,31 @@ def _summarize_spectral_audit_rows(audit_rows: List[Dict[str, object]]) -> Dict[
     }
 
 
+def _summarize_multitemplate_audit_rows(audit_rows: List[Dict[str, object]]) -> Dict[str, float]:
+    if not audit_rows:
+        return {
+            "template_usage_entropy": 0.0,
+            "top_template_concentration": 0.0,
+            "u_perp_norm_ratio_mean": 0.0,
+            "u_perp_zero_rate": 0.0,
+        }
+    df = pd.DataFrame(audit_rows)
+    out: Dict[str, float] = {}
+    if "zpia_template_id" in df.columns:
+        template_ids = pd.to_numeric(df["zpia_template_id"], errors="coerce").dropna().astype(int).tolist()
+        out.update(_template_usage_stats(template_ids))
+    if "u_perp_norm_ratio" in df.columns:
+        ratios = pd.to_numeric(df["u_perp_norm_ratio"], errors="coerce").dropna()
+        out["u_perp_norm_ratio_mean"] = float(ratios.mean()) if not ratios.empty else 0.0
+        out["u_perp_zero_rate"] = float((ratios <= 1e-8).mean()) if not ratios.empty else 0.0
+    return {
+        "template_usage_entropy": float(out.get("template_usage_entropy", 0.0)),
+        "top_template_concentration": float(out.get("top_template_concentration", 0.0)),
+        "u_perp_norm_ratio_mean": float(out.get("u_perp_norm_ratio_mean", 0.0)),
+        "u_perp_zero_rate": float(out.get("u_perp_zero_rate", 0.0)),
+    }
+
+
 def _fit_host_model(
     *,
     args,
@@ -525,6 +550,244 @@ def _build_direction_bank_for_args(
     return {"bank": direction_bank, "meta": direction_meta}
 
 
+def _resolve_multi_template_pairs(*, args, effective_k: int, top1_only: bool) -> int:
+    if int(args.multiplier) <= 0:
+        raise ValueError("multi-template pools require --multiplier > 0.")
+    if int(args.multiplier) % 2 != 0:
+        raise ValueError("multi-template pools require an even --multiplier for +/- template slots.")
+    if top1_only:
+        pairs = 1
+    else:
+        configured = int(getattr(args, "multi_template_pairs", 0))
+        pairs = configured if configured > 0 else int(args.multiplier) // 2
+        if 2 * pairs != int(args.multiplier):
+            raise ValueError(
+                "--multi-template-pairs must satisfy 2 * pairs == multiplier for zpia_multidir_pool "
+                "and rc4_multiz_fused."
+            )
+    if pairs <= 0:
+        raise ValueError("--multi-template-pairs must be positive.")
+    if pairs > int(effective_k):
+        raise ValueError(
+            f"--multi-template-pairs={pairs} exceeds effective zPIA bank size {effective_k}."
+        )
+    return pairs
+
+
+def _template_usage_stats(template_ids: List[int]) -> Dict[str, float]:
+    if not template_ids:
+        return {"template_usage_entropy": 0.0, "top_template_concentration": 0.0}
+    _, counts = np.unique(np.asarray(template_ids, dtype=np.int64), return_counts=True)
+    probs = counts.astype(np.float64) / max(float(counts.sum()), 1.0)
+    entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
+    return {
+        "template_usage_entropy": entropy,
+        "top_template_concentration": float(probs.max()) if probs.size else 0.0,
+    }
+
+
+def _build_top_response_template_slots(
+    *,
+    args,
+    X_train_z: np.ndarray,
+    y_train: np.ndarray,
+    train_recs: List[TrialRecord],
+    zpia_bank: np.ndarray,
+    candidate_rows: Optional[List[Dict[str, object]]] = None,
+    top1_only: bool = False,
+    eta_safe: Optional[float] = 0.5,
+) -> Dict[str, object]:
+    zpia_bank = np.asarray(zpia_bank, dtype=np.float64)
+    if zpia_bank.ndim != 2 or zpia_bank.shape[0] <= 0:
+        raise ValueError("multi-template zPIA requires a non-empty 2D direction bank.")
+    pairs = _resolve_multi_template_pairs(args=args, effective_k=zpia_bank.shape[0], top1_only=top1_only)
+
+    tid_arr = np.asarray([record.tid for record in train_recs], dtype=object)
+    y_arr = np.asarray(y_train, dtype=np.int64).ravel()
+    tid_to_idx = {tid: i for i, tid in enumerate(tid_arr)}
+    margins = estimate_local_manifold_margins(X_train_z, y_arr)
+
+    def _top_ids_for_idx(idx: int) -> np.ndarray:
+        responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
+        # Sort by response descending, then template id ascending for deterministic ties.
+        order = np.lexsort((np.arange(zpia_bank.shape[0]), -responses))
+        return order[:pairs]
+
+    if candidate_rows is None:
+        row_specs: List[Dict[str, object]] = []
+        for tid in sorted(tid_to_idx):
+            idx = int(tid_to_idx[tid])
+            for candidate_order in range(int(args.multiplier)):
+                row_specs.append(
+                    {
+                        "anchor_index": idx,
+                        "tid": tid,
+                        "class_id": int(y_arr[idx]),
+                        "candidate_order": int(candidate_order),
+                    }
+                )
+    else:
+        row_specs = []
+        for i, row in enumerate(candidate_rows):
+            tid = row.get("tid")
+            if tid not in tid_to_idx:
+                raise ValueError(f"Unknown tid in candidate_rows at slot {i}: {tid}")
+            idx = int(row.get("anchor_index", tid_to_idx[tid]))
+            row_specs.append(
+                {
+                    "anchor_index": idx,
+                    "tid": tid,
+                    "class_id": int(row.get("class_id", y_arr[idx])),
+                    "candidate_order": int(row.get("candidate_order", i % int(args.multiplier))),
+                }
+            )
+
+    z_aug: List[np.ndarray] = []
+    y_aug: List[int] = []
+    tid_aug: List[object] = []
+    w_slots: List[np.ndarray] = []
+    slot_rows: List[Dict[str, object]] = []
+    template_ids_used: List[int] = []
+    eps = 1e-12
+    pair_cycle = 2 * pairs
+    for slot_idx, spec in enumerate(row_specs):
+        idx = int(spec["anchor_index"])
+        tid = spec["tid"]
+        candidate_order = int(spec["candidate_order"])
+        top_ids = _top_ids_for_idx(idx)
+        pair_pos = (candidate_order % pair_cycle) // 2
+        template_sign = 1.0 if (candidate_order % 2 == 0) else -1.0
+        template_id = int(top_ids[pair_pos])
+        direction = np.asarray(zpia_bank[template_id], dtype=np.float64)
+        direction_norm = float(np.linalg.norm(direction))
+        d_min = float(margins[idx])
+        gamma_requested = float(args.pia_gamma)
+        if eta_safe is None:
+            gamma_used = gamma_requested
+            safe_upper_bound = float("inf")
+            safe_radius_ratio = 1.0
+        else:
+            safe_upper_bound = float(eta_safe) * d_min / (direction_norm + eps)
+            gamma_used = min(gamma_requested, safe_upper_bound)
+            safe_radius = float(eta_safe) * d_min
+            safe_radius_ratio = float(abs(gamma_used) * direction_norm / (safe_radius + eps)) if safe_radius > 0 else 0.0
+        W_i = template_sign * gamma_used * direction
+        response_abs = float(abs(np.dot(np.asarray(X_train_z[idx], dtype=np.float64), direction)))
+
+        z_aug.append((np.asarray(X_train_z[idx], dtype=np.float64) + W_i).astype(np.float32))
+        y_aug.append(int(y_arr[idx]))
+        tid_aug.append(tid)
+        w_slots.append(W_i.astype(np.float32))
+        template_ids_used.append(template_id)
+        slot_rows.append(
+            {
+                "anchor_index": idx,
+                "tid": tid,
+                "class_id": int(y_arr[idx]),
+                "candidate_order": candidate_order,
+                "slot_index": int(slot_idx),
+                "template_pair_count": int(pairs),
+                "zpia_template_id": template_id,
+                "zpia_template_sign": float(template_sign),
+                "zpia_template_rank": int(pair_pos),
+                "zpia_template_response_abs": response_abs,
+                "direction_id": template_id,
+                "sign": float(template_sign),
+                "gamma_requested": gamma_requested,
+                "gamma_used": float(gamma_used),
+                "direction_norm": direction_norm,
+                "safe_upper_bound": float(safe_upper_bound),
+                "safe_radius_ratio": float(safe_radius_ratio),
+                "manifold_margin": d_min,
+                "zpia_delta_norm": float(np.linalg.norm(W_i)),
+            }
+        )
+
+    usage_stats = _template_usage_stats(template_ids_used)
+    return {
+        "z_aug": np.stack(z_aug).astype(np.float32) if z_aug else np.empty((0, X_train_z.shape[1]), dtype=np.float32),
+        "y_aug": np.asarray(y_aug, dtype=np.int64),
+        "tid_aug": np.asarray(tid_aug, dtype=object),
+        "W_slots": np.stack(w_slots).astype(np.float32) if w_slots else np.empty((0, X_train_z.shape[1]), dtype=np.float32),
+        "audit_rows": slot_rows,
+        "multi_template_pairs": int(pairs),
+        "template_usage_entropy": usage_stats["template_usage_entropy"],
+        "top_template_concentration": usage_stats["top_template_concentration"],
+    }
+
+
+def _materialize_z_aug_out(
+    *,
+    z_aug: np.ndarray,
+    y_aug: np.ndarray,
+    tid_aug: np.ndarray,
+    audit_rows: List[Dict[str, object]],
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    direction_bank_meta: Dict[str, object],
+    effective_k: int,
+    eta_safe: Optional[float],
+    algo_name: str,
+    engine_id: str,
+    extra_meta: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    tid_to_rec = {record.tid: record for record in train_recs}
+    aug_trials: List[Dict[str, object]] = []
+    bridge_metrics: List[Dict[str, object]] = []
+    out_rows: List[Dict[str, object]] = []
+    for i in range(len(z_aug)):
+        src = tid_to_rec[tid_aug[i]]
+        sigma_aug = logvec_to_spd(z_aug[i], mean_log)
+        x_aug, bridge_meta = bridge_single(
+            torch.from_numpy(src.x_raw),
+            torch.from_numpy(src.sigma_orig),
+            torch.from_numpy(sigma_aug),
+        )
+        aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
+        bridge_metrics.append(bridge_meta)
+        row = dict(audit_rows[i]) if i < len(audit_rows) else {}
+        row.update(
+            {
+                "algo": algo_name,
+                "engine_id": engine_id,
+                "direction_bank_source": direction_bank_meta.get("bank_source", algo_name),
+                "transport_error_fro": float(bridge_meta.get("transport_error_fro", 0.0)),
+                "transport_error_logeuc": float(bridge_meta.get("transport_error_logeuc", 0.0)),
+                "bridge_cond_A": float(bridge_meta.get("bridge_cond_A", 0.0)),
+                "metric_preservation_error": float(bridge_meta.get("metric_preservation_error", 0.0)),
+            }
+        )
+        out_rows.append(row)
+
+    X_aug_raw = np.stack([trial["x"] for trial in aug_trials]) if aug_trials else None
+    y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
+    avg_bridge = pd.DataFrame(bridge_metrics).mean().to_dict() if bridge_metrics else {}
+    safe_ratios = [float(row.get("safe_radius_ratio", 0.0)) for row in out_rows]
+    margins = [float(row.get("manifold_margin", 0.0)) for row in out_rows]
+    out = {
+        "effective_k": int(effective_k),
+        "z_aug": z_aug,
+        "y_aug": y_aug,
+        "tid_aug": tid_aug,
+        "aug_trials": aug_trials,
+        "X_aug_raw": X_aug_raw,
+        "y_aug_np": y_aug_np,
+        "tid_to_rec": tid_to_rec,
+        "avg_bridge": avg_bridge,
+        "audit_rows": out_rows,
+        "direction_bank_meta": direction_bank_meta,
+        "safe_radius_ratio_mean": float(np.mean(safe_ratios)) if safe_ratios else 0.0,
+        "manifold_margin_mean": float(np.mean(margins)) if margins else 0.0,
+        "eta_safe": eta_safe,
+        "candidate_total_count": int(len(z_aug)),
+        "aug_total_count": int(len(z_aug)),
+        "aug_dataset": None,
+    }
+    if extra_meta:
+        out.update(extra_meta)
+    return out
+
+
 def _build_act_realized_augmentations(
     *,
     args,
@@ -646,6 +909,65 @@ def _build_act_realized_augmentations(
         # V2 on-the-fly dataset (None when --onthefly-aug not set)
         "aug_dataset": aug_dataset_out,
     }
+
+
+def _build_zpia_template_pool_aug_out(
+    *,
+    args,
+    seed: int,
+    X_train_z: np.ndarray,
+    y_train: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    algo_label: str,
+    top1_only: bool,
+) -> Dict[str, object]:
+    bank_out = _build_direction_bank_for_args(
+        args=_clone_args_with_updates(args, algo="zpia"),
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        algo_override="zpia",
+    )
+    zpia_bank = np.asarray(bank_out["bank"], dtype=np.float64)
+    zpia_meta = dict(bank_out["meta"])
+    eta_safe = None if args.disable_safe_step else 0.5
+    slots = _build_top_response_template_slots(
+        args=args,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        zpia_bank=zpia_bank,
+        candidate_rows=None,
+        top1_only=top1_only,
+        eta_safe=eta_safe,
+    )
+    direction_meta = {
+        "bank_source": algo_label,
+        "zpia_meta": zpia_meta,
+        "template_selection": "anchor_top_abs_response",
+        "template_slot_policy": "dual_sign_fixed_budget",
+        "multi_template_pairs": int(slots["multi_template_pairs"]),
+    }
+    return _materialize_z_aug_out(
+        z_aug=slots["z_aug"],
+        y_aug=slots["y_aug"],
+        tid_aug=slots["tid_aug"],
+        audit_rows=slots["audit_rows"],
+        train_recs=train_recs,
+        mean_log=mean_log,
+        direction_bank_meta=direction_meta,
+        effective_k=int(zpia_bank.shape[0]),
+        eta_safe=eta_safe,
+        algo_name=algo_label,
+        engine_id=algo_label,
+        extra_meta={
+            "effective_k_zpia": int(zpia_bank.shape[0]),
+            "multi_template_pairs": int(slots["multi_template_pairs"]),
+            "template_usage_entropy": float(slots["template_usage_entropy"]),
+            "top_template_concentration": float(slots["top_template_concentration"]),
+        },
+    )
 
 
 def _build_rc4_fused_aug_out(
@@ -919,6 +1241,171 @@ def _build_rc4_fused_aug_out(
     return fused_aug_out
 
 
+def _build_rc4_multiz_fused_aug_out(
+    *,
+    args,
+    seed: int,
+    X_train_z: np.ndarray,
+    y_train: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    algo_label: str = "rc4_multiz_fused",
+) -> Dict[str, object]:
+    if args.disable_safe_step:
+        raise ValueError("rc4_multiz_fused requires safe-step metadata; do not use --disable-safe-step.")
+
+    aug_out_lraes = _build_act_realized_augmentations(
+        args=_clone_args_with_updates(args, algo="lraes"),
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        algo_override="lraes",
+        engine_id="lraes",
+    )
+    bank_out_zpia = _build_direction_bank_for_args(
+        args=_clone_args_with_updates(args, algo="zpia"),
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        algo_override="zpia",
+    )
+    zpia_bank = np.asarray(bank_out_zpia["bank"], dtype=np.float64)
+    zpia_meta = dict(bank_out_zpia["meta"])
+    eta_safe = float(aug_out_lraes.get("eta_safe", 0.5))
+    slots = _build_top_response_template_slots(
+        args=args,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        zpia_bank=zpia_bank,
+        candidate_rows=list(aug_out_lraes.get("audit_rows", [])),
+        top1_only=False,
+        eta_safe=eta_safe,
+    )
+    if len(aug_out_lraes["tid_aug"]) != len(slots["tid_aug"]):
+        raise ValueError("rc4_multiz_fused requires aligned LRAES and zPIA slot counts.")
+    for idx, (tid_l, tid_z) in enumerate(zip(aug_out_lraes["tid_aug"], slots["tid_aug"])):
+        if tid_l != tid_z:
+            raise ValueError(f"rc4_multiz_fused slot tid mismatch at {idx}: {tid_l} != {tid_z}")
+    if not np.array_equal(aug_out_lraes["y_aug"], slots["y_aug"]):
+        raise ValueError("rc4_multiz_fused requires aligned LRAES and zPIA slot labels.")
+
+    z_o = torch.from_numpy(
+        np.stack([aug_out_lraes["tid_to_rec"][tid].z for tid in aug_out_lraes["tid_aug"]])
+    )
+    z_l = torch.from_numpy(aug_out_lraes["z_aug"])
+    W = torch.from_numpy(slots["W_slots"]).to(dtype=z_o.dtype)
+    U = z_l - z_o
+
+    shared_margin: List[float] = []
+    for idx, (row_l, row_z) in enumerate(zip(aug_out_lraes["audit_rows"], slots["audit_rows"])):
+        margin_l = float(row_l.get("manifold_margin", np.nan))
+        margin_z = float(row_z.get("manifold_margin", np.nan))
+        if (not np.isfinite(margin_l)) or (not np.isfinite(margin_z)):
+            raise ValueError(f"rc4_multiz_fused requires finite manifold_margin at slot {idx}.")
+        shared_margin.append(min(margin_l, margin_z))
+    r_shared_np = eta_safe * np.asarray(shared_margin, dtype=np.float64)
+    r_shared = torch.from_numpy(r_shared_np).to(dtype=z_o.dtype).unsqueeze(-1)
+
+    proj_out = _project_rank1_structure_out(W=W, U=U)
+    rc4 = _apply_rc4_safe_governance(
+        W=W,
+        U=U,
+        U_perp=proj_out["U_perp"],
+        r_shared=r_shared,
+        alpha=float(args.osf_alpha),
+        beta=float(args.osf_beta),
+        kappa=float(getattr(args, "osf_kappa", 1.0)),
+    )
+    rc4["proj"] = proj_out["proj"]
+    rc4["norm_proj"] = torch.norm(proj_out["proj"], p=2, dim=-1, keepdim=True)
+    z_f = z_o + rc4["delta_z"]
+
+    fused_rows: List[Dict[str, object]] = []
+    for i, (row_l, row_z) in enumerate(zip(aug_out_lraes["audit_rows"], slots["audit_rows"])):
+        final_norm = float(rc4["norm_final"][i].item())
+        shared_r = float(r_shared_np[i])
+        if rc4["zero_perp_mask"][i].item():
+            risk_status = "zero_perp"
+        elif rc4["clipped_mask"][i].item():
+            risk_status = "clipped"
+        else:
+            risk_status = "restored"
+        norm_u = float(rc4["norm_u"][i].item())
+        norm_u_perp = float(rc4["norm_u_perp"][i].item())
+        row = dict(row_l)
+        row.update(
+            {
+                "algo": algo_label,
+                "engine_id": "multi_template_osf",
+                "direction_bank_source": "multi_template_osf",
+                "manifold_margin": float(shared_margin[i]),
+                "safe_radius_ratio": float(final_norm / (shared_r + 1e-12)) if shared_r > 0.0 else 0.0,
+                "lraes_direction_id": int(row_l.get("direction_id", -1)),
+                "lraes_sign": float(row_l.get("sign", 0.0)),
+                "lraes_gamma_used": float(row_l.get("gamma_used", 0.0)),
+                "lraes_delta_norm": norm_u,
+                "zpia_template_id": int(row_z.get("zpia_template_id", -1)),
+                "zpia_template_sign": float(row_z.get("zpia_template_sign", 0.0)),
+                "zpia_template_rank": int(row_z.get("zpia_template_rank", -1)),
+                "zpia_template_response_abs": float(row_z.get("zpia_template_response_abs", 0.0)),
+                "zpia_gamma_used": float(row_z.get("gamma_used", 0.0)),
+                "zpia_delta_norm": float(row_z.get("zpia_delta_norm", 0.0)),
+                "proj_on_template_norm": float(rc4["norm_proj"][i].item()),
+                "u_perp_norm": norm_u_perp,
+                "u_perp_norm_ratio": float(norm_u_perp / (norm_u + 1e-12)),
+                "osf_r_shared": shared_r,
+                "osf_alpha_eff": float(rc4["alpha_eff"][i].item()),
+                "osf_structure_norm_raw": float(rc4["norm_delta_s_raw"][i].item()),
+                "osf_structure_norm_eff": float(rc4["norm_delta_s"][i].item()),
+                "osf_risk_norm_restored": float(rc4["norm_u_restored"][i].item()),
+                "osf_risk_budget": float(rc4["r_risk"][i].item()),
+                "osf_risk_scale": float(rc4["risk_scale"][i].item()),
+                "osf_final_norm": final_norm,
+                "osf_structure_overflow": bool(rc4["structure_overflow_mask"][i].item()),
+                "osf_risk_status": risk_status,
+            }
+        )
+        fused_rows.append(row)
+
+    direction_meta = {
+        "bank_source": "multi_template_osf",
+        "engine_sources": [
+            aug_out_lraes.get("direction_bank_meta", {}).get("bank_source", "lraes"),
+            zpia_meta.get("bank_source", "zpia_telm2"),
+        ],
+        "lraes_meta": aug_out_lraes.get("direction_bank_meta", {}),
+        "zpia_meta": zpia_meta,
+        "template_selection": "anchor_top_abs_response",
+        "template_slot_policy": "slot_preserving_dual_sign_fixed_budget",
+        "multi_template_pairs": int(slots["multi_template_pairs"]),
+    }
+    return _materialize_z_aug_out(
+        z_aug=z_f.numpy().astype(np.float32),
+        y_aug=aug_out_lraes["y_aug"],
+        tid_aug=aug_out_lraes["tid_aug"],
+        audit_rows=fused_rows,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        direction_bank_meta=direction_meta,
+        effective_k=int(max(aug_out_lraes.get("effective_k", 0), zpia_bank.shape[0])),
+        eta_safe=eta_safe,
+        algo_name=algo_label,
+        engine_id="multi_template_osf",
+        extra_meta={
+            "effective_k_lraes": int(aug_out_lraes.get("effective_k", 0)),
+            "effective_k_zpia": int(zpia_bank.shape[0]),
+            "multi_template_pairs": int(slots["multi_template_pairs"]),
+            "template_usage_entropy": float(slots["template_usage_entropy"]),
+            "top_template_concentration": float(slots["top_template_concentration"]),
+            **_summarize_osf_audit_rows(fused_rows),
+            **_summarize_multitemplate_audit_rows(fused_rows),
+        },
+    )
+
+
 def _run_analysis_probe(
     *,
     args,
@@ -1042,6 +1529,113 @@ def _run_act_pipeline(
             "Z_aug": aug_out["z_aug"],
             "y_aug": aug_out["y_aug"],
             "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]]) if aug_out["aug_trials"] else None,
+        },
+    }
+
+
+def _run_act_zpia_template_pool_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+    algo_label: str,
+    top1_only: bool,
+) -> Dict[str, object]:
+    print("Fitting baseline...")
+    res_base = _fit_host_model(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=args.theory_diagnostics,
+        loader_seed=seed,
+    )
+
+    aug_out = _build_zpia_template_pool_aug_out(
+        args=args,
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        algo_label=algo_label,
+        top1_only=top1_only,
+    )
+
+    if aug_out["aug_trials"]:
+        X_mix = np.concatenate([X_train_raw, aug_out["X_aug_raw"]], axis=0)
+        y_mix = np.concatenate([y_train, aug_out["y_aug_np"]], axis=0)
+    else:
+        X_mix = X_train_raw
+        y_mix = y_train
+
+    alignment_metrics = _run_analysis_probe(
+        args=args,
+        model_obj=res_base.get("model_obj"),
+        tid_aug=aug_out["tid_aug"],
+        aug_trials=aug_out["aug_trials"],
+        tid_to_rec=aug_out["tid_to_rec"],
+    )
+
+    print(f"Fitting {algo_label} core model ({len(X_mix)} samples)...")
+    res_act = _fit_host_model(
+        args=args,
+        X_tr=X_mix,
+        y_tr=y_mix,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=False,
+        loader_seed=seed,
+    )
+
+    return {
+        "res_base": res_base,
+        "res_act": res_act,
+        "avg_bridge": aug_out["avg_bridge"],
+        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
+        "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
+        "host_conflict_rate": alignment_metrics["host_conflict_rate"],
+        "candidate_total_count": aug_out["candidate_total_count"],
+        "aug_total_count": aug_out["aug_total_count"],
+        "effective_k": aug_out["effective_k"],
+        "effective_k_zpia": aug_out.get("effective_k_zpia", 0),
+        "direction_bank_meta": aug_out.get("direction_bank_meta", {}),
+        "audit_rows": aug_out.get("audit_rows", []),
+        **_summarize_multitemplate_audit_rows(aug_out.get("audit_rows", [])),
+        "multi_template_pairs": int(aug_out.get("multi_template_pairs", 0)),
+        "viz_payload": {
+            "Z_orig": X_train_z,
+            "Z_aug": aug_out["z_aug"],
+            "y_aug": aug_out["y_aug"],
+            "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]])
+            if aug_out["aug_trials"]
+            else None,
         },
     }
 
@@ -1343,6 +1937,112 @@ def _run_act_spectral_osf_pipeline(
     )
 
 
+def _run_act_rc4_multiz_fused_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    print("Fitting baseline...")
+    res_base = _fit_host_model(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=args.theory_diagnostics,
+        loader_seed=seed,
+    )
+
+    aug_out = _build_rc4_multiz_fused_aug_out(
+        args=args,
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        algo_label="rc4_multiz_fused",
+    )
+
+    if aug_out["aug_trials"]:
+        X_mix = np.concatenate([X_train_raw, aug_out["X_aug_raw"]], axis=0)
+        y_mix = np.concatenate([y_train, aug_out["y_aug_np"]], axis=0)
+    else:
+        X_mix = X_train_raw
+        y_mix = y_train
+
+    alignment_metrics = _run_analysis_probe(
+        args=args,
+        model_obj=res_base.get("model_obj"),
+        tid_aug=aug_out["tid_aug"],
+        aug_trials=aug_out["aug_trials"],
+        tid_to_rec=aug_out["tid_to_rec"],
+    )
+
+    print(f"Fitting rc4_multiz_fused core model ({len(X_mix)} samples)...")
+    res_act = _fit_host_model(
+        args=args,
+        X_tr=X_mix,
+        y_tr=y_mix,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=False,
+        loader_seed=seed,
+    )
+
+    return {
+        "res_base": res_base,
+        "res_act": res_act,
+        "avg_bridge": aug_out["avg_bridge"],
+        "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
+        "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
+        "host_conflict_rate": alignment_metrics["host_conflict_rate"],
+        "candidate_total_count": aug_out["candidate_total_count"],
+        "aug_total_count": aug_out["aug_total_count"],
+        "effective_k": aug_out["effective_k"],
+        "effective_k_lraes": aug_out.get("effective_k_lraes", 0),
+        "effective_k_zpia": aug_out.get("effective_k_zpia", 0),
+        "direction_bank_meta": aug_out.get("direction_bank_meta", {}),
+        "audit_rows": aug_out.get("audit_rows", []),
+        **_summarize_osf_audit_rows(aug_out.get("audit_rows", [])),
+        **_summarize_multitemplate_audit_rows(aug_out.get("audit_rows", [])),
+        "multi_template_pairs": int(aug_out.get("multi_template_pairs", 0)),
+        "viz_payload": {
+            "Z_orig": X_train_z,
+            "Z_aug": aug_out["z_aug"],
+            "y_aug": aug_out["y_aug"],
+            "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]])
+            if aug_out["aug_trials"]
+            else None,
+        },
+    }
+
+
 def _run_mba_feedback_adaptive_pipeline(
     *,
     args,
@@ -1607,7 +2307,65 @@ def run_experiment(dataset_name, args):
                 y_val = np.asarray([record.y for record in val_recs], dtype=np.int64)
 
             X_train_z = np.stack([record.z for record in train_recs])
-            if args.algo == "rc4_fused":
+            if args.algo == "zpia_top1_pool":
+                pipeline_out = _run_act_zpia_template_pool_pipeline(
+                    args=args,
+                    seed=seed,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                    algo_label="zpia_top1_pool",
+                    top1_only=True,
+                )
+            elif args.algo == "zpia_multidir_pool":
+                pipeline_out = _run_act_zpia_template_pool_pipeline(
+                    args=args,
+                    seed=seed,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                    algo_label="zpia_multidir_pool",
+                    top1_only=False,
+                )
+            elif args.algo == "rc4_multiz_fused":
+                pipeline_out = _run_act_rc4_multiz_fused_pipeline(
+                    args=args,
+                    seed=seed,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                )
+            elif args.algo == "rc4_fused":
                 pipeline_out = _run_act_rc4_fused_pipeline(
                     args=args,
                     seed=seed,
@@ -1803,6 +2561,56 @@ def run_experiment(dataset_name, args):
                         "spectral_alpha_eff_mean": float(pipeline_out.get("spectral_alpha_eff_mean", 0.0)),
                     }
                 )
+            if args.algo in {"zpia_top1_pool", "zpia_multidir_pool", "rc4_multiz_fused"}:
+                summary.update(
+                    {
+                        "utilization_mode": "core_concat",
+                        "core_training_mode": "concat_all",
+                        "aug_train_ratio": float(pipeline_out.get("aug_total_count", 0)) / max(float(len(y_train)), 1.0),
+                        "multi_template_pairs": int(pipeline_out.get("multi_template_pairs", 0)),
+                        "template_selection": str(direction_meta.get("template_selection", "anchor_top_abs_response")),
+                        "template_usage_entropy": float(pipeline_out.get("template_usage_entropy", 0.0)),
+                        "top_template_concentration": float(pipeline_out.get("top_template_concentration", 0.0)),
+                        "effective_k_dir_zpia": int(pipeline_out.get("effective_k_zpia", 0)),
+                        "u_perp_norm_ratio_mean": float(pipeline_out.get("u_perp_norm_ratio_mean", 0.0)),
+                        "u_perp_zero_rate": float(pipeline_out.get("u_perp_zero_rate", 0.0)),
+                    }
+                )
+                zpia_meta = dict(direction_meta.get("zpia_meta", {}))
+                if zpia_meta:
+                    summary.update(
+                        {
+                            "zpia_z_dim": int(zpia_meta.get("z_dim", 0)),
+                            "zpia_n_train": int(zpia_meta.get("n_train", 0)),
+                            "zpia_n_train_lt_z_dim": bool(zpia_meta.get("n_train_lt_z_dim", False)),
+                            "zpia_row_norm_min": float(zpia_meta.get("row_norm_min", 0.0)),
+                            "zpia_row_norm_max": float(zpia_meta.get("row_norm_max", 0.0)),
+                            "zpia_row_norm_mean": float(zpia_meta.get("row_norm_mean", 0.0)),
+                            "zpia_fallback_row_count": int(zpia_meta.get("fallback_row_count", 0)),
+                            "telm2_recon_last": float(zpia_meta.get("telm2_recon_last", 0.0)),
+                            "telm2_recon_mean": float(zpia_meta.get("telm2_recon_mean", 0.0)),
+                            "telm2_recon_std": float(zpia_meta.get("telm2_recon_std", 0.0)),
+                        }
+                    )
+                if args.algo == "rc4_multiz_fused":
+                    summary.update(
+                        {
+                            "osf_alpha": float(args.osf_alpha),
+                            "osf_beta": float(args.osf_beta),
+                            "osf_kappa": float(args.osf_kappa),
+                            "effective_k_dir_lraes": int(pipeline_out.get("effective_k_lraes", 0)),
+                            "adaptive_engine_sources": ",".join(
+                                [str(x) for x in direction_meta.get("engine_sources", [])]
+                            ),
+                            "osf_structure_overflow_rate": float(
+                                pipeline_out.get("osf_structure_overflow_rate", 0.0)
+                            ),
+                            "osf_alpha_eff_mean": float(pipeline_out.get("osf_alpha_eff_mean", 0.0)),
+                            "osf_risk_scale_mean": float(pipeline_out.get("osf_risk_scale_mean", 0.0)),
+                            "osf_risk_zero_perp_rate": float(pipeline_out.get("osf_risk_zero_perp_rate", 0.0)),
+                            "osf_risk_clipped_rate": float(pipeline_out.get("osf_risk_clipped_rate", 0.0)),
+                        }
+                    )
             if args.pipeline == "mba_feedback":
                 summary.update(
                     {
@@ -1932,7 +2740,17 @@ def main():
     parser.add_argument(
         "--algo",
         type=str,
-        choices=["pia", "lraes", "zpia", "adaptive", "rc4_fused", "spectral_osf"],
+        choices=[
+            "pia",
+            "lraes",
+            "zpia",
+            "adaptive",
+            "rc4_fused",
+            "spectral_osf",
+            "zpia_top1_pool",
+            "zpia_multidir_pool",
+            "rc4_multiz_fused",
+        ],
         default="lraes",
     )
     parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
@@ -1986,6 +2804,7 @@ def main():
     parser.add_argument("--osf-beta", type=float, default=1.0)
     parser.add_argument("--osf-kappa", type=float, default=1.0)
     parser.add_argument("--spectral-osf-rho", type=float, default=0.90)
+    parser.add_argument("--multi-template-pairs", type=int, default=0)
     parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
 
@@ -2038,6 +2857,27 @@ def main():
             raise ValueError("--osf-kappa must satisfy value >= 0.")
         if not (0.0 < float(args.spectral_osf_rho) <= 1.0):
             raise ValueError("--spectral-osf-rho must satisfy 0 < value <= 1.")
+    if args.algo in {"zpia_top1_pool", "zpia_multidir_pool", "rc4_multiz_fused"}:
+        if args.pipeline not in {"act", "mba"}:
+            raise ValueError(f"--algo {args.algo} currently supports --pipeline act only.")
+        if args.model != "resnet1d":
+            raise ValueError(f"--algo {args.algo} currently supports --model resnet1d only.")
+        if args.disable_safe_step:
+            raise ValueError(f"--algo {args.algo} requires safe-step; do not pass --disable-safe-step.")
+        if args.k_dir <= 0:
+            raise ValueError(f"--algo {args.algo} requires --k-dir > 0.")
+        if args.multiplier <= 0 or args.multiplier % 2 != 0:
+            raise ValueError(f"--algo {args.algo} requires a positive even --multiplier.")
+        if args.multi_template_pairs < 0:
+            raise ValueError("--multi-template-pairs must be >= 0.")
+        if args.algo in {"zpia_multidir_pool", "rc4_multiz_fused"}:
+            pairs = args.multi_template_pairs if args.multi_template_pairs > 0 else args.multiplier // 2
+            if 2 * pairs != args.multiplier:
+                raise ValueError("--multi-template-pairs must satisfy 2 * pairs == multiplier.")
+            if pairs > args.k_dir:
+                raise ValueError("--multi-template-pairs must be <= --k-dir.")
+        if args.algo == "rc4_multiz_fused" and args.osf_kappa < 0.0:
+            raise ValueError("--osf-kappa must satisfy value >= 0.")
     if args.pipeline == "mba_feedback" and args.model == "minirocket":
         raise ValueError("--pipeline mba_feedback supports resnet1d, patchtst, and timesnet only.")
 

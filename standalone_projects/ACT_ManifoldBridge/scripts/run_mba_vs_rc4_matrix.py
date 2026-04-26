@@ -159,6 +159,46 @@ ARM_SPECS: List[ArmSpec] = [
         utilization_mode="core_concat",
         core_training_mode="concat_all",
     ),
+    ArmSpec(
+        arm="mba_core_zpia_top1_pool",
+        pipeline="act",
+        algo="zpia_top1_pool",
+        extra_args=[],
+        direction_bank_source="zpia_top1_pool",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="core_concat",
+        core_training_mode="concat_all",
+    ),
+    ArmSpec(
+        arm="mba_core_zpia_multidir_pool",
+        pipeline="act",
+        algo="zpia_multidir_pool",
+        extra_args=[],
+        direction_bank_source="zpia_multidir_pool",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="core_concat",
+        core_training_mode="concat_all",
+    ),
+    ArmSpec(
+        arm="mba_core_rc4_multiz_fused_concat",
+        pipeline="act",
+        algo="rc4_multiz_fused",
+        extra_args=[
+            "--osf-alpha",
+            "1.0",
+            "--osf-beta",
+            "0.5",
+            "--osf-kappa",
+            "1.0",
+        ],
+        direction_bank_source="multi_template_osf",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="core_concat",
+        core_training_mode="concat_all",
+    ),
 ]
 
 
@@ -227,6 +267,13 @@ def _build_command(args, dataset: str, arm_spec: ArmSpec, out_root: Path) -> Lis
         "--out-root",
         str(out_root),
     ]
+    if arm_spec.arm in {
+        "mba_core_zpia_top1_pool",
+        "mba_core_zpia_multidir_pool",
+        "mba_core_rc4_multiz_fused_concat",
+    }:
+        pairs = int(args.multi_template_pairs) if int(args.multi_template_pairs) > 0 else int(args.multiplier) // 2
+        cmd.extend(["--multi-template-pairs", str(pairs)])
     cmd.extend(arm_spec.extra_args)
     return cmd
 
@@ -310,9 +357,21 @@ def _build_run_manifest(*, args, arm_spec: ArmSpec, dataset: str, gpu_id: Option
         "router_min_prob": 0.10 if arm_spec.arm == "rc4_osf" else None,
         "router_smoothing": 0.5 if arm_spec.arm == "rc4_osf" else None,
         "router_reward": "feedback_weight" if arm_spec.arm == "rc4_osf" else None,
-        "osf_alpha": 1.0 if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat"} else None,
-        "osf_beta": 0.5 if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat"} else None,
-        "osf_kappa": 1.0 if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat"} else None,
+        "osf_alpha": 1.0
+        if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat", "mba_core_rc4_multiz_fused_concat"}
+        else None,
+        "osf_beta": 0.5
+        if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat", "mba_core_rc4_multiz_fused_concat"}
+        else None,
+        "osf_kappa": 1.0
+        if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat", "mba_core_rc4_multiz_fused_concat"}
+        else None,
+        "multi_template_pairs": (
+            int(args.multi_template_pairs) if int(args.multi_template_pairs) > 0 else int(args.multiplier) // 2
+        )
+        if arm_spec.arm
+        in {"mba_core_zpia_top1_pool", "mba_core_zpia_multidir_pool", "mba_core_rc4_multiz_fused_concat"}
+        else None,
         "git_commit_sha": args.git_commit_sha,
         "git_is_dirty": args.git_is_dirty,
         "physical_gpu_id": gpu_id,
@@ -447,6 +506,7 @@ def main() -> None:
     parser.add_argument("--k-dir", type=int, default=10)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
     parser.add_argument("--multiplier", type=int, default=10)
+    parser.add_argument("--multi-template-pairs", type=int, default=0)
     parser.add_argument("--actual-arms", type=str, default=",".join(spec.arm for spec in ARM_SPECS))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -486,6 +546,7 @@ def main() -> None:
             "k_dir": args.k_dir,
             "pia_gamma": args.pia_gamma,
             "multiplier": args.multiplier,
+            "multi_template_pairs": args.multi_template_pairs if args.multi_template_pairs > 0 else args.multiplier // 2,
             "disable_safe_step": False,
             "eta_safe": 0.5,
         },

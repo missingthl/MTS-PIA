@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_ROOT = PROJECT_ROOT / "results" / "mba_vs_rc4_census_v1" / "resnet1d_sharedbudget_s123"
 DEFAULT_LOCKED_ROOT = PROJECT_ROOT / "results" / "mba_vs_rc4_census_v1" / "resnet1d_sharedbudget_s123"
 DEFAULT_STEP1_ROOT = PROJECT_ROOT / "results" / "mba_core_rc4_fused_step1" / "resnet1d_sharedbudget_s123"
+DEFAULT_SPECTRAL_ROOT = PROJECT_ROOT / "results" / "mba_core_spectral_osf_step1" / "resnet1d_sharedbudget_s123"
 DEFAULT_REF_ROOT = PROJECT_ROOT / "results" / "paper_matrix_v2_final" / "phase_all" / "resnet1d"
 
 
@@ -201,6 +202,13 @@ def _load_reference_per_seed_rows(root: Path, keep_arms: set[str]) -> pd.DataFra
     return df[df["arm"].astype(str).isin(keep_arms)].copy()
 
 
+def _try_load_reference_per_seed_rows(root: Path, keep_arms: set[str]) -> pd.DataFrame:
+    try:
+        return _load_reference_per_seed_rows(root, keep_arms)
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+
 def _load_locked_per_seed_rows(locked_root: Path) -> pd.DataFrame:
     keep_arms = {"baseline_ce", "mba_core_lraes", "mba_feedback_lraes", "rc4_osf"}
     return _load_reference_per_seed_rows(locked_root, keep_arms)
@@ -215,6 +223,9 @@ def _gap_attribution_view(dataset_summary: pd.DataFrame, baseline_drift_df: pd.D
         "rc4_osf",
         "mba_core_rc4_fused_concat",
         "mba_core_spectral_osf_concat",
+        "mba_core_zpia_top1_pool",
+        "mba_core_zpia_multidir_pool",
+        "mba_core_rc4_multiz_fused_concat",
     ]:
         if col not in pivot.columns:
             pivot[col] = np.nan
@@ -227,6 +238,14 @@ def _gap_attribution_view(dataset_summary: pd.DataFrame, baseline_drift_df: pd.D
     pivot["spectral_vs_mba_core"] = pivot["mba_core_spectral_osf_concat"] - pivot["mba_core_lraes"]
     pivot["spectral_vs_rc4_osf"] = pivot["mba_core_spectral_osf_concat"] - pivot["rc4_osf"]
     pivot["spectral_vs_rc4_fused"] = pivot["mba_core_spectral_osf_concat"] - pivot["mba_core_rc4_fused_concat"]
+    pivot["zpia_multidir_vs_zpia_top1"] = pivot["mba_core_zpia_multidir_pool"] - pivot["mba_core_zpia_top1_pool"]
+    pivot["rc4_multiz_vs_mba_core"] = pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_lraes"]
+    pivot["rc4_multiz_vs_rc4_fused"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_rc4_fused_concat"]
+    )
+    pivot["rc4_multiz_vs_spectral"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_spectral_osf_concat"]
+    )
 
     drift_max = (
         baseline_drift_df.groupby("dataset", dropna=False)["baseline_span"].max().rename("baseline_drift_span_max").reset_index()
@@ -258,12 +277,41 @@ def _spectral_osf_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
         "rc4_osf",
         "mba_core_rc4_fused_concat",
         "mba_core_spectral_osf_concat",
+        "mba_core_zpia_top1_pool",
+        "mba_core_zpia_multidir_pool",
+        "mba_core_rc4_multiz_fused_concat",
     ]:
         if col not in pivot.columns:
             pivot[col] = np.nan
     pivot["spectral_vs_mba_core_lraes"] = pivot["mba_core_spectral_osf_concat"] - pivot["mba_core_lraes"]
     pivot["spectral_vs_rc4_osf"] = pivot["mba_core_spectral_osf_concat"] - pivot["rc4_osf"]
     pivot["spectral_vs_rc4_fused"] = pivot["mba_core_spectral_osf_concat"] - pivot["mba_core_rc4_fused_concat"]
+    return pivot.sort_values("dataset").reset_index(drop=True)
+
+
+def _multitemplate_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
+    pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
+    for col in [
+        "baseline_ce",
+        "mba_core_lraes",
+        "rc4_osf",
+        "mba_core_rc4_fused_concat",
+        "mba_core_spectral_osf_concat",
+        "mba_core_zpia_top1_pool",
+        "mba_core_zpia_multidir_pool",
+        "mba_core_rc4_multiz_fused_concat",
+    ]:
+        if col not in pivot.columns:
+            pivot[col] = np.nan
+    pivot["zpia_multidir_vs_zpia_top1"] = pivot["mba_core_zpia_multidir_pool"] - pivot["mba_core_zpia_top1_pool"]
+    pivot["rc4_multiz_vs_mba_core_lraes"] = pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_lraes"]
+    pivot["rc4_multiz_vs_rc4_osf"] = pivot["mba_core_rc4_multiz_fused_concat"] - pivot["rc4_osf"]
+    pivot["rc4_multiz_vs_rc4_fused"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_rc4_fused_concat"]
+    )
+    pivot["rc4_multiz_vs_spectral_osf"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_spectral_osf_concat"]
+    )
     return pivot.sort_values("dataset").reset_index(drop=True)
 
 
@@ -276,28 +324,64 @@ def _overall_summary_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
         "rc4_osf",
         "mba_core_rc4_fused_concat",
         "mba_core_spectral_osf_concat",
+        "mba_core_zpia_top1_pool",
+        "mba_core_zpia_multidir_pool",
+        "mba_core_rc4_multiz_fused_concat",
     ]
     pivot_f1 = pivot_f1[[arm for arm in arms if arm in pivot_f1.columns]]
-    required = [arm for arm in arms if arm in pivot_f1.columns]
-    if required:
-        pivot_f1 = pivot_f1.dropna(subset=required)
     rows: List[Dict[str, object]] = []
     for arm in arms:
         if arm not in pivot_f1.columns:
             continue
         arm_vals = pd.to_numeric(pivot_f1[arm], errors="coerce")
-        baseline_vals = pd.to_numeric(pivot_f1.get("baseline_ce"), errors="coerce")
-        mba_core_vals = pd.to_numeric(pivot_f1.get("mba_core_lraes"), errors="coerce")
-        rc4_vals = pd.to_numeric(pivot_f1.get("rc4_osf"), errors="coerce")
+        arm_mask = arm_vals.notna()
+        baseline_vals = (
+            pd.to_numeric(pivot_f1["baseline_ce"], errors="coerce")
+            if "baseline_ce" in pivot_f1.columns
+            else None
+        )
+        mba_core_vals = (
+            pd.to_numeric(pivot_f1["mba_core_lraes"], errors="coerce")
+            if "mba_core_lraes" in pivot_f1.columns
+            else None
+        )
+        rc4_vals = (
+            pd.to_numeric(pivot_f1["rc4_osf"], errors="coerce")
+            if "rc4_osf" in pivot_f1.columns
+            else None
+        )
+        baseline_mask = arm_mask & baseline_vals.notna() if baseline_vals is not None else pd.Series(False, index=pivot_f1.index)
+        mba_core_mask = arm_mask & mba_core_vals.notna() if mba_core_vals is not None else pd.Series(False, index=pivot_f1.index)
+        rc4_mask = arm_mask & rc4_vals.notna() if rc4_vals is not None else pd.Series(False, index=pivot_f1.index)
         rows.append(
             {
                 "arm": arm,
-                "mean_f1_mean_over_datasets": float(arm_vals.mean()),
-                "mean_gain_vs_baseline": float((arm_vals - baseline_vals).mean()) if baseline_vals is not None else np.nan,
-                "win_count_vs_mba_core_lraes": int(((arm_vals - mba_core_vals) > 0).sum()) if mba_core_vals is not None else 0,
-                "win_count_vs_rc4_osf": int(((arm_vals - rc4_vals) > 0).sum()) if rc4_vals is not None else 0,
-                "mean_delta_vs_mba_core_lraes": float((arm_vals - mba_core_vals).mean()) if mba_core_vals is not None else np.nan,
-                "mean_delta_vs_rc4_osf": float((arm_vals - rc4_vals).mean()) if rc4_vals is not None else np.nan,
+                "n_datasets": int(arm_mask.sum()),
+                "n_common_vs_baseline": int(baseline_mask.sum()),
+                "n_common_vs_mba_core_lraes": int(mba_core_mask.sum()),
+                "n_common_vs_rc4_osf": int(rc4_mask.sum()),
+                "mean_f1_mean_over_datasets": float(arm_vals[arm_mask].mean()),
+                "mean_gain_vs_baseline": (
+                    float((arm_vals[baseline_mask] - baseline_vals[baseline_mask]).mean())
+                    if baseline_mask.any()
+                    else np.nan
+                ),
+                "win_count_vs_mba_core_lraes": (
+                    int(((arm_vals[mba_core_mask] - mba_core_vals[mba_core_mask]) > 0).sum())
+                    if mba_core_mask.any()
+                    else 0
+                ),
+                "win_count_vs_rc4_osf": (
+                    int(((arm_vals[rc4_mask] - rc4_vals[rc4_mask]) > 0).sum()) if rc4_mask.any() else 0
+                ),
+                "mean_delta_vs_mba_core_lraes": (
+                    float((arm_vals[mba_core_mask] - mba_core_vals[mba_core_mask]).mean())
+                    if mba_core_mask.any()
+                    else np.nan
+                ),
+                "mean_delta_vs_rc4_osf": (
+                    float((arm_vals[rc4_mask] - rc4_vals[rc4_mask]).mean()) if rc4_mask.any() else np.nan
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -312,6 +396,9 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
         "rc4_osf",
         "mba_core_rc4_fused_concat",
         "mba_core_spectral_osf_concat",
+        "mba_core_zpia_top1_pool",
+        "mba_core_zpia_multidir_pool",
+        "mba_core_rc4_multiz_fused_concat",
     ]:
         if col not in pivot.columns:
             pivot[col] = np.nan
@@ -328,6 +415,18 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot["mba_core_spectral_osf_concat_minus_mba_core_rc4_fused_concat"] = (
         pivot["mba_core_spectral_osf_concat"] - pivot["mba_core_rc4_fused_concat"]
     )
+    pivot["zpia_multidir_pool_minus_zpia_top1_pool"] = (
+        pivot["mba_core_zpia_multidir_pool"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_lraes"]
+    )
+    pivot["mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_rc4_fused_concat"]
+    )
+    pivot["mba_core_rc4_multiz_fused_concat_minus_mba_core_spectral_osf_concat"] = (
+        pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_spectral_osf_concat"]
+    )
     keep_cols = [
         "dataset",
         "mba_core_lraes_minus_baseline",
@@ -337,6 +436,10 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
         "mba_core_rc4_fused_concat_minus_rc4_osf",
         "mba_core_spectral_osf_concat_minus_mba_core_lraes",
         "mba_core_spectral_osf_concat_minus_mba_core_rc4_fused_concat",
+        "zpia_multidir_pool_minus_zpia_top1_pool",
+        "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes",
+        "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat",
+        "mba_core_rc4_multiz_fused_concat_minus_mba_core_spectral_osf_concat",
     ]
     out = pivot[keep_cols].copy()
     out = out.dropna(
@@ -346,8 +449,9 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
             "rc4_osf_minus_mba_feedback_lraes",
             "mba_core_rc4_fused_concat_minus_mba_core_lraes",
             "mba_core_rc4_fused_concat_minus_rc4_osf",
-            "mba_core_spectral_osf_concat_minus_mba_core_lraes",
-            "mba_core_spectral_osf_concat_minus_mba_core_rc4_fused_concat",
+            "zpia_multidir_pool_minus_zpia_top1_pool",
+            "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes",
+            "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat",
         ]
     )
     return out.sort_values("dataset").reset_index(drop=True)
@@ -372,7 +476,9 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
             or pd.isna(row["mba_feedback_lraes"])
             or pd.isna(row["rc4_osf"])
             or pd.isna(row["mba_core_rc4_fused_concat"])
-            or pd.isna(row["mba_core_spectral_osf_concat"])
+            or pd.isna(row["mba_core_zpia_top1_pool"])
+            or pd.isna(row["mba_core_zpia_multidir_pool"])
+            or pd.isna(row["mba_core_rc4_multiz_fused_concat"])
         ):
             continue
         ds = row["dataset"]
@@ -380,19 +486,29 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
         mba_feedback = float(row["mba_feedback_lraes"])
         rc4_osf = float(row["rc4_osf"])
         rc4_fused = float(row["mba_core_rc4_fused_concat"])
-        spectral = float(row["mba_core_spectral_osf_concat"])
+        spectral = float(row["mba_core_spectral_osf_concat"]) if not pd.isna(row["mba_core_spectral_osf_concat"]) else -np.inf
+        zpia_top1 = float(row["mba_core_zpia_top1_pool"])
+        zpia_multidir = float(row["mba_core_zpia_multidir_pool"])
+        rc4_multiz = float(row["mba_core_rc4_multiz_fused_concat"])
         delta_core = rc4_fused - mba_core
         delta_rc4 = rc4_fused - rc4_osf
-        delta_spectral_core = spectral - mba_core
-        delta_spectral_rc4 = spectral - rc4_fused
+        delta_spectral_core = spectral - mba_core if np.isfinite(spectral) else np.nan
+        delta_spectral_rc4 = spectral - rc4_fused if np.isfinite(spectral) else np.nan
+        delta_multiz_core = rc4_multiz - mba_core
+        delta_multiz_rc4 = rc4_multiz - rc4_fused
+        delta_zpia_multi = zpia_multidir - zpia_top1
         feedback_best = max(mba_feedback, rc4_osf)
         if max(
             abs(delta_core),
             abs(delta_rc4),
-            abs(delta_spectral_core),
-            abs(delta_spectral_rc4),
+            abs(delta_spectral_core) if np.isfinite(delta_spectral_core) else 0.0,
+            abs(delta_spectral_rc4) if np.isfinite(delta_spectral_rc4) else 0.0,
+            abs(delta_multiz_core),
+            abs(delta_multiz_rc4),
         ) < tie_eps:
             regime = "saturated_or_near_tie"
+        elif rc4_multiz > max(rc4_fused, spectral, mba_core, feedback_best) + tie_eps:
+            regime = "rc4_multiz_dominant"
         elif spectral > max(rc4_fused, mba_core, feedback_best) + tie_eps:
             regime = "spectral_osf_dominant"
         elif feedback_best > max(rc4_fused, mba_core) + tie_eps:
@@ -414,6 +530,9 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
                         ("rc4_osf", rc4_osf),
                         ("mba_core_rc4_fused_concat", rc4_fused),
                         ("mba_core_spectral_osf_concat", spectral),
+                        ("mba_core_zpia_top1_pool", zpia_top1),
+                        ("mba_core_zpia_multidir_pool", zpia_multidir),
+                        ("mba_core_rc4_multiz_fused_concat", rc4_multiz),
                     ],
                     key=lambda kv: kv[1],
                 )[0],
@@ -421,6 +540,9 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
                 "mba_core_rc4_fused_concat_minus_rc4_osf": delta_rc4,
                 "mba_core_spectral_osf_concat_minus_mba_core_lraes": delta_spectral_core,
                 "mba_core_spectral_osf_concat_minus_mba_core_rc4_fused_concat": delta_spectral_rc4,
+                "zpia_multidir_pool_minus_zpia_top1_pool": delta_zpia_multi,
+                "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes": delta_multiz_core,
+                "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat": delta_multiz_rc4,
                 "mba_feedback_lraes_minus_mba_core_lraes": mba_feedback - mba_core,
                 "rc4_osf_minus_mba_feedback_lraes": rc4_osf - mba_feedback,
             }
@@ -436,6 +558,9 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
                 "mba_core_rc4_fused_concat_minus_rc4_osf",
                 "mba_core_spectral_osf_concat_minus_mba_core_lraes",
                 "mba_core_spectral_osf_concat_minus_mba_core_rc4_fused_concat",
+                "zpia_multidir_pool_minus_zpia_top1_pool",
+                "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes",
+                "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat",
                 "mba_feedback_lraes_minus_mba_core_lraes",
                 "rc4_osf_minus_mba_feedback_lraes",
             ]
@@ -448,6 +573,7 @@ def main() -> None:
     parser.add_argument("--root", type=str, default=str(DEFAULT_ROOT))
     parser.add_argument("--locked-root", type=str, default=str(DEFAULT_LOCKED_ROOT))
     parser.add_argument("--step1-root", type=str, default=str(DEFAULT_STEP1_ROOT))
+    parser.add_argument("--spectral-root", type=str, default=str(DEFAULT_SPECTRAL_ROOT))
     parser.add_argument("--ref-root", type=str, default=str(DEFAULT_REF_ROOT))
     parser.add_argument("--baseline-drift-tol", type=float, default=1e-4)
     args = parser.parse_args()
@@ -455,6 +581,7 @@ def main() -> None:
     root = Path(args.root).resolve()
     locked_root = Path(args.locked_root).resolve()
     step1_root = Path(args.step1_root).resolve()
+    spectral_root = Path(args.spectral_root).resolve()
     ref_root = Path(args.ref_root).resolve()
     summary_root = root / "_summary"
     summary_root.mkdir(parents=True, exist_ok=True)
@@ -469,9 +596,17 @@ def main() -> None:
         ref_frames.append(locked_per_seed_df)
         loaded_arms.update(locked_per_seed_df["arm"].astype(str).unique().tolist())
     if step1_root != root:
-        step1_per_seed_df = _load_reference_per_seed_rows(step1_root, {"mba_core_rc4_fused_concat"})
+        step1_per_seed_df = _try_load_reference_per_seed_rows(step1_root, {"mba_core_rc4_fused_concat"})
         ref_frames.append(step1_per_seed_df)
-        loaded_arms.update(step1_per_seed_df["arm"].astype(str).unique().tolist())
+        if not step1_per_seed_df.empty:
+            loaded_arms.update(step1_per_seed_df["arm"].astype(str).unique().tolist())
+    if spectral_root != root:
+        spectral_per_seed_df = _try_load_reference_per_seed_rows(
+            spectral_root, {"mba_core_spectral_osf_concat"}
+        )
+        ref_frames.append(spectral_per_seed_df)
+        if not spectral_per_seed_df.empty:
+            loaded_arms.update(spectral_per_seed_df["arm"].astype(str).unique().tolist())
 
     ref_frames = [df for df in ref_frames if not df.empty]
     if ref_frames:
@@ -485,6 +620,7 @@ def main() -> None:
     gap_view_df = _gap_attribution_view(dataset_summary_df, baseline_drift_df, mba_repro_df)
     step1_compare_df = _mba_core_rc4_vs_locked(dataset_summary_df)
     spectral_compare_df = _spectral_osf_vs_refs(dataset_summary_df)
+    multitemplate_compare_df = _multitemplate_vs_refs(dataset_summary_df)
     overall_summary_df = _overall_summary_table(dataset_summary_df)
     per_dataset_gap_df = _per_dataset_gap_table(dataset_summary_df)
     regime_taxonomy_df = _regime_taxonomy_table(dataset_summary_df)
@@ -499,6 +635,7 @@ def main() -> None:
     step1_compare_path = summary_root / "mba_core_rc4_vs_locked.csv"
     step1_gap_path = summary_root / "step1_gap_view.csv"
     spectral_compare_path = summary_root / "spectral_osf_vs_refs.csv"
+    multitemplate_compare_path = summary_root / "multi_template_osf_vs_refs.csv"
     final_table1_path = summary_root / "table1_overall_mean_and_winrate.csv"
     final_table2_path = summary_root / "table2_per_dataset_gap_attribution.csv"
     final_table3_path = summary_root / "table3_regime_taxonomy.csv"
@@ -513,6 +650,7 @@ def main() -> None:
     step1_compare_df.to_csv(step1_compare_path, index=False)
     gap_view_df.to_csv(step1_gap_path, index=False)
     spectral_compare_df.to_csv(spectral_compare_path, index=False)
+    multitemplate_compare_df.to_csv(multitemplate_compare_path, index=False)
     overall_summary_df.to_csv(final_table1_path, index=False)
     per_dataset_gap_df.to_csv(final_table2_path, index=False)
     regime_taxonomy_df.to_csv(final_table3_path, index=False)
@@ -527,6 +665,7 @@ def main() -> None:
     print(step1_compare_path)
     print(step1_gap_path)
     print(spectral_compare_path)
+    print(multitemplate_compare_path)
     print(final_table1_path)
     print(final_table2_path)
     print(final_table3_path)
