@@ -35,6 +35,7 @@ from utils.evaluators import (
     fit_eval_patchtst,
     fit_eval_patchtst_weighted_aug_ce,
     fit_eval_resnet1d_adaptive_aug_ce,
+    fit_eval_resnet1d_progressive_aug_ce,
     fit_eval_resnet1d,
     fit_eval_resnet1d_weighted_aug_ce,
     fit_eval_timesnet,
@@ -316,6 +317,29 @@ def _summarize_multitemplate_audit_rows(audit_rows: List[Dict[str, object]]) -> 
         "top_template_concentration": float(out.get("top_template_concentration", 0.0)),
         "u_perp_norm_ratio_mean": float(out.get("u_perp_norm_ratio_mean", 0.0)),
         "u_perp_zero_rate": float(out.get("u_perp_zero_rate", 0.0)),
+    }
+
+
+def _summarize_progressive_audit_rows(audit_rows: List[Dict[str, object]]) -> Dict[str, float]:
+    if not audit_rows:
+        return {
+            "progressive_useful_zpia_mean": 0.0,
+            "progressive_useful_osf_mean": 0.0,
+            "progressive_mode_zpia_rate": 0.0,
+            "progressive_mode_osf_rate": 0.0,
+            "progressive_mode_conservative_rate": 0.0,
+        }
+    df = pd.DataFrame(audit_rows)
+    mode = df["mode"].astype(str) if "mode" in df.columns else pd.Series([], dtype=str)
+    useful = pd.to_numeric(df.get("useful"), errors="coerce").fillna(0.0) if "useful" in df.columns else pd.Series([], dtype=float)
+    zpia_mask = mode.isin(["zpia_top1", "conservative_zpia"]) if not mode.empty else pd.Series([], dtype=bool)
+    osf_mask = mode == "weak_osf" if not mode.empty else pd.Series([], dtype=bool)
+    return {
+        "progressive_useful_zpia_mean": float(useful[zpia_mask].mean()) if len(useful) and zpia_mask.any() else 0.0,
+        "progressive_useful_osf_mean": float(useful[osf_mask].mean()) if len(useful) and osf_mask.any() else 0.0,
+        "progressive_mode_zpia_rate": float((mode == "zpia_top1").mean()) if not mode.empty else 0.0,
+        "progressive_mode_osf_rate": float(osf_mask.mean()) if not mode.empty else 0.0,
+        "progressive_mode_conservative_rate": float((mode == "conservative_zpia").mean()) if not mode.empty else 0.0,
     }
 
 
@@ -1406,6 +1430,400 @@ def _build_rc4_multiz_fused_aug_out(
     )
 
 
+def _template_response_diagnostics(
+    *,
+    X_train_z: np.ndarray,
+    zpia_bank: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    responses = np.abs(np.asarray(X_train_z, dtype=np.float64) @ np.asarray(zpia_bank, dtype=np.float64).T)
+    n, k = responses.shape
+    top1_ids = np.zeros((n,), dtype=np.int64)
+    top2_ids = np.zeros((n,), dtype=np.int64)
+    r1 = np.zeros((n,), dtype=np.float64)
+    r2 = np.zeros((n,), dtype=np.float64)
+    for i in range(n):
+        order = np.lexsort((np.arange(k), -responses[i]))
+        top1_ids[i] = int(order[0])
+        top2_ids[i] = int(order[1]) if k > 1 else int(order[0])
+        r1[i] = float(responses[i, top1_ids[i]])
+        r2[i] = float(responses[i, top2_ids[i]]) if k > 1 else 0.0
+    confidence = (r1 - r2) / (r1 + 1e-12)
+    return {
+        "top1_ids": top1_ids,
+        "top2_ids": top2_ids,
+        "top1_response": r1,
+        "top2_response": r2,
+        "template_confidence": confidence,
+    }
+
+
+def _build_progressive_round_aug_out(
+    *,
+    args,
+    seed: int,
+    round_idx: int,
+    model_obj,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    zpia_bank: np.ndarray,
+    zpia_meta: Dict[str, object],
+    state: Dict[str, object],
+    batch_size: int,
+) -> Dict[str, object]:
+    per_round_multiplier = int(args.per_round_multiplier)
+    if per_round_multiplier <= 0 or per_round_multiplier % 2 != 0:
+        raise ValueError("--per-round-multiplier must be a positive even integer.")
+    eta_safe = None if args.disable_safe_step else 0.5
+    allow_osf = args.algo in {
+        "progressive_zpia_osf",
+        "random_progressive_osf",
+        "progressive_zpia_osf_highdose",
+    }
+
+    p_osf_used = float(state.get("p_osf", 0.0))
+    beta_used = float(state.get("beta", getattr(args, "progressive_osf_beta_init", 0.25)))
+    gamma_scale_used = float(state.get("gamma_scale", 1.0))
+    acceptance_ema = np.asarray(state.get("anchor_acceptance_ema"), dtype=np.float64)
+    if acceptance_ema.shape[0] != len(y_train):
+        acceptance_ema = np.ones((len(y_train),), dtype=np.float64)
+
+    orig_margins = _score_aug_margins(
+        model_obj=model_obj,
+        X_aug=X_train_raw,
+        y_aug=y_train,
+        device=args.device,
+        batch_size=batch_size,
+    )
+    if orig_margins.shape[0] != len(y_train):
+        orig_margins = np.zeros((len(y_train),), dtype=np.float64)
+
+    tpl_diag = _template_response_diagnostics(X_train_z=X_train_z, zpia_bank=zpia_bank)
+    tpl_conf = tpl_diag["template_confidence"]
+    trigger_q = float(getattr(args, "progressive_trigger_quantile", 0.25))
+    tpl_thresh = float(np.quantile(tpl_conf, trigger_q)) if tpl_conf.size else 0.0
+    margin_thresh = float(np.quantile(orig_margins, trigger_q)) if orig_margins.size else 0.0
+    eligible_real = (tpl_conf <= tpl_thresh) | (orig_margins <= margin_thresh)
+
+    rng = np.random.default_rng(int(seed) + 10007 * (int(round_idx) + 1))
+    if args.algo == "random_progressive_osf":
+        eligible = np.zeros_like(eligible_real, dtype=bool)
+        n_eligible = int(eligible_real.sum())
+        if n_eligible > 0:
+            chosen = rng.choice(len(eligible), size=n_eligible, replace=False)
+            eligible[chosen] = True
+    else:
+        eligible = eligible_real.astype(bool)
+
+    osf_anchor = np.zeros_like(eligible, dtype=bool)
+    if allow_osf and eligible.any() and p_osf_used > 0.0:
+        osf_anchor[eligible] = rng.random(int(eligible.sum())) < p_osf_used
+
+    conservative_threshold = 0.5
+    enable_conservative = not bool(getattr(args, "progressive_disable_conservative", False))
+    conservative_anchor = (acceptance_ema < conservative_threshold) if enable_conservative else np.zeros_like(eligible, dtype=bool)
+    # If an anchor has repeatedly rejected aug samples, be conservative first.
+    osf_anchor = osf_anchor & (~conservative_anchor)
+
+    args_slot = _clone_args_with_updates(
+        args,
+        algo="zpia",
+        multiplier=per_round_multiplier,
+        multi_template_pairs=1,
+        pia_gamma=float(args.pia_gamma) * gamma_scale_used,
+    )
+    lraes_out = None
+    candidate_rows = None
+    if allow_osf:
+        args_lraes = _clone_args_with_updates(
+            args,
+            algo="lraes",
+            multiplier=per_round_multiplier,
+            pia_gamma=float(args.pia_gamma),
+        )
+        lraes_out = _build_act_realized_augmentations(
+            args=args_lraes,
+            seed=int(seed) + 211 * (int(round_idx) + 1),
+            X_train_z=X_train_z,
+            y_train=y_train,
+            train_recs=train_recs,
+            mean_log=mean_log,
+            algo_override="lraes",
+            engine_id="progressive_lraes",
+        )
+        candidate_rows = list(lraes_out.get("audit_rows", []))
+
+    slots = _build_top_response_template_slots(
+        args=args_slot,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        train_recs=train_recs,
+        zpia_bank=zpia_bank,
+        candidate_rows=candidate_rows,
+        top1_only=True,
+        eta_safe=eta_safe,
+    )
+
+    z_final = np.asarray(slots["z_aug"], dtype=np.float64).copy()
+    W_slots = np.asarray(slots["W_slots"], dtype=np.float64).copy()
+    slot_rows = [dict(row) for row in slots["audit_rows"]]
+    modes: List[str] = []
+    osf_slot_indices: List[int] = []
+    for i, row in enumerate(slot_rows):
+        anchor_idx = int(row.get("anchor_index", -1))
+        if anchor_idx < 0:
+            mode = "zpia_top1"
+        elif bool(osf_anchor[anchor_idx]):
+            mode = "weak_osf"
+            osf_slot_indices.append(i)
+        elif bool(conservative_anchor[anchor_idx]):
+            mode = "conservative_zpia"
+            # Conservative zPIA uses the same top-response template at half step.
+            z_orig = np.asarray(X_train_z[anchor_idx], dtype=np.float64)
+            W_slots[i] *= 0.5
+            z_final[i] = z_orig + W_slots[i]
+            row["gamma_used"] = float(row.get("gamma_used", 0.0)) * 0.5
+            row["safe_radius_ratio"] = float(row.get("safe_radius_ratio", 0.0)) * 0.5
+            row["zpia_delta_norm"] = float(np.linalg.norm(W_slots[i]))
+        else:
+            mode = "zpia_top1"
+        modes.append(mode)
+
+    if osf_slot_indices:
+        if lraes_out is None:
+            raise RuntimeError("OSF slots were selected but no LRAES candidate stream was built.")
+        if len(lraes_out["tid_aug"]) != len(slots["tid_aug"]):
+            raise ValueError("progressive OSF requires aligned LRAES and zPIA slot counts.")
+        if not np.array_equal(lraes_out["tid_aug"], slots["tid_aug"]):
+            raise ValueError("progressive OSF requires aligned LRAES and zPIA slot tids.")
+        if not np.array_equal(lraes_out["y_aug"], slots["y_aug"]):
+            raise ValueError("progressive OSF requires aligned LRAES and zPIA slot labels.")
+
+        z_o = torch.from_numpy(np.stack([lraes_out["tid_to_rec"][tid].z for tid in lraes_out["tid_aug"]]))
+        z_l = torch.from_numpy(np.asarray(lraes_out["z_aug"], dtype=np.float64))
+        W = torch.from_numpy(W_slots).to(dtype=z_o.dtype)
+        U = z_l - z_o
+        shared_margin: List[float] = []
+        for idx, (row_l, row_z) in enumerate(zip(lraes_out["audit_rows"], slot_rows)):
+            margin_l = float(row_l.get("manifold_margin", np.nan))
+            margin_z = float(row_z.get("manifold_margin", np.nan))
+            if (not np.isfinite(margin_l)) or (not np.isfinite(margin_z)):
+                raise ValueError(f"progressive OSF requires finite manifold_margin at slot {idx}.")
+            shared_margin.append(min(margin_l, margin_z))
+        r_shared_np = float(eta_safe) * np.asarray(shared_margin, dtype=np.float64)
+        r_shared = torch.from_numpy(r_shared_np).to(dtype=z_o.dtype).unsqueeze(-1)
+        proj_out = _project_rank1_structure_out(W=W, U=U)
+        rc4 = _apply_rc4_safe_governance(
+            W=W,
+            U=U,
+            U_perp=proj_out["U_perp"],
+            r_shared=r_shared,
+            alpha=float(args.osf_alpha),
+            beta=beta_used,
+            kappa=float(getattr(args, "osf_kappa", 1.0)),
+        )
+        rc4["norm_proj"] = torch.norm(proj_out["proj"], p=2, dim=-1, keepdim=True)
+        z_osf = z_o + rc4["delta_z"]
+        for i in osf_slot_indices:
+            z_final[i] = z_osf[i].numpy()
+            row = slot_rows[i]
+            row_l = lraes_out["audit_rows"][i]
+            final_norm = float(rc4["norm_final"][i].item())
+            shared_r = float(r_shared_np[i])
+            if rc4["zero_perp_mask"][i].item():
+                risk_status = "zero_perp"
+            elif rc4["clipped_mask"][i].item():
+                risk_status = "clipped"
+            else:
+                risk_status = "restored"
+            norm_u = float(rc4["norm_u"][i].item())
+            norm_u_perp = float(rc4["norm_u_perp"][i].item())
+            row.update(
+                {
+                    "lraes_direction_id": int(row_l.get("direction_id", -1)),
+                    "lraes_sign": float(row_l.get("sign", 0.0)),
+                    "lraes_gamma_used": float(row_l.get("gamma_used", 0.0)),
+                    "lraes_delta_norm": norm_u,
+                    "proj_on_template_norm": float(rc4["norm_proj"][i].item()),
+                    "u_perp_norm": norm_u_perp,
+                    "u_perp_norm_ratio": float(norm_u_perp / (norm_u + 1e-12)),
+                    "osf_r_shared": shared_r,
+                    "osf_alpha_eff": float(rc4["alpha_eff"][i].item()),
+                    "osf_structure_norm_raw": float(rc4["norm_delta_s_raw"][i].item()),
+                    "osf_structure_norm_eff": float(rc4["norm_delta_s"][i].item()),
+                    "osf_risk_norm_restored": float(rc4["norm_u_restored"][i].item()),
+                    "osf_risk_budget": float(rc4["r_risk"][i].item()),
+                    "osf_risk_scale": float(rc4["risk_scale"][i].item()),
+                    "osf_final_norm": final_norm,
+                    "osf_structure_overflow": bool(rc4["structure_overflow_mask"][i].item()),
+                    "osf_risk_status": risk_status,
+                    "safe_radius_ratio": float(final_norm / (shared_r + 1e-12)) if shared_r > 0.0 else 0.0,
+                    "manifold_margin": float(shared_margin[i]),
+                }
+            )
+
+    for i, row in enumerate(slot_rows):
+        anchor_idx = int(row.get("anchor_index", -1))
+        row.update(
+            {
+                "round": int(round_idx) + 1,
+                "mode": modes[i],
+                "eligible": bool(eligible[anchor_idx]) if 0 <= anchor_idx < len(eligible) else False,
+                "template_id": int(row.get("zpia_template_id", -1)),
+                "template_confidence": float(tpl_conf[anchor_idx]) if 0 <= anchor_idx < len(tpl_conf) else 0.0,
+                "orig_margin": float(orig_margins[anchor_idx]) if 0 <= anchor_idx < len(orig_margins) else 0.0,
+                "anchor_acceptance_ema": float(acceptance_ema[anchor_idx]) if 0 <= anchor_idx < len(acceptance_ema) else 1.0,
+                "gamma_used": float(row.get("gamma_used", 0.0)),
+                "beta_used": beta_used if modes[i] == "weak_osf" else 0.0,
+                "osf_risk_status": str(row.get("osf_risk_status", "none")),
+            }
+        )
+        shared_r_default = float(eta_safe) * float(row.get("manifold_margin", 0.0)) if eta_safe is not None else 0.0
+        row.setdefault("lraes_direction_id", -1)
+        row.setdefault("lraes_sign", 0.0)
+        row.setdefault("lraes_gamma_used", 0.0)
+        row.setdefault("lraes_delta_norm", 0.0)
+        row.setdefault("proj_on_template_norm", 0.0)
+        row.setdefault("u_perp_norm", 0.0)
+        row.setdefault("u_perp_norm_ratio", 0.0)
+        row.setdefault("osf_r_shared", shared_r_default)
+        row.setdefault("osf_alpha_eff", 0.0)
+        row.setdefault("osf_structure_norm_raw", float(row.get("zpia_delta_norm", 0.0)))
+        row.setdefault("osf_structure_norm_eff", float(row.get("zpia_delta_norm", 0.0)))
+        row.setdefault("osf_risk_norm_restored", 0.0)
+        row.setdefault("osf_risk_budget", 0.0)
+        row.setdefault("osf_risk_scale", 0.0)
+        row.setdefault("osf_final_norm", float(row.get("zpia_delta_norm", 0.0)))
+        row.setdefault("osf_structure_overflow", False)
+
+    direction_meta = {
+        "bank_source": str(args.algo),
+        "zpia_meta": zpia_meta,
+        "template_selection": "anchor_top_abs_response",
+        "progressive_policy": str(args.algo),
+    }
+    aug_out = _materialize_z_aug_out(
+        z_aug=z_final.astype(np.float32),
+        y_aug=slots["y_aug"],
+        tid_aug=slots["tid_aug"],
+        audit_rows=slot_rows,
+        train_recs=train_recs,
+        mean_log=mean_log,
+        direction_bank_meta=direction_meta,
+        effective_k=int(zpia_bank.shape[0]),
+        eta_safe=eta_safe,
+        algo_name=str(args.algo),
+        engine_id=str(args.algo),
+        extra_meta={
+            "effective_k_zpia": int(zpia_bank.shape[0]),
+            "multi_template_pairs": 1,
+        },
+    )
+
+    aug_margins = _score_aug_margins(
+        model_obj=model_obj,
+        X_aug=aug_out.get("X_aug_raw"),
+        y_aug=aug_out.get("y_aug_np"),
+        device=args.device,
+        batch_size=batch_size,
+    )
+    margin_upper = float(getattr(args, "progressive_margin_upper", 5.0))
+    accepted = aug_margins > 0.0
+    useful = (aug_margins > 0.0) & (aug_margins < margin_upper)
+    easy = aug_margins >= margin_upper
+    for i, row in enumerate(aug_out.get("audit_rows", [])):
+        m = float(aug_margins[i]) if i < len(aug_margins) else 0.0
+        row["aug_margin"] = m
+        row["accepted"] = bool(accepted[i]) if i < len(accepted) else False
+        row["useful"] = bool(useful[i]) if i < len(useful) else False
+        row["easy"] = bool(easy[i]) if i < len(easy) else False
+
+    ema_decay = 0.7
+    rows_df = pd.DataFrame(aug_out.get("audit_rows", []))
+    if not rows_df.empty and "anchor_index" in rows_df.columns:
+        for anchor_idx, group in rows_df.groupby("anchor_index"):
+            idx = int(anchor_idx)
+            if 0 <= idx < acceptance_ema.shape[0]:
+                anchor_acc = pd.to_numeric(group["accepted"], errors="coerce").fillna(0.0).mean()
+                acceptance_ema[idx] = ema_decay * acceptance_ema[idx] + (1.0 - ema_decay) * float(anchor_acc)
+    state["anchor_acceptance_ema"] = acceptance_ema
+
+    mode_arr = np.asarray(modes, dtype=object)
+    osf_mask = mode_arr == "weak_osf"
+    conservative_mask = mode_arr == "conservative_zpia"
+    zpia_mask = mode_arr == "zpia_top1"
+    zpia_family_mask = ~osf_mask
+    def _mask_mean(values: np.ndarray, mask: np.ndarray) -> float:
+        return float(np.mean(values[mask])) if values.size and np.any(mask) else 0.0
+
+    acc_zpia = _mask_mean(accepted.astype(np.float64), zpia_family_mask)
+    acc_osf = _mask_mean(accepted.astype(np.float64), osf_mask)
+    useful_zpia = _mask_mean(useful.astype(np.float64), zpia_family_mask)
+    useful_osf = _mask_mean(useful.astype(np.float64), osf_mask)
+    easy_zpia = _mask_mean(easy.astype(np.float64), zpia_family_mask)
+    easy_osf = _mask_mean(easy.astype(np.float64), osf_mask)
+
+    if allow_osf and np.any(osf_mask):
+        diff = useful_osf - useful_zpia
+        eta_p = 0.2
+        p_next = float(np.clip(p_osf_used + eta_p * diff, 0.0, float(args.progressive_osf_p_max)))
+        if diff > 0.05:
+            beta_next = beta_used * 1.1
+        elif diff < -0.05:
+            beta_next = beta_used * 0.8
+        else:
+            beta_next = beta_used
+        state["p_osf"] = float(np.clip(p_next, 0.0, float(args.progressive_osf_p_max)))
+        state["beta"] = float(np.clip(beta_next, float(args.progressive_osf_beta_min), float(args.progressive_osf_beta_max)))
+    elif allow_osf:
+        state["p_osf"] = float(np.clip(p_osf_used * 0.95, 0.0, float(args.progressive_osf_p_max)))
+
+    gamma_next = gamma_scale_used
+    if acc_zpia < 0.5:
+        gamma_next *= 0.9
+    elif easy_zpia > 0.7:
+        gamma_next *= 1.05
+    state["gamma_scale"] = float(np.clip(gamma_next, 0.5, 1.25))
+
+    cumulative_count = int(state.get("cumulative_aug_count", 0)) + int(len(aug_out.get("y_aug_np", [])))
+    state["cumulative_aug_count"] = cumulative_count
+
+    eligible_anchor_rate = float(np.mean(eligible)) if eligible.size else 0.0
+    osf_given_eligible_rate = float(np.mean(osf_anchor[eligible])) if eligible.any() else 0.0
+    trace_row = {
+        "round": int(round_idx) + 1,
+        "p_osf": p_osf_used,
+        "beta": beta_used,
+        "gamma_scale": gamma_scale_used,
+        "eligible_anchor_rate": eligible_anchor_rate,
+        "osf_given_eligible_rate": osf_given_eligible_rate,
+        "actual_osf_rate": float(np.mean(osf_mask)) if mode_arr.size else 0.0,
+        "n_zpia": int(np.sum(zpia_mask)),
+        "n_osf": int(np.sum(osf_mask)),
+        "n_conservative": int(np.sum(conservative_mask)),
+        "acc_zpia": acc_zpia,
+        "acc_osf": acc_osf,
+        "useful_zpia": useful_zpia,
+        "useful_osf": useful_osf,
+        "easy_zpia_rate": easy_zpia,
+        "easy_osf_rate": easy_osf,
+        "margin_orig_mean": float(np.mean(orig_margins)) if orig_margins.size else 0.0,
+        "margin_aug_mean": float(np.mean(aug_margins)) if aug_margins.size else 0.0,
+        "active_aug_count": 0,
+        "cumulative_aug_count": cumulative_count,
+        "aug_exposure_count": 0,
+    }
+    return {
+        "X_aug": aug_out.get("X_aug_raw"),
+        "y_aug": aug_out.get("y_aug_np"),
+        "audit_rows": aug_out.get("audit_rows", []),
+        "trace_row": trace_row,
+        "aug_out": aug_out,
+    }
+
+
 def _run_analysis_probe(
     *,
     args,
@@ -1636,6 +2054,169 @@ def _run_act_zpia_template_pool_pipeline(
             "X_aug_raw": np.stack([trial["x"] for trial in aug_out["aug_trials"][:20]])
             if aug_out["aug_trials"]
             else None,
+        },
+    }
+
+
+def _run_act_progressive_pipeline(
+    *,
+    args,
+    seed: int,
+    X_train_raw: np.ndarray,
+    y_train: np.ndarray,
+    X_val_raw: Optional[np.ndarray],
+    y_val: Optional[np.ndarray],
+    X_test_raw: np.ndarray,
+    y_test: np.ndarray,
+    X_train_z: np.ndarray,
+    train_recs: List[TrialRecord],
+    mean_log: np.ndarray,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int,
+) -> Dict[str, object]:
+    print("Fitting baseline...")
+    res_base = _fit_host_model(
+        args=args,
+        X_tr=X_train_raw,
+        y_tr=y_train,
+        X_val_raw=X_val_raw,
+        y_val=y_val,
+        X_test_raw=X_test_raw,
+        y_test=y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        return_model_obj=False,
+        loader_seed=seed,
+    )
+
+    bank_out = _build_direction_bank_for_args(
+        args=_clone_args_with_updates(args, algo="zpia"),
+        seed=seed,
+        X_train_z=X_train_z,
+        y_train=y_train,
+        algo_override="zpia",
+    )
+    zpia_bank = np.asarray(bank_out["bank"], dtype=np.float64)
+    zpia_meta = dict(bank_out["meta"])
+    if zpia_bank.ndim != 2 or zpia_bank.shape[0] <= 0:
+        raise ValueError(f"{args.algo} requires a non-empty zPIA direction bank.")
+
+    state: Dict[str, object] = {
+        "p_osf": 0.0
+        if args.algo in {
+            "progressive_zpia_only",
+            "progressive_zpia_only_pure",
+            "progressive_zpia_pure_cumulative",
+            "progressive_zpia_exposure_matched",
+        }
+        else float(args.progressive_osf_p_init),
+        "beta": float(args.progressive_osf_beta_init),
+        "gamma_scale": 1.0,
+        "anchor_acceptance_ema": np.ones((len(y_train),), dtype=np.float64),
+        "cumulative_aug_count": 0,
+    }
+
+    def _round_callback(ctx: Dict[str, object]) -> Dict[str, object]:
+        return _build_progressive_round_aug_out(
+            args=args,
+            seed=seed,
+            round_idx=int(ctx["round"]),
+            model_obj=ctx["model"],
+            X_train_raw=X_train_raw,
+            y_train=y_train,
+            X_train_z=X_train_z,
+            train_recs=train_recs,
+            mean_log=mean_log,
+            zpia_bank=zpia_bank,
+            zpia_meta=zpia_meta,
+            state=state,
+            batch_size=batch_size,
+        )
+
+    print(
+        f"Fitting {args.algo} progressive model "
+        f"(warmup={args.progressive_warmup_epochs}, rounds={args.progressive_rounds}, "
+        f"round_epochs={args.progressive_round_epochs})..."
+    )
+    res_act = fit_eval_resnet1d_progressive_aug_ce(
+        X_train_raw,
+        y_train,
+        X_val_raw,
+        y_val,
+        X_test_raw,
+        y_test,
+        round_callback=_round_callback,
+        rounds=int(args.progressive_rounds),
+        warmup_epochs=int(args.progressive_warmup_epochs),
+        round_epochs=int(args.progressive_round_epochs),
+        pool_keep_rounds=int(args.progressive_pool_keep_rounds),
+        lr=lr,
+        batch_size=batch_size,
+        device=args.device,
+        loader_seed=seed,
+    )
+
+    audit_rows = list(res_act.get("progressive_audit_rows", []))
+    trace_rows = list(res_act.get("progressive_trace", []))
+    bridge_cols = [
+        "transport_error_fro",
+        "transport_error_logeuc",
+        "bridge_cond_A",
+        "metric_preservation_error",
+    ]
+    avg_bridge: Dict[str, float] = {}
+    if audit_rows:
+        df_audit = pd.DataFrame(audit_rows)
+        for col in bridge_cols:
+            if col in df_audit.columns:
+                vals = pd.to_numeric(df_audit[col], errors="coerce").dropna()
+                avg_bridge[col] = float(vals.mean()) if not vals.empty else 0.0
+    progressive_summary = _summarize_progressive_audit_rows(audit_rows)
+
+    return {
+        "res_base": res_base,
+        "res_act": res_act,
+        "avg_bridge": avg_bridge,
+        "safe_radius_ratio_mean": float(
+            pd.to_numeric(pd.DataFrame(audit_rows).get("safe_radius_ratio"), errors="coerce").dropna().mean()
+        ) if audit_rows and "safe_radius_ratio" in pd.DataFrame(audit_rows).columns else 1.0,
+        "manifold_margin_mean": float(
+            pd.to_numeric(pd.DataFrame(audit_rows).get("manifold_margin"), errors="coerce").dropna().mean()
+        ) if audit_rows and "manifold_margin" in pd.DataFrame(audit_rows).columns else 0.0,
+        "host_geom_cosine_mean": 0.0,
+        "host_conflict_rate": 0.0,
+        "candidate_total_count": int(len(audit_rows)),
+        "aug_total_count": int(len(audit_rows)),
+        "effective_k": int(zpia_bank.shape[0]),
+        "effective_k_zpia": int(zpia_bank.shape[0]),
+        "direction_bank_meta": {
+            "bank_source": str(args.algo),
+            "zpia_meta": zpia_meta,
+            "template_selection": "anchor_top_abs_response",
+            "progressive_policy": str(args.algo),
+        },
+        "audit_rows": audit_rows,
+        "progressive_trace": trace_rows,
+        "progressive_rounds": int(args.progressive_rounds),
+        "per_round_multiplier": int(args.per_round_multiplier),
+        "progressive_cumulative_aug_count": int(state.get("cumulative_aug_count", len(audit_rows))),
+        "progressive_active_aug_count_mean": float(res_act.get("progressive_active_aug_count_mean", 0.0)),
+        "progressive_aug_exposure_count": int(res_act.get("progressive_aug_exposure_count", 0)),
+        "progressive_optimizer_steps": int(res_act.get("progressive_optimizer_steps", 0)),
+        "progressive_osf_p_final": float(state.get("p_osf", 0.0)),
+        "progressive_beta_final": float(state.get("beta", 0.0)),
+        "progressive_gamma_scale_final": float(state.get("gamma_scale", 1.0)),
+        **progressive_summary,
+        **_summarize_osf_audit_rows(audit_rows),
+        "viz_payload": {
+            "Z_orig": X_train_z,
+            "Z_aug": np.empty((0, X_train_z.shape[1]), dtype=np.float32),
+            "y_aug": np.empty((0,), dtype=np.int64),
+            "X_aug_raw": None,
         },
     }
 
@@ -2307,7 +2888,33 @@ def run_experiment(dataset_name, args):
                 y_val = np.asarray([record.y for record in val_recs], dtype=np.int64)
 
             X_train_z = np.stack([record.z for record in train_recs])
-            if args.algo == "zpia_top1_pool":
+            if args.algo in {
+                "progressive_zpia_only",
+                "progressive_zpia_osf",
+                "random_progressive_osf",
+                "progressive_zpia_only_pure",
+                "progressive_zpia_pure_cumulative",
+                "progressive_zpia_exposure_matched",
+                "progressive_zpia_osf_highdose",
+            }:
+                pipeline_out = _run_act_progressive_pipeline(
+                    args=args,
+                    seed=seed,
+                    X_train_raw=X_train_raw,
+                    y_train=y_train,
+                    X_val_raw=X_val_raw,
+                    y_val=y_val,
+                    X_test_raw=X_test_raw,
+                    y_test=y_test,
+                    X_train_z=X_train_z,
+                    train_recs=train_recs,
+                    mean_log=mean_log,
+                    epochs=epochs,
+                    lr=lr,
+                    batch_size=batch_size,
+                    patience=patience,
+                )
+            elif args.algo == "zpia_top1_pool":
                 pipeline_out = _run_act_zpia_template_pool_pipeline(
                     args=args,
                     seed=seed,
@@ -2611,6 +3218,80 @@ def run_experiment(dataset_name, args):
                             "osf_risk_clipped_rate": float(pipeline_out.get("osf_risk_clipped_rate", 0.0)),
                         }
                     )
+            if args.algo in {
+                "progressive_zpia_only",
+                "progressive_zpia_osf",
+                "random_progressive_osf",
+                "progressive_zpia_only_pure",
+                "progressive_zpia_pure_cumulative",
+                "progressive_zpia_exposure_matched",
+                "progressive_zpia_osf_highdose",
+            }:
+                summary.update(
+                    {
+                        "utilization_mode": "progressive_rolling_core_concat",
+                        "core_training_mode": "continuous_rounds",
+                        "progressive_rounds": int(pipeline_out.get("progressive_rounds", args.progressive_rounds)),
+                        "per_round_multiplier": int(
+                            pipeline_out.get("per_round_multiplier", args.per_round_multiplier)
+                        ),
+                        "progressive_cumulative_aug_count": int(
+                            pipeline_out.get("progressive_cumulative_aug_count", 0)
+                        ),
+                        "progressive_active_aug_count_mean": float(
+                            pipeline_out.get("progressive_active_aug_count_mean", 0.0)
+                        ),
+                        "progressive_aug_exposure_count": int(
+                            pipeline_out.get("progressive_aug_exposure_count", 0)
+                        ),
+                        "progressive_optimizer_steps": int(
+                            pipeline_out.get("progressive_optimizer_steps", 0)
+                        ),
+                        "progressive_osf_p_final": float(pipeline_out.get("progressive_osf_p_final", 0.0)),
+                        "progressive_beta_final": float(pipeline_out.get("progressive_beta_final", 0.0)),
+                        "progressive_gamma_scale_final": float(
+                            pipeline_out.get("progressive_gamma_scale_final", 1.0)
+                        ),
+                        "progressive_useful_zpia_mean": float(
+                            pipeline_out.get("progressive_useful_zpia_mean", 0.0)
+                        ),
+                        "progressive_useful_osf_mean": float(
+                            pipeline_out.get("progressive_useful_osf_mean", 0.0)
+                        ),
+                        "progressive_mode_zpia_rate": float(
+                            pipeline_out.get("progressive_mode_zpia_rate", 0.0)
+                        ),
+                        "progressive_mode_osf_rate": float(
+                            pipeline_out.get("progressive_mode_osf_rate", 0.0)
+                        ),
+                        "progressive_mode_conservative_rate": float(
+                            pipeline_out.get("progressive_mode_conservative_rate", 0.0)
+                        ),
+                        "progressive_pool_keep_rounds": int(args.progressive_pool_keep_rounds),
+                        "progressive_pool_mode": "cumulative"
+                        if int(args.progressive_pool_keep_rounds) < 0
+                        else ("none" if int(args.progressive_pool_keep_rounds) == 0 else "rolling"),
+                        "progressive_disable_conservative": bool(args.progressive_disable_conservative),
+                        "progressive_warmup_epochs": int(args.progressive_warmup_epochs),
+                        "progressive_round_epochs": int(args.progressive_round_epochs),
+                    }
+                )
+                zpia_meta = dict(direction_meta.get("zpia_meta", {}))
+                if zpia_meta:
+                    summary.update(
+                        {
+                            "zpia_z_dim": int(zpia_meta.get("z_dim", 0)),
+                            "zpia_n_train": int(zpia_meta.get("n_train", 0)),
+                            "zpia_n_train_lt_z_dim": bool(zpia_meta.get("n_train_lt_z_dim", False)),
+                            "zpia_row_norm_min": float(zpia_meta.get("row_norm_min", 0.0)),
+                            "zpia_row_norm_max": float(zpia_meta.get("row_norm_max", 0.0)),
+                            "zpia_row_norm_mean": float(zpia_meta.get("row_norm_mean", 0.0)),
+                            "zpia_fallback_row_count": int(zpia_meta.get("fallback_row_count", 0)),
+                            "telm2_recon_last": float(zpia_meta.get("telm2_recon_last", 0.0)),
+                            "telm2_recon_mean": float(zpia_meta.get("telm2_recon_mean", 0.0)),
+                            "telm2_recon_std": float(zpia_meta.get("telm2_recon_std", 0.0)),
+                        }
+                    )
             if args.pipeline == "mba_feedback":
                 summary.update(
                     {
@@ -2688,6 +3369,23 @@ def run_experiment(dataset_name, args):
                         os.path.join(trace_dir, f"{dataset_name}_s{seed}_router_trace.csv"),
                         index=False,
                     )
+            if args.algo in {
+                "progressive_zpia_only",
+                "progressive_zpia_osf",
+                "random_progressive_osf",
+                "progressive_zpia_only_pure",
+                "progressive_zpia_pure_cumulative",
+                "progressive_zpia_exposure_matched",
+                "progressive_zpia_osf_highdose",
+            }:
+                progressive_trace = pipeline_out.get("progressive_trace", [])
+                if progressive_trace:
+                    trace_dir = os.path.join(args.out_root, "progressive")
+                    os.makedirs(trace_dir, exist_ok=True)
+                    pd.DataFrame(progressive_trace).to_csv(
+                        os.path.join(trace_dir, f"{dataset_name}_s{seed}_progressive_trace.csv"),
+                        index=False,
+                    )
             print(
                 f"Base: {summary['base_f1']:.4f} | "
                 f"ACT: {summary['act_f1']:.4f} | "
@@ -2750,6 +3448,13 @@ def main():
             "zpia_top1_pool",
             "zpia_multidir_pool",
             "rc4_multiz_fused",
+            "progressive_zpia_only",
+            "progressive_zpia_osf",
+            "random_progressive_osf",
+            "progressive_zpia_only_pure",
+            "progressive_zpia_pure_cumulative",
+            "progressive_zpia_exposure_matched",
+            "progressive_zpia_osf_highdose",
         ],
         default="lraes",
     )
@@ -2805,6 +3510,23 @@ def main():
     parser.add_argument("--osf-kappa", type=float, default=1.0)
     parser.add_argument("--spectral-osf-rho", type=float, default=0.90)
     parser.add_argument("--multi-template-pairs", type=int, default=0)
+    parser.add_argument("--progressive-rounds", type=int, default=5)
+    parser.add_argument("--per-round-multiplier", type=int, default=2)
+    parser.add_argument("--progressive-warmup-epochs", type=int, default=5)
+    parser.add_argument("--progressive-round-epochs", type=int, default=5)
+    parser.add_argument("--progressive-pool-keep-rounds", type=int, default=2)
+    parser.add_argument(
+        "--progressive-disable-conservative",
+        action="store_true",
+        help="Disable anchor-level conservative zPIA fallback for pure/exposure V1.1 probes.",
+    )
+    parser.add_argument("--progressive-osf-p-init", type=float, default=0.15)
+    parser.add_argument("--progressive-osf-p-max", type=float, default=0.4)
+    parser.add_argument("--progressive-osf-beta-init", type=float, default=0.25)
+    parser.add_argument("--progressive-osf-beta-min", type=float, default=0.1)
+    parser.add_argument("--progressive-osf-beta-max", type=float, default=0.5)
+    parser.add_argument("--progressive-margin-upper", type=float, default=5.0)
+    parser.add_argument("--progressive-trigger-quantile", type=float, default=0.25)
     parser.add_argument("--out-root", type=str, default="standalone_projects/ACT_ManifoldBridge/results/act_core")
     args = parser.parse_args()
 
@@ -2877,6 +3599,43 @@ def main():
             if pairs > args.k_dir:
                 raise ValueError("--multi-template-pairs must be <= --k-dir.")
         if args.algo == "rc4_multiz_fused" and args.osf_kappa < 0.0:
+            raise ValueError("--osf-kappa must satisfy value >= 0.")
+    if args.algo in {
+        "progressive_zpia_only",
+        "progressive_zpia_osf",
+        "random_progressive_osf",
+        "progressive_zpia_only_pure",
+        "progressive_zpia_pure_cumulative",
+        "progressive_zpia_exposure_matched",
+        "progressive_zpia_osf_highdose",
+    }:
+        if args.pipeline not in {"act", "mba"}:
+            raise ValueError(f"--algo {args.algo} currently supports --pipeline act only.")
+        if args.model != "resnet1d":
+            raise ValueError(f"--algo {args.algo} currently supports --model resnet1d only.")
+        if args.disable_safe_step:
+            raise ValueError(f"--algo {args.algo} requires safe-step; do not pass --disable-safe-step.")
+        if args.k_dir <= 0:
+            raise ValueError(f"--algo {args.algo} requires --k-dir > 0.")
+        if args.progressive_rounds <= 0:
+            raise ValueError("--progressive-rounds must be positive.")
+        if args.per_round_multiplier <= 0 or args.per_round_multiplier % 2 != 0:
+            raise ValueError("--per-round-multiplier must be a positive even integer.")
+        if args.progressive_warmup_epochs < 0:
+            raise ValueError("--progressive-warmup-epochs must be >= 0.")
+        if args.progressive_round_epochs <= 0:
+            raise ValueError("--progressive-round-epochs must be positive.")
+        if args.progressive_pool_keep_rounds < -1:
+            raise ValueError("--progressive-pool-keep-rounds must be >= -1 (-1 means cumulative pool).")
+        if not (0.0 <= args.progressive_osf_p_init <= args.progressive_osf_p_max <= 1.0):
+            raise ValueError("--progressive-osf-p-init/max must satisfy 0 <= init <= max <= 1.")
+        if not (0.0 < args.progressive_osf_beta_min <= args.progressive_osf_beta_init <= args.progressive_osf_beta_max):
+            raise ValueError("--progressive OSF beta values must satisfy 0 < min <= init <= max.")
+        if args.progressive_margin_upper <= 0.0:
+            raise ValueError("--progressive-margin-upper must be positive.")
+        if not (0.0 <= args.progressive_trigger_quantile <= 1.0):
+            raise ValueError("--progressive-trigger-quantile must satisfy 0 <= value <= 1.")
+        if args.osf_kappa < 0.0:
             raise ValueError("--osf-kappa must satisfy value >= 0.")
     if args.pipeline == "mba_feedback" and args.model == "minirocket":
         raise ValueError("--pipeline mba_feedback supports resnet1d, patchtst, and timesnet only.")

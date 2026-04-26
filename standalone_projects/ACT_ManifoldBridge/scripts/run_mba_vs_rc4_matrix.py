@@ -199,6 +199,218 @@ ARM_SPECS: List[ArmSpec] = [
         utilization_mode="core_concat",
         core_training_mode="concat_all",
     ),
+    ArmSpec(
+        arm="progressive_zpia_only",
+        pipeline="act",
+        algo="progressive_zpia_only",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "5",
+            "--progressive-pool-keep-rounds",
+            "2",
+        ],
+        direction_bank_source="progressive_zpia_only",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_rolling_core_concat",
+        core_training_mode="continuous_rounds",
+    ),
+    ArmSpec(
+        arm="progressive_zpia_osf",
+        pipeline="act",
+        algo="progressive_zpia_osf",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "5",
+            "--progressive-pool-keep-rounds",
+            "2",
+            "--progressive-osf-p-init",
+            "0.15",
+            "--progressive-osf-p-max",
+            "0.4",
+            "--progressive-osf-beta-init",
+            "0.25",
+            "--progressive-osf-beta-min",
+            "0.1",
+            "--progressive-osf-beta-max",
+            "0.5",
+            "--progressive-margin-upper",
+            "5.0",
+            "--progressive-trigger-quantile",
+            "0.25",
+            "--osf-alpha",
+            "1.0",
+            "--osf-kappa",
+            "1.0",
+        ],
+        direction_bank_source="progressive_zpia_osf",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_rolling_core_concat",
+        core_training_mode="continuous_rounds",
+    ),
+    ArmSpec(
+        arm="random_progressive_osf",
+        pipeline="act",
+        algo="random_progressive_osf",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "5",
+            "--progressive-pool-keep-rounds",
+            "2",
+            "--progressive-osf-p-init",
+            "0.15",
+            "--progressive-osf-p-max",
+            "0.4",
+            "--progressive-osf-beta-init",
+            "0.25",
+            "--progressive-osf-beta-min",
+            "0.1",
+            "--progressive-osf-beta-max",
+            "0.5",
+            "--progressive-margin-upper",
+            "5.0",
+            "--progressive-trigger-quantile",
+            "0.25",
+            "--osf-alpha",
+            "1.0",
+            "--osf-kappa",
+            "1.0",
+        ],
+        direction_bank_source="random_progressive_osf",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_rolling_core_concat",
+        core_training_mode="continuous_rounds",
+    ),
+    ArmSpec(
+        arm="progressive_zpia_only_pure",
+        pipeline="act",
+        algo="progressive_zpia_only_pure",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "5",
+            "--progressive-pool-keep-rounds",
+            "2",
+            "--progressive-disable-conservative",
+        ],
+        direction_bank_source="progressive_zpia_only_pure",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_rolling_core_concat",
+        core_training_mode="continuous_rounds",
+    ),
+    ArmSpec(
+        arm="progressive_zpia_pure_cumulative",
+        pipeline="act",
+        algo="progressive_zpia_pure_cumulative",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "5",
+            "--progressive-pool-keep-rounds",
+            "-1",
+            "--progressive-disable-conservative",
+        ],
+        direction_bank_source="progressive_zpia_pure_cumulative",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_cumulative_core_concat",
+        core_training_mode="continuous_rounds",
+    ),
+    ArmSpec(
+        arm="progressive_zpia_exposure_matched",
+        pipeline="act",
+        algo="progressive_zpia_exposure_matched",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "10",
+            "--progressive-pool-keep-rounds",
+            "-1",
+            "--progressive-disable-conservative",
+        ],
+        direction_bank_source="progressive_zpia_exposure_matched",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_cumulative_exposure_matched",
+        core_training_mode="continuous_rounds",
+    ),
+    ArmSpec(
+        arm="progressive_zpia_osf_highdose",
+        pipeline="act",
+        algo="progressive_zpia_osf_highdose",
+        extra_args=[
+            "--progressive-rounds",
+            "5",
+            "--per-round-multiplier",
+            "2",
+            "--progressive-warmup-epochs",
+            "5",
+            "--progressive-round-epochs",
+            "5",
+            "--progressive-pool-keep-rounds",
+            "-1",
+            "--progressive-disable-conservative",
+            "--progressive-osf-p-init",
+            "0.35",
+            "--progressive-osf-p-max",
+            "0.75",
+            "--progressive-osf-beta-init",
+            "0.25",
+            "--progressive-osf-beta-min",
+            "0.1",
+            "--progressive-osf-beta-max",
+            "0.5",
+            "--progressive-margin-upper",
+            "5.0",
+            "--progressive-trigger-quantile",
+            "0.50",
+            "--osf-alpha",
+            "1.0",
+            "--osf-kappa",
+            "1.0",
+        ],
+        direction_bank_source="progressive_zpia_osf_highdose",
+        onthefly_aug=False,
+        aug_weight_mode="none",
+        utilization_mode="progressive_cumulative_core_concat",
+        core_training_mode="continuous_rounds",
+    ),
 ]
 
 
@@ -325,6 +537,44 @@ def _append_worker_log(path: Path, message: str) -> None:
 
 
 def _build_run_manifest(*, args, arm_spec: ArmSpec, dataset: str, gpu_id: Optional[int], job: Job) -> Dict[str, object]:
+    is_progressive = arm_spec.arm.startswith("progressive_") or arm_spec.arm == "random_progressive_osf"
+    progressive_pool_keep_rounds = None
+    progressive_round_epochs = None
+    progressive_disable_conservative = None
+    progressive_osf_p_init = None
+    progressive_osf_p_max = None
+    progressive_osf_beta_init = None
+    if is_progressive:
+        progressive_pool_keep_rounds = -1 if arm_spec.arm in {
+            "progressive_zpia_pure_cumulative",
+            "progressive_zpia_exposure_matched",
+            "progressive_zpia_osf_highdose",
+        } else 2
+        progressive_round_epochs = 10 if arm_spec.arm == "progressive_zpia_exposure_matched" else 5
+        progressive_disable_conservative = arm_spec.arm in {
+            "progressive_zpia_only_pure",
+            "progressive_zpia_pure_cumulative",
+            "progressive_zpia_exposure_matched",
+            "progressive_zpia_osf_highdose",
+        }
+        if arm_spec.arm in {"progressive_zpia_osf", "random_progressive_osf"}:
+            progressive_osf_p_init = 0.15
+            progressive_osf_p_max = 0.4
+            progressive_osf_beta_init = 0.25
+        elif arm_spec.arm == "progressive_zpia_osf_highdose":
+            progressive_osf_p_init = 0.35
+            progressive_osf_p_max = 0.75
+            progressive_osf_beta_init = 0.25
+    uses_progressive_osf = arm_spec.arm in {
+        "progressive_zpia_osf",
+        "random_progressive_osf",
+        "progressive_zpia_osf_highdose",
+    }
+    uses_static_osf = arm_spec.arm in {
+        "rc4_osf",
+        "mba_core_rc4_fused_concat",
+        "mba_core_rc4_multiz_fused_concat",
+    }
     return {
         "dataset": dataset,
         "arm": arm_spec.arm,
@@ -358,13 +608,13 @@ def _build_run_manifest(*, args, arm_spec: ArmSpec, dataset: str, gpu_id: Option
         "router_smoothing": 0.5 if arm_spec.arm == "rc4_osf" else None,
         "router_reward": "feedback_weight" if arm_spec.arm == "rc4_osf" else None,
         "osf_alpha": 1.0
-        if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat", "mba_core_rc4_multiz_fused_concat"}
+        if uses_static_osf or uses_progressive_osf
         else None,
         "osf_beta": 0.5
-        if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat", "mba_core_rc4_multiz_fused_concat"}
+        if uses_static_osf
         else None,
         "osf_kappa": 1.0
-        if arm_spec.arm in {"rc4_osf", "mba_core_rc4_fused_concat", "mba_core_rc4_multiz_fused_concat"}
+        if uses_static_osf or uses_progressive_osf
         else None,
         "multi_template_pairs": (
             int(args.multi_template_pairs) if int(args.multi_template_pairs) > 0 else int(args.multiplier) // 2
@@ -372,6 +622,15 @@ def _build_run_manifest(*, args, arm_spec: ArmSpec, dataset: str, gpu_id: Option
         if arm_spec.arm
         in {"mba_core_zpia_top1_pool", "mba_core_zpia_multidir_pool", "mba_core_rc4_multiz_fused_concat"}
         else None,
+        "progressive_rounds": 5 if is_progressive else None,
+        "per_round_multiplier": 2 if is_progressive else None,
+        "progressive_warmup_epochs": 5 if is_progressive else None,
+        "progressive_round_epochs": progressive_round_epochs,
+        "progressive_pool_keep_rounds": progressive_pool_keep_rounds,
+        "progressive_disable_conservative": progressive_disable_conservative,
+        "progressive_osf_p_init": progressive_osf_p_init,
+        "progressive_osf_p_max": progressive_osf_p_max,
+        "progressive_osf_beta_init": progressive_osf_beta_init,
         "git_commit_sha": args.git_commit_sha,
         "git_is_dirty": args.git_is_dirty,
         "physical_gpu_id": gpu_id,

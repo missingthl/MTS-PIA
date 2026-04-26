@@ -5,7 +5,7 @@ import math
 import os
 import random
 import copy
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Callable, Dict, List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -362,6 +362,158 @@ def fit_eval_pytorch_model(
     if return_model_obj:
         res["model_obj"] = model  # Return for theory probing
     return res
+
+
+def fit_eval_resnet1d_progressive_aug_ce(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    *,
+    round_callback: Callable[[Dict[str, Any]], Dict[str, Any]],
+    rounds: int = 5,
+    warmup_epochs: int = 5,
+    round_epochs: int = 5,
+    pool_keep_rounds: int = 2,
+    lr: float = 1e-3,
+    batch_size: int = 64,
+    device: str = "cuda",
+    loader_seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Train one ResNet1D continuously while refreshing a rolling aug pool.
+
+    ``round_callback`` receives the current model and returns the next round of
+    augmented samples. The callback is deliberately outside this utility so the
+    manifold generator can stay in ``run_act_pilot.py`` with access to z-space
+    records and bridge metadata.
+    """
+    _set_training_seed(loader_seed)
+    dev = _get_dev(device)
+    model = ResNet1DClassifier(in_channels=X_train.shape[1], num_classes=len(np.unique(y_train)))
+    model.to(dev)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    val_loader = None
+    if X_val is not None:
+        val_loader = _make_tensor_loader(
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            shuffle=False,
+            indexed=False,
+        )
+    test_loader = _make_tensor_loader(
+        X_test,
+        y_test,
+        batch_size=batch_size,
+        shuffle=False,
+        indexed=False,
+    )
+
+    best_val_f1 = -float("inf")
+    best_val_loss = float("inf")
+    best_model_state = copy.deepcopy(model.state_dict())
+    stop_epoch = 0
+    optimizer_steps = 0
+    aug_exposure_count = 0
+    active_aug_counts: List[int] = []
+    rolling_pool: List[Tuple[np.ndarray, np.ndarray]] = []
+    trace_rows: List[Dict[str, Any]] = []
+    audit_rows: List[Dict[str, Any]] = []
+
+    def _train_epochs(X_arr: np.ndarray, y_arr: np.ndarray, n_epochs: int, seed_offset: int) -> None:
+        nonlocal best_val_f1, best_val_loss, best_model_state, stop_epoch, optimizer_steps
+        for local_epoch in range(int(n_epochs)):
+            loader = _make_tensor_loader(
+                X_arr,
+                y_arr,
+                batch_size=batch_size,
+                shuffle=True,
+                indexed=False,
+                seed=None if loader_seed is None else int(loader_seed) + int(seed_offset) + local_epoch,
+            )
+            model.train()
+            for bx, by in loader:
+                bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
+                optimizer.zero_grad()
+                loss = criterion(model(bx), by)
+                loss.backward()
+                optimizer.step()
+                optimizer_steps += 1
+            stop_epoch += 1
+            if val_loader is not None:
+                v_loss, _, v_f1 = _evaluate(model, val_loader, dev, criterion)
+                if v_f1 > best_val_f1:
+                    best_val_f1 = float(v_f1)
+                    best_val_loss = float(v_loss)
+                    best_model_state = copy.deepcopy(model.state_dict())
+            else:
+                best_model_state = copy.deepcopy(model.state_dict())
+                best_val_f1 = 0.0
+                best_val_loss = 0.0
+
+    _train_epochs(np.asarray(X_train), np.asarray(y_train), int(warmup_epochs), seed_offset=0)
+
+    for round_idx in range(int(rounds)):
+        cb_out = round_callback(
+            {
+                "round": int(round_idx),
+                "model": model,
+                "device": str(dev),
+                "batch_size": int(batch_size),
+            }
+        )
+        X_aug = cb_out.get("X_aug")
+        y_aug = cb_out.get("y_aug")
+        if X_aug is not None and y_aug is not None and len(y_aug) > 0:
+            rolling_pool.append((np.asarray(X_aug), np.asarray(y_aug, dtype=np.int64)))
+        if int(pool_keep_rounds) < 0:
+            # Negative keep means cumulative pool: keep all generated rounds.
+            rolling_pool = rolling_pool
+        elif int(pool_keep_rounds) > 0:
+            rolling_pool = rolling_pool[-int(pool_keep_rounds):]
+        else:
+            rolling_pool = []
+
+        active_count = int(sum(len(y_pool) for _, y_pool in rolling_pool))
+        active_aug_counts.append(active_count)
+        aug_exposure_count += active_count * int(round_epochs)
+        trace = dict(cb_out.get("trace_row", {}))
+        trace.setdefault("round", int(round_idx))
+        trace["active_aug_count"] = active_count
+        trace["aug_exposure_count"] = int(aug_exposure_count)
+        trace_rows.append(trace)
+        audit_rows.extend(list(cb_out.get("audit_rows", [])))
+
+        if rolling_pool:
+            X_pool = np.concatenate([x_pool for x_pool, _ in rolling_pool], axis=0)
+            y_pool = np.concatenate([y_pool for _, y_pool in rolling_pool], axis=0)
+            X_mix = np.concatenate([X_train, X_pool], axis=0)
+            y_mix = np.concatenate([y_train, y_pool], axis=0)
+        else:
+            X_mix = np.asarray(X_train)
+            y_mix = np.asarray(y_train)
+        _train_epochs(X_mix, y_mix, int(round_epochs), seed_offset=1000 + round_idx * 100)
+
+    model.load_state_dict(best_model_state)
+    _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
+    return {
+        "accuracy": float(t_acc),
+        "macro_f1": float(t_f1),
+        "best_val_f1": float(best_val_f1 if np.isfinite(best_val_f1) else 0.0),
+        "best_val_loss": float(best_val_loss if np.isfinite(best_val_loss) else 0.0),
+        "stop_epoch": int(stop_epoch),
+        "model_obj": model,
+        "progressive_trace": trace_rows,
+        "progressive_audit_rows": audit_rows,
+        "progressive_optimizer_steps": int(optimizer_steps),
+        "progressive_aug_exposure_count": int(aug_exposure_count),
+        "progressive_active_aug_count_mean": float(np.mean(active_aug_counts)) if active_aug_counts else 0.0,
+    }
 
 
 def _true_class_margin(logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

@@ -21,7 +21,36 @@ DEFAULT_ROOT = PROJECT_ROOT / "results" / "mba_vs_rc4_census_v1" / "resnet1d_sha
 DEFAULT_LOCKED_ROOT = PROJECT_ROOT / "results" / "mba_vs_rc4_census_v1" / "resnet1d_sharedbudget_s123"
 DEFAULT_STEP1_ROOT = PROJECT_ROOT / "results" / "mba_core_rc4_fused_step1" / "resnet1d_sharedbudget_s123"
 DEFAULT_SPECTRAL_ROOT = PROJECT_ROOT / "results" / "mba_core_spectral_osf_step1" / "resnet1d_sharedbudget_s123"
+DEFAULT_MULTITEMPLATE_ROOT = PROJECT_ROOT / "results" / "mba_core_multitemplate_osf_v1" / "resnet1d_sharedbudget_s123"
 DEFAULT_REF_ROOT = PROJECT_ROOT / "results" / "paper_matrix_v2_final" / "phase_all" / "resnet1d"
+
+LOCKED_ARMS = {"baseline_ce", "mba_core_lraes", "mba_feedback_lraes", "rc4_osf"}
+MULTITEMPLATE_ARMS = {
+    "mba_core_zpia_top1_pool",
+    "mba_core_zpia_multidir_pool",
+    "mba_core_rc4_multiz_fused_concat",
+}
+PROGRESSIVE_ARMS = [
+    "progressive_zpia_only",
+    "progressive_zpia_osf",
+    "random_progressive_osf",
+    "progressive_zpia_only_pure",
+    "progressive_zpia_pure_cumulative",
+    "progressive_zpia_exposure_matched",
+    "progressive_zpia_osf_highdose",
+]
+METHOD_ARMS = [
+    "baseline_ce",
+    "mba_core_lraes",
+    "mba_feedback_lraes",
+    "rc4_osf",
+    "mba_core_rc4_fused_concat",
+    "mba_core_spectral_osf_concat",
+    "mba_core_zpia_top1_pool",
+    "mba_core_zpia_multidir_pool",
+    "mba_core_rc4_multiz_fused_concat",
+    *PROGRESSIVE_ARMS,
+]
 
 
 def _read_json(path: Path) -> Dict:
@@ -210,23 +239,12 @@ def _try_load_reference_per_seed_rows(root: Path, keep_arms: set[str]) -> pd.Dat
 
 
 def _load_locked_per_seed_rows(locked_root: Path) -> pd.DataFrame:
-    keep_arms = {"baseline_ce", "mba_core_lraes", "mba_feedback_lraes", "rc4_osf"}
-    return _load_reference_per_seed_rows(locked_root, keep_arms)
+    return _load_reference_per_seed_rows(locked_root, LOCKED_ARMS)
 
 
 def _gap_attribution_view(dataset_summary: pd.DataFrame, baseline_drift_df: pd.DataFrame, mba_repro_df: pd.DataFrame) -> pd.DataFrame:
     pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
-    for col in [
-        "baseline_ce",
-        "mba_core_lraes",
-        "mba_feedback_lraes",
-        "rc4_osf",
-        "mba_core_rc4_fused_concat",
-        "mba_core_spectral_osf_concat",
-        "mba_core_zpia_top1_pool",
-        "mba_core_zpia_multidir_pool",
-        "mba_core_rc4_multiz_fused_concat",
-    ]:
+    for col in METHOD_ARMS:
         if col not in pivot.columns:
             pivot[col] = np.nan
     pivot["mba_core_vs_baseline"] = pivot["mba_core_lraes"] - pivot["baseline_ce"]
@@ -245,6 +263,33 @@ def _gap_attribution_view(dataset_summary: pd.DataFrame, baseline_drift_df: pd.D
     )
     pivot["rc4_multiz_vs_spectral"] = (
         pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_spectral_osf_concat"]
+    )
+    pivot["progressive_osf_vs_progressive_zpia_only"] = (
+        pivot["progressive_zpia_osf"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_osf_vs_zpia_top1"] = (
+        pivot["progressive_zpia_osf"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["random_progressive_osf_vs_progressive_osf"] = (
+        pivot["random_progressive_osf"] - pivot["progressive_zpia_osf"]
+    )
+    pivot["progressive_zpia_only_pure_vs_progressive_zpia_only"] = (
+        pivot["progressive_zpia_only_pure"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_zpia_pure_cumulative_vs_zpia_top1"] = (
+        pivot["progressive_zpia_pure_cumulative"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_exposure_matched_vs_zpia_top1"] = (
+        pivot["progressive_zpia_exposure_matched"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_highdose_vs_progressive_zpia_pure_cumulative"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["progressive_zpia_pure_cumulative"]
+    )
+    pivot["progressive_zpia_osf_highdose_vs_zpia_top1"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_highdose_vs_rc4_multiz"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["mba_core_rc4_multiz_fused_concat"]
     )
 
     drift_max = (
@@ -270,17 +315,7 @@ def _mba_core_rc4_vs_locked(dataset_summary: pd.DataFrame) -> pd.DataFrame:
 
 def _spectral_osf_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
-    for col in [
-        "baseline_ce",
-        "mba_core_lraes",
-        "mba_feedback_lraes",
-        "rc4_osf",
-        "mba_core_rc4_fused_concat",
-        "mba_core_spectral_osf_concat",
-        "mba_core_zpia_top1_pool",
-        "mba_core_zpia_multidir_pool",
-        "mba_core_rc4_multiz_fused_concat",
-    ]:
+    for col in METHOD_ARMS:
         if col not in pivot.columns:
             pivot[col] = np.nan
     pivot["spectral_vs_mba_core_lraes"] = pivot["mba_core_spectral_osf_concat"] - pivot["mba_core_lraes"]
@@ -291,16 +326,7 @@ def _spectral_osf_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
 
 def _multitemplate_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
-    for col in [
-        "baseline_ce",
-        "mba_core_lraes",
-        "rc4_osf",
-        "mba_core_rc4_fused_concat",
-        "mba_core_spectral_osf_concat",
-        "mba_core_zpia_top1_pool",
-        "mba_core_zpia_multidir_pool",
-        "mba_core_rc4_multiz_fused_concat",
-    ]:
+    for col in METHOD_ARMS:
         if col not in pivot.columns:
             pivot[col] = np.nan
     pivot["zpia_multidir_vs_zpia_top1"] = pivot["mba_core_zpia_multidir_pool"] - pivot["mba_core_zpia_top1_pool"]
@@ -312,22 +338,62 @@ def _multitemplate_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot["rc4_multiz_vs_spectral_osf"] = (
         pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_spectral_osf_concat"]
     )
+    pivot["progressive_osf_vs_progressive_zpia_only"] = (
+        pivot["progressive_zpia_osf"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_osf_vs_zpia_top1"] = (
+        pivot["progressive_zpia_osf"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["random_progressive_osf_vs_progressive_osf"] = (
+        pivot["random_progressive_osf"] - pivot["progressive_zpia_osf"]
+    )
+    return pivot.sort_values("dataset").reset_index(drop=True)
+
+
+def _progressive_vs_refs(dataset_summary: pd.DataFrame) -> pd.DataFrame:
+    pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
+    for col in METHOD_ARMS:
+        if col not in pivot.columns:
+            pivot[col] = np.nan
+    pivot["progressive_zpia_only_vs_zpia_top1"] = (
+        pivot["progressive_zpia_only"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_vs_progressive_zpia_only"] = (
+        pivot["progressive_zpia_osf"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_zpia_osf_vs_zpia_top1"] = (
+        pivot["progressive_zpia_osf"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_vs_rc4_multiz"] = (
+        pivot["progressive_zpia_osf"] - pivot["mba_core_rc4_multiz_fused_concat"]
+    )
+    pivot["random_progressive_osf_vs_progressive_zpia_osf"] = (
+        pivot["random_progressive_osf"] - pivot["progressive_zpia_osf"]
+    )
+    pivot["progressive_zpia_only_pure_vs_progressive_zpia_only"] = (
+        pivot["progressive_zpia_only_pure"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_zpia_pure_cumulative_vs_zpia_top1"] = (
+        pivot["progressive_zpia_pure_cumulative"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_exposure_matched_vs_zpia_top1"] = (
+        pivot["progressive_zpia_exposure_matched"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_highdose_vs_progressive_zpia_pure_cumulative"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["progressive_zpia_pure_cumulative"]
+    )
+    pivot["progressive_zpia_osf_highdose_vs_zpia_top1"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_highdose_vs_rc4_multiz"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["mba_core_rc4_multiz_fused_concat"]
+    )
     return pivot.sort_values("dataset").reset_index(drop=True)
 
 
 def _overall_summary_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot_f1 = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1")
-    arms = [
-        "baseline_ce",
-        "mba_core_lraes",
-        "mba_feedback_lraes",
-        "rc4_osf",
-        "mba_core_rc4_fused_concat",
-        "mba_core_spectral_osf_concat",
-        "mba_core_zpia_top1_pool",
-        "mba_core_zpia_multidir_pool",
-        "mba_core_rc4_multiz_fused_concat",
-    ]
+    arms = METHOD_ARMS
     pivot_f1 = pivot_f1[[arm for arm in arms if arm in pivot_f1.columns]]
     rows: List[Dict[str, object]] = []
     for arm in arms:
@@ -389,17 +455,7 @@ def _overall_summary_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
 
 def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
-    for col in [
-        "baseline_ce",
-        "mba_core_lraes",
-        "mba_feedback_lraes",
-        "rc4_osf",
-        "mba_core_rc4_fused_concat",
-        "mba_core_spectral_osf_concat",
-        "mba_core_zpia_top1_pool",
-        "mba_core_zpia_multidir_pool",
-        "mba_core_rc4_multiz_fused_concat",
-    ]:
+    for col in METHOD_ARMS:
         if col not in pivot.columns:
             pivot[col] = np.nan
     pivot["mba_core_lraes_minus_baseline"] = pivot["mba_core_lraes"] - pivot["baseline_ce"]
@@ -427,6 +483,33 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
     pivot["mba_core_rc4_multiz_fused_concat_minus_mba_core_spectral_osf_concat"] = (
         pivot["mba_core_rc4_multiz_fused_concat"] - pivot["mba_core_spectral_osf_concat"]
     )
+    pivot["progressive_zpia_osf_minus_progressive_zpia_only"] = (
+        pivot["progressive_zpia_osf"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_zpia_osf_minus_mba_core_zpia_top1_pool"] = (
+        pivot["progressive_zpia_osf"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["random_progressive_osf_minus_progressive_zpia_osf"] = (
+        pivot["random_progressive_osf"] - pivot["progressive_zpia_osf"]
+    )
+    pivot["progressive_zpia_only_pure_minus_progressive_zpia_only"] = (
+        pivot["progressive_zpia_only_pure"] - pivot["progressive_zpia_only"]
+    )
+    pivot["progressive_zpia_pure_cumulative_minus_mba_core_zpia_top1_pool"] = (
+        pivot["progressive_zpia_pure_cumulative"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_exposure_matched_minus_mba_core_zpia_top1_pool"] = (
+        pivot["progressive_zpia_exposure_matched"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_highdose_minus_progressive_zpia_pure_cumulative"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["progressive_zpia_pure_cumulative"]
+    )
+    pivot["progressive_zpia_osf_highdose_minus_mba_core_zpia_top1_pool"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["mba_core_zpia_top1_pool"]
+    )
+    pivot["progressive_zpia_osf_highdose_minus_mba_core_rc4_multiz_fused_concat"] = (
+        pivot["progressive_zpia_osf_highdose"] - pivot["mba_core_rc4_multiz_fused_concat"]
+    )
     keep_cols = [
         "dataset",
         "mba_core_lraes_minus_baseline",
@@ -440,6 +523,15 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
         "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes",
         "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat",
         "mba_core_rc4_multiz_fused_concat_minus_mba_core_spectral_osf_concat",
+        "progressive_zpia_osf_minus_progressive_zpia_only",
+        "progressive_zpia_osf_minus_mba_core_zpia_top1_pool",
+        "random_progressive_osf_minus_progressive_zpia_osf",
+        "progressive_zpia_only_pure_minus_progressive_zpia_only",
+        "progressive_zpia_pure_cumulative_minus_mba_core_zpia_top1_pool",
+        "progressive_zpia_exposure_matched_minus_mba_core_zpia_top1_pool",
+        "progressive_zpia_osf_highdose_minus_progressive_zpia_pure_cumulative",
+        "progressive_zpia_osf_highdose_minus_mba_core_zpia_top1_pool",
+        "progressive_zpia_osf_highdose_minus_mba_core_rc4_multiz_fused_concat",
     ]
     out = pivot[keep_cols].copy()
     out = out.dropna(
@@ -459,14 +551,7 @@ def _per_dataset_gap_table(dataset_summary: pd.DataFrame) -> pd.DataFrame:
 
 def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005) -> pd.DataFrame:
     pivot = dataset_summary.pivot(index="dataset", columns="arm", values="mean_f1").reset_index()
-    for col in [
-        "baseline_ce",
-        "mba_core_lraes",
-        "mba_feedback_lraes",
-        "rc4_osf",
-        "mba_core_rc4_fused_concat",
-        "mba_core_spectral_osf_concat",
-    ]:
+    for col in METHOD_ARMS:
         if col not in pivot.columns:
             pivot[col] = np.nan
     rows: List[Dict[str, object]] = []
@@ -490,6 +575,33 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
         zpia_top1 = float(row["mba_core_zpia_top1_pool"])
         zpia_multidir = float(row["mba_core_zpia_multidir_pool"])
         rc4_multiz = float(row["mba_core_rc4_multiz_fused_concat"])
+        progressive_zpia = (
+            float(row["progressive_zpia_only"]) if not pd.isna(row["progressive_zpia_only"]) else -np.inf
+        )
+        progressive_osf = (
+            float(row["progressive_zpia_osf"]) if not pd.isna(row["progressive_zpia_osf"]) else -np.inf
+        )
+        random_progressive = (
+            float(row["random_progressive_osf"]) if not pd.isna(row["random_progressive_osf"]) else -np.inf
+        )
+        progressive_pure = (
+            float(row["progressive_zpia_only_pure"]) if not pd.isna(row["progressive_zpia_only_pure"]) else -np.inf
+        )
+        progressive_cumulative = (
+            float(row["progressive_zpia_pure_cumulative"])
+            if not pd.isna(row["progressive_zpia_pure_cumulative"])
+            else -np.inf
+        )
+        progressive_exposure = (
+            float(row["progressive_zpia_exposure_matched"])
+            if not pd.isna(row["progressive_zpia_exposure_matched"])
+            else -np.inf
+        )
+        progressive_highdose = (
+            float(row["progressive_zpia_osf_highdose"])
+            if not pd.isna(row["progressive_zpia_osf_highdose"])
+            else -np.inf
+        )
         delta_core = rc4_fused - mba_core
         delta_rc4 = rc4_fused - rc4_osf
         delta_spectral_core = spectral - mba_core if np.isfinite(spectral) else np.nan
@@ -497,6 +609,25 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
         delta_multiz_core = rc4_multiz - mba_core
         delta_multiz_rc4 = rc4_multiz - rc4_fused
         delta_zpia_multi = zpia_multidir - zpia_top1
+        delta_progressive_osf = (
+            progressive_osf - progressive_zpia if np.isfinite(progressive_osf) and np.isfinite(progressive_zpia) else np.nan
+        )
+        delta_progressive_top1 = progressive_osf - zpia_top1 if np.isfinite(progressive_osf) else np.nan
+        delta_pure_progressive = (
+            progressive_pure - progressive_zpia
+            if np.isfinite(progressive_pure) and np.isfinite(progressive_zpia)
+            else np.nan
+        )
+        delta_cumulative_top1 = (
+            progressive_cumulative - zpia_top1 if np.isfinite(progressive_cumulative) else np.nan
+        )
+        delta_exposure_top1 = progressive_exposure - zpia_top1 if np.isfinite(progressive_exposure) else np.nan
+        delta_highdose_cumulative = (
+            progressive_highdose - progressive_cumulative
+            if np.isfinite(progressive_highdose) and np.isfinite(progressive_cumulative)
+            else np.nan
+        )
+        delta_highdose_top1 = progressive_highdose - zpia_top1 if np.isfinite(progressive_highdose) else np.nan
         feedback_best = max(mba_feedback, rc4_osf)
         if max(
             abs(delta_core),
@@ -509,6 +640,16 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
             regime = "saturated_or_near_tie"
         elif rc4_multiz > max(rc4_fused, spectral, mba_core, feedback_best) + tie_eps:
             regime = "rc4_multiz_dominant"
+        elif progressive_osf > max(rc4_multiz, rc4_fused, zpia_top1, mba_core, feedback_best) + tie_eps:
+            regime = "progressive_osf_dominant"
+        elif progressive_highdose > max(rc4_multiz, rc4_fused, zpia_top1, mba_core, feedback_best) + tie_eps:
+            regime = "progressive_osf_highdose_dominant"
+        elif progressive_exposure > max(zpia_top1, rc4_multiz, mba_core, feedback_best) + tie_eps:
+            regime = "progressive_exposure_matched_dominant"
+        elif progressive_cumulative > max(zpia_top1, rc4_multiz, mba_core, feedback_best) + tie_eps:
+            regime = "progressive_zpia_cumulative_dominant"
+        elif progressive_zpia > max(zpia_top1, rc4_multiz, mba_core, feedback_best) + tie_eps:
+            regime = "progressive_zpia_dominant"
         elif spectral > max(rc4_fused, mba_core, feedback_best) + tie_eps:
             regime = "spectral_osf_dominant"
         elif feedback_best > max(rc4_fused, mba_core) + tie_eps:
@@ -533,6 +674,13 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
                         ("mba_core_zpia_top1_pool", zpia_top1),
                         ("mba_core_zpia_multidir_pool", zpia_multidir),
                         ("mba_core_rc4_multiz_fused_concat", rc4_multiz),
+                        ("progressive_zpia_only", progressive_zpia),
+                        ("progressive_zpia_osf", progressive_osf),
+                        ("random_progressive_osf", random_progressive),
+                        ("progressive_zpia_only_pure", progressive_pure),
+                        ("progressive_zpia_pure_cumulative", progressive_cumulative),
+                        ("progressive_zpia_exposure_matched", progressive_exposure),
+                        ("progressive_zpia_osf_highdose", progressive_highdose),
                     ],
                     key=lambda kv: kv[1],
                 )[0],
@@ -543,6 +691,18 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
                 "zpia_multidir_pool_minus_zpia_top1_pool": delta_zpia_multi,
                 "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes": delta_multiz_core,
                 "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat": delta_multiz_rc4,
+                "progressive_zpia_osf_minus_progressive_zpia_only": delta_progressive_osf,
+                "progressive_zpia_osf_minus_mba_core_zpia_top1_pool": delta_progressive_top1,
+                "progressive_zpia_only_pure_minus_progressive_zpia_only": delta_pure_progressive,
+                "progressive_zpia_pure_cumulative_minus_mba_core_zpia_top1_pool": delta_cumulative_top1,
+                "progressive_zpia_exposure_matched_minus_mba_core_zpia_top1_pool": delta_exposure_top1,
+                "progressive_zpia_osf_highdose_minus_progressive_zpia_pure_cumulative": delta_highdose_cumulative,
+                "progressive_zpia_osf_highdose_minus_mba_core_zpia_top1_pool": delta_highdose_top1,
+                "random_progressive_osf_minus_progressive_zpia_osf": (
+                    random_progressive - progressive_osf
+                    if np.isfinite(random_progressive) and np.isfinite(progressive_osf)
+                    else np.nan
+                ),
                 "mba_feedback_lraes_minus_mba_core_lraes": mba_feedback - mba_core,
                 "rc4_osf_minus_mba_feedback_lraes": rc4_osf - mba_feedback,
             }
@@ -561,6 +721,14 @@ def _regime_taxonomy_table(dataset_summary: pd.DataFrame, tie_eps: float = 0.005
                 "zpia_multidir_pool_minus_zpia_top1_pool",
                 "mba_core_rc4_multiz_fused_concat_minus_mba_core_lraes",
                 "mba_core_rc4_multiz_fused_concat_minus_mba_core_rc4_fused_concat",
+                "progressive_zpia_osf_minus_progressive_zpia_only",
+                "progressive_zpia_osf_minus_mba_core_zpia_top1_pool",
+                "progressive_zpia_only_pure_minus_progressive_zpia_only",
+                "progressive_zpia_pure_cumulative_minus_mba_core_zpia_top1_pool",
+                "progressive_zpia_exposure_matched_minus_mba_core_zpia_top1_pool",
+                "progressive_zpia_osf_highdose_minus_progressive_zpia_pure_cumulative",
+                "progressive_zpia_osf_highdose_minus_mba_core_zpia_top1_pool",
+                "random_progressive_osf_minus_progressive_zpia_osf",
                 "mba_feedback_lraes_minus_mba_core_lraes",
                 "rc4_osf_minus_mba_feedback_lraes",
             ]
@@ -574,6 +742,7 @@ def main() -> None:
     parser.add_argument("--locked-root", type=str, default=str(DEFAULT_LOCKED_ROOT))
     parser.add_argument("--step1-root", type=str, default=str(DEFAULT_STEP1_ROOT))
     parser.add_argument("--spectral-root", type=str, default=str(DEFAULT_SPECTRAL_ROOT))
+    parser.add_argument("--multitemplate-root", type=str, default=str(DEFAULT_MULTITEMPLATE_ROOT))
     parser.add_argument("--ref-root", type=str, default=str(DEFAULT_REF_ROOT))
     parser.add_argument("--baseline-drift-tol", type=float, default=1e-4)
     args = parser.parse_args()
@@ -582,6 +751,7 @@ def main() -> None:
     locked_root = Path(args.locked_root).resolve()
     step1_root = Path(args.step1_root).resolve()
     spectral_root = Path(args.spectral_root).resolve()
+    multitemplate_root = Path(args.multitemplate_root).resolve()
     ref_root = Path(args.ref_root).resolve()
     summary_root = root / "_summary"
     summary_root.mkdir(parents=True, exist_ok=True)
@@ -607,6 +777,13 @@ def main() -> None:
         ref_frames.append(spectral_per_seed_df)
         if not spectral_per_seed_df.empty:
             loaded_arms.update(spectral_per_seed_df["arm"].astype(str).unique().tolist())
+    if multitemplate_root != root:
+        multitemplate_per_seed_df = _try_load_reference_per_seed_rows(
+            multitemplate_root, MULTITEMPLATE_ARMS
+        )
+        ref_frames.append(multitemplate_per_seed_df)
+        if not multitemplate_per_seed_df.empty:
+            loaded_arms.update(multitemplate_per_seed_df["arm"].astype(str).unique().tolist())
 
     ref_frames = [df for df in ref_frames if not df.empty]
     if ref_frames:
@@ -621,6 +798,7 @@ def main() -> None:
     step1_compare_df = _mba_core_rc4_vs_locked(dataset_summary_df)
     spectral_compare_df = _spectral_osf_vs_refs(dataset_summary_df)
     multitemplate_compare_df = _multitemplate_vs_refs(dataset_summary_df)
+    progressive_compare_df = _progressive_vs_refs(dataset_summary_df)
     overall_summary_df = _overall_summary_table(dataset_summary_df)
     per_dataset_gap_df = _per_dataset_gap_table(dataset_summary_df)
     regime_taxonomy_df = _regime_taxonomy_table(dataset_summary_df)
@@ -636,6 +814,7 @@ def main() -> None:
     step1_gap_path = summary_root / "step1_gap_view.csv"
     spectral_compare_path = summary_root / "spectral_osf_vs_refs.csv"
     multitemplate_compare_path = summary_root / "multi_template_osf_vs_refs.csv"
+    progressive_compare_path = summary_root / "progressive_osf_vs_refs.csv"
     final_table1_path = summary_root / "table1_overall_mean_and_winrate.csv"
     final_table2_path = summary_root / "table2_per_dataset_gap_attribution.csv"
     final_table3_path = summary_root / "table3_regime_taxonomy.csv"
@@ -651,6 +830,7 @@ def main() -> None:
     gap_view_df.to_csv(step1_gap_path, index=False)
     spectral_compare_df.to_csv(spectral_compare_path, index=False)
     multitemplate_compare_df.to_csv(multitemplate_compare_path, index=False)
+    progressive_compare_df.to_csv(progressive_compare_path, index=False)
     overall_summary_df.to_csv(final_table1_path, index=False)
     per_dataset_gap_df.to_csv(final_table2_path, index=False)
     regime_taxonomy_df.to_csv(final_table3_path, index=False)
@@ -666,6 +846,7 @@ def main() -> None:
     print(step1_gap_path)
     print(spectral_compare_path)
     print(multitemplate_compare_path)
+    print(progressive_compare_path)
     print(final_table1_path)
     print(final_table2_path)
     print(final_table3_path)
