@@ -165,6 +165,10 @@ METHOD_INFO: Dict[str, MethodInfo] = {
     "pca_cov_state": MethodInfo("covariance_state", "hard", False, "", True, "pca_top_z_direction"),
     "csta_top1_current": MethodInfo("covariance_template", "hard", False, "", True, "anchor_top_response"),
     "csta_group_template_top": MethodInfo("covariance_template", "hard", False, "", True, "group_center_top_response"),
+    "csta_topk_softmax_tau_0.05": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.05_response"),
+    "csta_topk_softmax_tau_0.10": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.10_response"),
+    "csta_topk_softmax_tau_0.20": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.20_response"),
+    "csta_topk_uniform_top5": MethodInfo("covariance_template", "hard", False, "", True, "uniform_top5_response"),
     "manifold_mixup": MethodInfo("hidden_state", "soft", False, "", False, "resnet1d_hidden_state_beta_mixup"),
     "timevae_classwise_optional": MethodInfo(
         "generative_model",
@@ -359,6 +363,8 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         str(args.k_dir),
         "--pia-gamma",
         str(args.pia_gamma),
+        "--eta-safe",
+        str(args.eta_safe),
         "--multiplier",
         str(args.multiplier),
         "--device",
@@ -368,6 +374,8 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
     ]
     if method == "csta_group_template_top":
         cmd.extend(["--template-selection", "group_top", "--group-size", str(args.group_size)])
+    elif method.startswith("csta_topk_"):
+        cmd.extend(["--template-selection", method.replace("csta_", "")])
 
     (csta_root / "command.json").write_text(
         json.dumps({"method": method, "command": cmd}, ensure_ascii=True, indent=2),
@@ -794,6 +802,7 @@ def main() -> None:
     parser.add_argument("--multiplier", type=int, default=10)
     parser.add_argument("--k-dir", type=int, default=10)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
+    parser.add_argument("--eta-safe", type=float, default=0.5)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--mixup-alpha", type=float, default=0.4)
     parser.add_argument("--dba-k", type=int, default=5)

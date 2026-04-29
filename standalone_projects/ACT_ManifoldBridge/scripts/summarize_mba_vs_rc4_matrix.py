@@ -762,9 +762,10 @@ def main() -> None:
     ref_frames: List[pd.DataFrame] = []
     loaded_arms: set[str] = set()
     if locked_root != root:
-        locked_per_seed_df = _load_locked_per_seed_rows(locked_root)
+        locked_per_seed_df = _try_load_reference_per_seed_rows(locked_root, LOCKED_ARMS)
         ref_frames.append(locked_per_seed_df)
-        loaded_arms.update(locked_per_seed_df["arm"].astype(str).unique().tolist())
+        if not locked_per_seed_df.empty:
+            loaded_arms.update(locked_per_seed_df["arm"].astype(str).unique().tolist())
     if step1_root != root:
         step1_per_seed_df = _try_load_reference_per_seed_rows(step1_root, {"mba_core_rc4_fused_concat"})
         ref_frames.append(step1_per_seed_df)

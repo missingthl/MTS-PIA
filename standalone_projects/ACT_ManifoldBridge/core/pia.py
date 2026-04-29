@@ -191,6 +191,58 @@ def build_pia_direction_bank(
     return W, {"bank_source": "random", "k_dir": k_dir}
 
 
+def build_pca_direction_bank(
+    X_train_z: np.ndarray,
+    k_dir: int = 10,
+    seed: int = 42,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Build template directions using PCA principal components."""
+    from sklearn.decomposition import PCA
+    X = np.asarray(X_train_z, dtype=np.float64)
+    pca = PCA(n_components=min(k_dir, X.shape[0], X.shape[1]), random_state=seed)
+    pca.fit(X)
+    W = pca.components_
+    if W.shape[0] < k_dir:
+        # Pad with random if not enough components
+        rng = np.random.default_rng(seed)
+        extra = rng.standard_normal((k_dir - W.shape[0], X.shape[1]))
+        W = np.concatenate([W, extra], axis=0)
+    
+    # Normalize
+    W /= np.linalg.norm(W, axis=1, keepdims=True) + 1e-12
+    # Canonicalize
+    output = np.zeros_like(W)
+    for i in range(len(W)):
+        output[i] = _canonicalize_axis(W[i])
+    
+    return output, {"bank_source": "pca", "k_dir": k_dir}
+
+
+def build_random_orthogonal_direction_bank(
+    X_train_z: np.ndarray,
+    k_dir: int = 10,
+    seed: int = 42,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Build template directions using a random orthogonal basis."""
+    rng = np.random.default_rng(seed)
+    d = X_train_z.shape[1]
+    Q, _ = np.linalg.qr(rng.standard_normal((d, d)))
+    W = Q[:k_dir]
+    if W.shape[0] < k_dir:
+        # If d < k_dir, we repeat or pad
+        extra = rng.standard_normal((k_dir - W.shape[0], d))
+        W = np.concatenate([W, extra], axis=0)
+    
+    # Normalize
+    W /= np.linalg.norm(W, axis=1, keepdims=True) + 1e-12
+    # Canonicalize
+    output = np.zeros_like(W)
+    for i in range(len(W)):
+        output[i] = _canonicalize_axis(W[i])
+        
+    return output, {"bank_source": "random_orthogonal", "k_dir": k_dir}
+
+
 def build_zpia_direction_bank(
     X_train_z: np.ndarray,
     k_dir: int = 10,
@@ -208,15 +260,9 @@ def build_zpia_direction_bank(
     row is L2-normalized so ``pia_gamma`` remains comparable to LRAES.
     """
     try:
-        from PIA.telm2 import TELM2Config, TELM2Transformer
-    except ModuleNotFoundError:
-        import sys
-        from pathlib import Path
-
-        repo_root = Path(__file__).resolve().parents[3]
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
-        from PIA.telm2 import TELM2Config, TELM2Transformer
+        from .PIA.telm2 import TELM2Config, TELM2Transformer
+    except (ImportError, ValueError):
+        from core.PIA.telm2 import TELM2Config, TELM2Transformer
 
     X = np.asarray(X_train_z, dtype=np.float64)
     if X.ndim != 2:
