@@ -1,4 +1,0 @@
-dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,num_classes,latent_dim,train_size,aug_total_count,algo,model,base_f1,act_f1,gain,f1_gain_pct,base_stop_epoch,act_stop_epoch,base_best_val_f1,act_best_val_f1
-ering,1,success,,10,10,6,10,24,24,lraes,patchtst,0.9556751494205639,0.9294078054194608,-0.026267344001103088,-2.7485638052287387,100,100,1.0,1.0
-ering,2,success,,10,10,6,10,24,24,lraes,patchtst,0.9443123337420282,0.9481141288822085,0.0038017951401803085,0.4025992885760203,100,100,1.0,1.0
-ering,3,success,,10,10,6,10,24,24,lraes,patchtst,0.9403668084750416,0.9520429537416497,0.011676145266608096,1.2416584592010869,100,100,1.0,1.0

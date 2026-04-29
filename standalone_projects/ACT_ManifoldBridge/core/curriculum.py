@@ -60,6 +60,43 @@ def estimate_local_manifold_margins(
     return margins
 
 
+def find_same_class_knn_neighbors(
+    X_train_z: np.ndarray,
+    y_train: np.ndarray,
+    k: int = 5
+) -> np.ndarray:
+    """
+    For each sample, finds the indices of its k nearest neighbors belonging
+    to the SAME class. Returns an array of shape (N, k).
+    """
+    y_arr = np.asarray(y_train).astype(int).ravel()
+    classes = np.unique(y_arr)
+    n = len(y_arr)
+    neighbor_indices = np.zeros((n, k), dtype=np.int64)
+
+    for c in classes:
+        idx_c = np.where(y_arr == c)[0]
+        pts_c = X_train_z[idx_c]
+
+        # k_eff ensures we don't request more neighbors than available in class
+        k_eff = min(k, len(idx_c))
+        tree = KDTree(pts_c)
+        _, local_nn = tree.query(pts_c, k=k_eff)
+
+        # Map local class-subset indices back to global indices
+        global_nn = idx_c[local_nn]
+
+        if k_eff < k:
+            # Pad with the anchor itself if class is too small
+            padded = np.tile(idx_c[:, None], (1, k))
+            padded[:, :k_eff] = global_nn
+            neighbor_indices[idx_c] = padded
+        else:
+            neighbor_indices[idx_c] = global_nn
+
+    return neighbor_indices
+
+
 def apply_safe_step_constraint(
     gamma: float, 
     direction_norm: float, 

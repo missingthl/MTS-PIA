@@ -1,0 +1,5 @@
+stage,parameter,candidate_values,primary_readouts,status
+csta_tuning,gamma,"0.05,0.10,0.20","vs_no_aug,vs_wdba,vs_best_rawaug,negative_transfer_rate",planned_not_run
+csta_tuning,eta_safe,"0.25,0.50,0.75,1.00","safe_clip_rate,safe_radius_ratio_mean,vs_wdba",planned_not_run
+csta_tuning,k_dir,"5,10,20","template_usage_entropy,template_response_gap_mean,vs_random_pca_cov",planned_not_run
+csta_tuning,multiplier,"2,5,10","actual_aug_ratio,gain_vs_no_aug,negative_transfer_rate",planned_not_run

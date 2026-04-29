@@ -1,4 +1,0 @@
-dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,num_classes,latent_dim,train_size,aug_total_count,algo,model,base_f1,act_f1,gain,f1_gain_pct,base_stop_epoch,act_stop_epoch,base_best_val_f1,act_best_val_f1
-japanesevowels,1,success,,10,10,9,78,216,216,lraes,resnet1d,0.981477882870077,0.9879199243463239,0.00644204147624694,0.6563612825433808,30,30,0.9627039627039627,0.9813519813519815
-japanesevowels,2,success,,10,10,9,78,216,216,lraes,resnet1d,0.9755509879215862,0.9784617900742931,0.002910802152706893,0.2983751634072146,30,24,1.0,1.0
-japanesevowels,3,success,,10,10,9,78,216,216,lraes,resnet1d,0.9747009352892034,0.9859670381914378,0.011266102902234398,1.155852153054463,29,30,0.9813519813519815,1.0

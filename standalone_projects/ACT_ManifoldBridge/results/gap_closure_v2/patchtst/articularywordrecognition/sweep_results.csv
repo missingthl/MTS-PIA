@@ -1,2 +1,0 @@
-dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,algo,model
-articularywordrecognition,1,failed,'PatchTST' object has no attribute 'dropout',10,0,lraes,patchtst

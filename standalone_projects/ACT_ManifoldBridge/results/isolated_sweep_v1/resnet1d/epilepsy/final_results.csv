@@ -1,4 +1,0 @@
-dataset,seed,status,fail_reason,requested_k_dir,effective_k_dir,num_classes,latent_dim,train_size,aug_total_count,algo,model,base_f1,act_f1,gain,f1_gain_pct,base_stop_epoch,act_stop_epoch,base_best_val_f1,act_best_val_f1
-epilepsy,1,success,,10,10,4,6,109,109,lraes,resnet1d,0.9638968084263879,0.9220892818516115,-0.04180752657477638,-4.337344192028725,30,30,1.0,1.0
-epilepsy,2,success,,10,10,4,6,109,109,lraes,resnet1d,0.9575358851674641,0.8849113124067196,-0.07262457276074452,-7.584526731707442,30,30,1.0,1.0
-epilepsy,3,success,,10,10,4,6,109,109,lraes,resnet1d,0.978856462179869,0.9567195281436176,-0.022136934036251388,-2.2615094888829725,30,30,1.0,1.0

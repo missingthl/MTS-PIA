@@ -737,7 +737,7 @@ def _build_top_response_template_slots(
         "y_aug": np.asarray(y_aug, dtype=np.int64),
         "tid_aug": np.asarray(tid_aug, dtype=object),
         "W_slots": np.stack(w_slots).astype(np.float32) if w_slots else np.empty((0, X_train_z.shape[1]), dtype=np.float32),
-        "audit_rows": slot_rows,
+        "candidate_rows": slot_rows,
         "multi_template_pairs": int(pairs),
         "template_usage_entropy": usage_stats["template_usage_entropy"],
         "top_template_concentration": usage_stats["top_template_concentration"],
@@ -911,6 +911,13 @@ def _build_act_realized_augmentations(
     y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
     avg_bridge = pd.DataFrame(bridge_metrics).mean().to_dict() if bridge_metrics else {}
 
+    # V2.1: Diagnostic metrics for safe-step audit
+    gamma_used_vals = [float(row.get("gamma_used", 0.0)) for row in audit_rows]
+    gamma_req_vals = [float(row.get("gamma_requested", 0.0)) for row in audit_rows]
+    clip_flags = [float(row.get("is_clipped", 0.0)) for row in audit_rows]
+    safe_ratios = [float(row.get("safe_radius_ratio", 0.0)) for row in audit_rows]
+    margins = [float(row.get("manifold_margin", 0.0)) for row in audit_rows]
+
     # --- V2: build on-the-fly dataset (only when --onthefly-aug is set) ---
     aug_dataset_out: Optional[ManifoldAugDataset] = None
     if getattr(args, "onthefly_aug", False) and len(z_aug) > 0:
@@ -937,11 +944,15 @@ def _build_act_realized_augmentations(
         "avg_bridge": avg_bridge,
         "audit_rows": audit_rows,
         "direction_bank_meta": direction_meta,
-        "safe_radius_ratio_mean": aug_meta.get("safe_radius_ratio_mean", 1.0),
-        "manifold_margin_mean": aug_meta.get("manifold_margin_mean", 0.0),
+        "safe_radius_ratio_mean": float(np.mean(safe_ratios)) if safe_ratios else 1.0,
+        "manifold_margin_mean": float(np.mean(margins)) if margins else 0.0,
+        "gamma_requested_mean": float(np.mean(gamma_req_vals)) if gamma_req_vals else 0.0,
+        "gamma_used_mean": float(np.mean(gamma_used_vals)) if gamma_used_vals else 0.0,
+        "gamma_zero_rate": float(np.mean([1.0 if g < 1e-12 else 0.0 for g in gamma_used_vals])) if gamma_used_vals else 0.0,
+        "safe_clip_rate": float(np.mean(clip_flags)) if clip_flags else 0.0,
         "eta_safe": eta_safe,
-        "candidate_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
-        "aug_total_count": int(aug_meta.get("aug_total_count", len(aug_trials))),
+        "candidate_total_count": int(len(z_aug)),
+        "aug_total_count": int(len(z_aug)),
         # V2 on-the-fly dataset (None when --onthefly-aug not set)
         "aug_dataset": aug_dataset_out,
     }
@@ -990,7 +1001,7 @@ def _build_zpia_template_pool_aug_out(
         z_aug=slots["z_aug"],
         y_aug=slots["y_aug"],
         tid_aug=slots["tid_aug"],
-        audit_rows=slots["audit_rows"],
+        audit_rows=slots["candidate_rows"],
         train_recs=train_recs,
         mean_log=mean_log,
         direction_bank_meta=direction_meta,
@@ -1227,6 +1238,17 @@ def _build_rc4_fused_aug_out(
         fused_audit_rows.append(base_row)
 
     fused_x = np.stack(fused_x_list) if fused_x_list else None
+
+    # V2.1: Diagnostic metrics for safe-step audit
+    gamma_req_vals = [float(row.get("gamma_requested", 0.0)) for row in fused_audit_rows]
+    gamma_used_vals = [float(row.get("gamma_used", 0.0)) for row in fused_audit_rows]
+    if not gamma_req_vals:
+        # Fallback for fused rows that might not have base gamma requested
+        gamma_req_vals = [float(args.pia_gamma)] * len(fused_audit_rows)
+
+    clip_flags = [float(1.0 if row.get("osf_risk_status") == "clipped" else 0.0) for row in fused_audit_rows]
+    safe_ratios = [float(row.get("safe_radius_ratio", 0.0)) for row in fused_audit_rows]
+    margins = [float(row.get("manifold_margin", 0.0)) for row in fused_audit_rows]
     fused_aug_out = {
         "effective_k": int(max(aug_out_lraes.get("effective_k", 0), aug_out_zpia.get("effective_k", 0))),
         "effective_k_lraes": int(aug_out_lraes.get("effective_k", 0)),
@@ -1253,10 +1275,12 @@ def _build_rc4_fused_aug_out(
             "zpia_meta": aug_out_zpia.get("direction_bank_meta", {}),
             **spectral_meta,
         },
-        "safe_radius_ratio_mean": float(
-            np.mean([row["safe_radius_ratio"] for row in fused_audit_rows])
-        ) if fused_audit_rows else 0.0,
-        "manifold_margin_mean": float(np.mean(shared_margin)) if shared_margin else 0.0,
+        "safe_radius_ratio_mean": float(np.mean(safe_ratios)) if safe_ratios else 1.0,
+        "safe_clip_rate": float(np.mean(clip_flags)) if clip_flags else 0.0,
+        "manifold_margin_mean": float(np.mean(margins)) if margins else 0.0,
+        "gamma_requested_mean": float(np.mean(gamma_req_vals)) if gamma_req_vals else 0.0,
+        "gamma_used_mean": float(np.mean(gamma_used_vals)) if gamma_used_vals else 0.0,
+        "gamma_zero_rate": float(np.mean([1.0 if g < 1e-12 else 0.0 for g in gamma_used_vals])) if gamma_used_vals else 0.0,
         "eta_safe": eta_safe,
         "candidate_total_count": int(aug_out_lraes.get("candidate_total_count", len(fused_x_list))),
         "aug_total_count": int(aug_out_lraes.get("aug_total_count", len(fused_x_list))),
@@ -1554,6 +1578,10 @@ def _run_act_pipeline(
         "avg_bridge": aug_out["avg_bridge"],
         "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
         "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "gamma_requested_mean": aug_out.get("gamma_requested_mean", 0.0),
+        "gamma_used_mean": aug_out.get("gamma_used_mean", 0.0),
+        "gamma_zero_rate": aug_out.get("gamma_zero_rate", 0.0),
+        "safe_clip_rate": aug_out.get("safe_clip_rate", 0.0),
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
         "candidate_total_count": aug_out["candidate_total_count"],
@@ -1656,6 +1684,10 @@ def _run_act_zpia_template_pool_pipeline(
         "avg_bridge": aug_out["avg_bridge"],
         "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
         "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "gamma_requested_mean": aug_out.get("gamma_requested_mean", 0.0),
+        "gamma_used_mean": aug_out.get("gamma_used_mean", 0.0),
+        "gamma_zero_rate": aug_out.get("gamma_zero_rate", 0.0),
+        "safe_clip_rate": aug_out.get("safe_clip_rate", 0.0),
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
         "candidate_total_count": aug_out["candidate_total_count"],
@@ -1761,6 +1793,10 @@ def _run_act_rc4_multiz_fused_pipeline(
         "avg_bridge": aug_out["avg_bridge"],
         "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
         "manifold_margin_mean": aug_out["manifold_margin_mean"],
+        "gamma_requested_mean": aug_out.get("gamma_requested_mean", 0.0),
+        "gamma_used_mean": aug_out.get("gamma_used_mean", 0.0),
+        "gamma_zero_rate": aug_out.get("gamma_zero_rate", 0.0),
+        "safe_clip_rate": aug_out.get("safe_clip_rate", 0.0),
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
         "candidate_total_count": aug_out["candidate_total_count"],

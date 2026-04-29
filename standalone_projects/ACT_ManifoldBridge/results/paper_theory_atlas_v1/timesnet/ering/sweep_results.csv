@@ -1,2 +1,0 @@
-dataset,seed,status,algo,model,base_f1,act_f1,gain,transport_error_fro_mean,transport_error_logeuc_mean,bridge_cond_A_mean,metric_preservation_error_mean,safe_radius_ratio_mean,manifold_margin_mean,host_geom_cosine_mean,host_conflict_rate,base_stop_epoch,act_stop_epoch,f1_gain_pct,base_best_val_f1,act_best_val_f1
-ering,1,success,lraes,timesnet,0.9139765473615952,0.9282875832378873,0.014311035876292122,0.00018150964236687679,0.0013190389817234482,1.0920004277099997,0.1398108061678691,0.99999999999,1.0850636770009447,0.0,0.0,100,100,1.5657988546648578,0.7777777777777777,1.0
