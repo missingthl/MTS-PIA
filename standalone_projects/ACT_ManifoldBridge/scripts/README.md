@@ -1,23 +1,20 @@
 # Scripts
 
-Scripts in this folder support the canonical entrypoint
-[`../run_act_pilot.py`](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/run_act_pilot.py).
+Only the release-maintained scripts are kept here.
 
-## Current Active Scripts
+- `run_mba_vs_rc4_matrix.py`: queue runner for the supported comparison arms:
+  `mba_core_lraes`, `mba_core_rc4_fused_concat`, and
+  `mba_core_zpia_top1_pool`.
+- `summarize_mba_vs_rc4_matrix.py`: produces per-seed, per-dataset, and overall
+  comparison summaries.
+- `run_external_baselines_phase1.py`: isolated Phase 1 external-baseline runner
+  for raw time-domain augmentation, Mixup, DBA, SMOTE, naive covariance-state
+  controls, and the maintained CSTA arms. It writes its own summary files under
+  `results/csta_external_baselines_phase1/` and does not add external baseline
+  logic to `run_act_pilot.py`.
 
-- `run_v2_grand_sweep.sh`: ACT-V2 RC grand sweep launcher.
-- `run_mba_vs_rc4_matrix.py`: 4-GPU queue runner for the 20-dataset MBA vs RC-4 census.
-- `summarize_mba_vs_rc4_matrix.py`: normalize the 3 actual arms into 4 logical arms and emit reproduction / drift / gap reports.
-- `aggregate_v2_grand_sweep.py`: aggregate per-dataset result files into one summary.
-- `analyze_v2_taxonomy.py`: summarize emerging regime taxonomy.
-- `generate_paper_assets.py`: generate paper-facing assets.
-- `gen_paper_tables.py`: produce paper tables.
-- `gamma_scan.py`: gamma sensitivity utility.
-- `viz_manifold.py`: latent-space visualization.
-- `viz_theory_stats.py`: theory-stat plots.
-- `viz_time_series.py`: waveform visualization.
+The canonical single-experiment entrypoint is
+[`../run_act_pilot.py`](../run_act_pilot.py).
 
-## Historical / Legacy
-
-`legacy/` contains older one-off sweep and evidence helpers kept only for
-reproducibility. They are not the current project API.
+Historical one-off sweep, visualization, and paper-asset scripts were removed
+from the release folder to keep the project focused and readable.

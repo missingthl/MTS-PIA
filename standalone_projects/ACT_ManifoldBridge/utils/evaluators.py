@@ -364,6 +364,231 @@ def fit_eval_pytorch_model(
     return res
 
 
+def _make_soft_label_loader(
+    X: np.ndarray,
+    y_soft: np.ndarray,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    seed: Optional[int] = None,
+) -> DataLoader:
+    dataset = TensorDataset(torch.from_numpy(X).float(), torch.from_numpy(y_soft).float())
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+    }
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(int(seed))
+        kwargs["generator"] = generator
+    return DataLoader(dataset, **kwargs)
+
+
+def _soft_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    log_probs = F.log_softmax(logits, dim=-1)
+    return -(targets * log_probs).sum(dim=-1).mean()
+
+
+def fit_eval_pytorch_model_soft_labels(
+    model,
+    X_train,
+    y_train_soft,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    use_cosine_annealing=False,
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+) -> Dict[str, float]:
+    """Train with soft-label CE while validating/testing with hard labels."""
+    _set_training_seed(loader_seed)
+    dev = _get_dev(device)
+    model.to(dev)
+
+    train_loader = _make_soft_label_loader(
+        X_train,
+        y_train_soft,
+        batch_size=batch_size,
+        shuffle=True,
+        seed=loader_seed,
+    )
+
+    val_loader = None
+    if X_val is not None:
+        val_loader = _make_tensor_loader(
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            shuffle=False,
+            indexed=False,
+        )
+
+    test_loader = _make_tensor_loader(
+        X_test,
+        y_test,
+        batch_size=batch_size,
+        shuffle=False,
+        indexed=False,
+    )
+
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    hard_criterion = nn.CrossEntropyLoss()
+
+    scheduler = None
+    if use_cosine_annealing:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    early_stopping = EarlyStopping(patience=patience, mode='max')
+    best_val_f1 = 0
+    best_val_loss = float('inf')
+    stop_epoch = epochs
+
+    for epoch in range(epochs):
+        model.train()
+        for bx, by_soft in train_loader:
+            bx = bx.to(dev, non_blocking=True)
+            by_soft = by_soft.to(dev, non_blocking=True)
+            optimizer.zero_grad()
+            logits = model(bx)
+            loss = _soft_cross_entropy(logits, by_soft)
+            loss.backward()
+            optimizer.step()
+
+        if scheduler:
+            scheduler.step()
+
+        if val_loader:
+            v_loss, _, v_f1 = _evaluate(model, val_loader, dev, hard_criterion)
+            if v_f1 > best_val_f1:
+                best_val_f1 = v_f1
+                best_val_loss = v_loss
+            early_stopping(v_f1, model)
+            if early_stopping.early_stop:
+                stop_epoch = epoch + 1
+                break
+        else:
+            stop_epoch = epoch + 1
+
+    if early_stopping.best_model_state:
+        model.load_state_dict(early_stopping.best_model_state)
+
+    _, t_acc, t_f1 = _evaluate(model, test_loader, dev, hard_criterion)
+    res = {
+        "accuracy": t_acc,
+        "macro_f1": t_f1,
+        "best_val_f1": best_val_f1,
+        "best_val_loss": best_val_loss,
+        "stop_epoch": stop_epoch,
+    }
+    if return_model_obj:
+        res["model_obj"] = model
+    return res
+
+
+def fit_eval_pytorch_model_manifold_mixup(
+    model,
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    mixup_alpha: float = 0.4,
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+) -> Dict[str, float]:
+    """Hidden-state mixup for ResNet1D-like models exposing encode/classify."""
+    if not hasattr(model, "encode") or not hasattr(model, "classify"):
+        raise ValueError("manifold_mixup requires a model with encode() and classify().")
+    _set_training_seed(loader_seed)
+    dev = _get_dev(device)
+    model.to(dev)
+
+    y_train = np.asarray(y_train, dtype=np.int64)
+    n_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    train_loader = _make_tensor_loader(
+        X_train,
+        y_train,
+        batch_size=batch_size,
+        shuffle=True,
+        indexed=False,
+        seed=loader_seed,
+    )
+    val_loader = None
+    if X_val is not None:
+        val_loader = _make_tensor_loader(X_val, y_val, batch_size=batch_size, shuffle=False, indexed=False)
+    test_loader = _make_tensor_loader(X_test, y_test, batch_size=batch_size, shuffle=False, indexed=False)
+
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    hard_criterion = nn.CrossEntropyLoss()
+    early_stopping = EarlyStopping(patience=patience, mode='max')
+    best_val_f1 = 0.0
+    best_val_loss = float('inf')
+    stop_epoch = epochs
+    rng = np.random.default_rng(None if loader_seed is None else int(loader_seed))
+
+    for epoch in range(int(epochs)):
+        model.train()
+        for bx, by in train_loader:
+            bx = bx.to(dev, non_blocking=True)
+            by = by.to(dev, non_blocking=True)
+            if bx.shape[0] < 2:
+                continue
+            perm = torch.randperm(bx.shape[0], device=dev)
+            lam = float(rng.beta(float(mixup_alpha), float(mixup_alpha)))
+            lam_t = torch.tensor(lam, dtype=bx.dtype, device=dev)
+            y_soft = F.one_hot(by, num_classes=n_classes).float()
+            y_perm = F.one_hot(by[perm], num_classes=n_classes).float()
+            y_mix = lam_t * y_soft + (1.0 - lam_t) * y_perm
+
+            optimizer.zero_grad()
+            feat = model.encode(bx)
+            feat_perm = model.encode(bx[perm])
+            logits = model.classify(lam_t * feat + (1.0 - lam_t) * feat_perm)
+            loss = _soft_cross_entropy(logits, y_mix)
+            loss.backward()
+            optimizer.step()
+
+        if val_loader:
+            v_loss, _, v_f1 = _evaluate(model, val_loader, dev, hard_criterion)
+            if v_f1 > best_val_f1:
+                best_val_f1 = float(v_f1)
+                best_val_loss = float(v_loss)
+            early_stopping(v_f1, model)
+            if early_stopping.early_stop:
+                stop_epoch = epoch + 1
+                break
+        else:
+            stop_epoch = epoch + 1
+
+    if early_stopping.best_model_state:
+        model.load_state_dict(early_stopping.best_model_state)
+
+    _, t_acc, t_f1 = _evaluate(model, test_loader, dev, hard_criterion)
+    res = {
+        "accuracy": t_acc,
+        "macro_f1": t_f1,
+        "best_val_f1": best_val_f1,
+        "best_val_loss": best_val_loss,
+        "stop_epoch": stop_epoch,
+        "manifold_mixup_alpha": float(mixup_alpha),
+    }
+    if return_model_obj:
+        res["model_obj"] = model
+    return res
+
+
 def fit_eval_resnet1d_progressive_aug_ce(
     X_train,
     y_train,
@@ -1168,6 +1393,84 @@ def fit_eval_resnet1d(
         batch_size,
         patience,
         device,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
+
+
+def fit_eval_resnet1d_soft_labels(
+    X_train,
+    y_train_soft,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=30,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
+    _set_training_seed(loader_seed)
+    in_channels = X_train.shape[1]
+    num_classes = int(max(y_val.max() if y_val is not None else 0, y_test.max()) + 1)
+    if y_train_soft is not None and y_train_soft.ndim == 2:
+        num_classes = max(num_classes, int(y_train_soft.shape[1]))
+    model = ResNet1DClassifier(in_channels, num_classes)
+    return fit_eval_pytorch_model_soft_labels(
+        model,
+        X_train,
+        y_train_soft,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs,
+        lr,
+        batch_size,
+        patience,
+        device,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
+
+
+def fit_eval_resnet1d_manifold_mixup(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=30,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    mixup_alpha: float = 0.4,
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
+    _set_training_seed(loader_seed)
+    in_channels = X_train.shape[1]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    model = ResNet1DClassifier(in_channels, num_classes)
+    return fit_eval_pytorch_model_manifold_mixup(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=device,
+        mixup_alpha=mixup_alpha,
         return_model_obj=return_model_obj,
         loader_seed=loader_seed,
     )

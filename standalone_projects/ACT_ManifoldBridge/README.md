@@ -1,145 +1,92 @@
-# ACT_ManifoldBridge
+# ACT ManifoldBridge
 
-`ACT_ManifoldBridge` is the active standalone workspace for the original
-ACT/MBA augmentation line and its current ACT-V2 follow-up stack.
+Minimal release implementation for covariance-state Manifold Bridge
+Augmentation on multivariate time-series classification.
 
-The stable publishable method body remains small:
+The published project is intentionally scoped to three method families:
+
+- `mba_core_lraes`: original MBA baseline using LRAES directions in
+  Log-Euclidean covariance space.
+- `mba_core_rc4_fused_concat`: RC-4 orthogonal structure-risk fusion reference.
+- `mba_core_zpia_top1_pool`: current SOTA in this project, using the top-response
+  zPIA/TELM2 template direction with MBA core concat training.
+
+Historical branches such as wavelet objects, adaptive routers, progressive
+feedback, spectral OSF, and large paper-asset sweeps were removed from the
+release tree so the folder stays readable.
+
+## Quick Start
+
+Run the current SOTA (`zpia_top1_pool`) on one dataset:
+
+```bash
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
+  --dataset natops \
+  --pipeline act \
+  --algo zpia_top1_pool \
+  --model resnet1d \
+  --seeds 1,2,3 \
+  --epochs 30 \
+  --batch-size 64 \
+  --lr 1e-3 \
+  --patience 10 \
+  --val-ratio 0.2 \
+  --k-dir 10 \
+  --pia-gamma 0.1 \
+  --multiplier 10 \
+  --out-root standalone_projects/ACT_ManifoldBridge/results/local_run
+```
+
+Run the release comparison matrix:
+
+```bash
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/run_mba_vs_rc4_matrix.py \
+  --out-root standalone_projects/ACT_ManifoldBridge/results/local_matrix \
+  --actual-arms mba_core_lraes,mba_core_rc4_fused_concat,mba_core_zpia_top1_pool \
+  --gpus 0 \
+  --seeds 1,2,3
+```
+
+Then summarize:
+
+```bash
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/summarize_mba_vs_rc4_matrix.py \
+  --root standalone_projects/ACT_ManifoldBridge/results/local_matrix
+```
+
+## Release Results
+
+The lightweight release table is kept at:
 
 ```text
-x -> z(x) -> z_aug -> x_aug
+results/release_summary/main_comparison.csv
 ```
 
-That core path means:
+Current 20-dataset summary:
 
-- embed each trial as one static SPD / Log-Euclidean state;
-- build a direction bank in latent space;
-- generate manifold candidates with the curriculum sampler;
-- realize candidates back to raw time series through `bridge_single()`;
-- train the host on original and augmented samples.
-
-## Current Mainline
-
-There are two active pipelines:
-
-- `--pipeline act`
-  - the original ACT/MBA external augmentation path;
-  - `--pipeline mba` is kept as a legacy alias for this.
-- `--pipeline mba_feedback`
-  - the current ACT-V2 utilization stack;
-  - keeps the original CE stream intact and adds weighted augmentation loss.
-
-Supported direction engines:
-
-- `lraes`
-- `zpia`
-- `adaptive`
-
-`adaptive` is the current ACT-V2 experimental path. It supports:
-
-- dual-engine augmentation pools (`lraes` + `zpia`);
-- adaptive routing during training;
-- optional on-the-fly augmentation;
-- focal weighting, tau scheduling, consistency regularization;
-- orthogonal subspace fusion via `--direction-bank-source orthogonal_fusion`.
-
-Current `orthogonal_fusion` uses RC-4 geometry governance:
-
-- the shared safety radius is restored from the original manifold safe-step
-  budget (`R = eta_safe * d_min`);
-- the orthogonal risk branch restores the original LRAES risk-step **scale
-  budget** after projection, rather than claiming information-preserving
-  recovery;
-- this replaces the earlier cap-only behavior, whose normalize target was not
-  fully realized after projection;
-- structure is handled first and only the remaining radius budget is allocated
-  to the risk branch;
-- the old global clip on the full fused `Delta_z` is no longer the default
-  governance rule.
-
-The older failed object-layer and realization-layer branches have been removed
-from the active surface of this folder so the project reflects the current
-research direction more clearly.
-
-## Entry Point
-
-Run the original ACT/MBA mainline:
-
-```bash
-conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
-  --dataset natops --pipeline act --algo lraes --model resnet1d
+```text
+baseline_ce                  mean F1 0.6874
+mba_core_lraes               mean F1 0.7182
+rc4_osf                      mean F1 0.7100
+mba_core_rc4_fused_concat    mean F1 0.7164
+mba_core_zpia_top1_pool      mean F1 0.7314
 ```
 
-Run the feedback path with a fixed engine:
+## Layout
 
-```bash
-conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
-  --dataset natops --pipeline mba_feedback --algo zpia --model resnet1d
-```
+- `run_act_pilot.py`: canonical single-run entrypoint.
+- `core/`: Log-Euclidean bridge, zPIA/TELM2 direction banks, LRAES/MBA helpers,
+  and host model definitions.
+- `utils/`: dataset loading and model evaluation utilities.
+- `scripts/run_mba_vs_rc4_matrix.py`: queue runner for release comparison arms.
+- `scripts/summarize_mba_vs_rc4_matrix.py`: summary table generator.
+- `results/release_summary/`: compact result tables only; large experiment logs
+  are intentionally not part of the release tree.
 
-Run the ACT-V2 adaptive stack:
+## Environment
 
-```bash
-conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
-  --dataset natops --pipeline mba_feedback --algo adaptive --model resnet1d \
-  --direction-bank-source orthogonal_fusion --onthefly-aug \
-  --aug-weight-mode focal --tau-max 2.0 --tau-min 0.1 --tau-warmup-ratio 0.3
-```
-
-## Core Options
-
-- `--pipeline {act,mba,mba_feedback}`
-- `--algo {pia,lraes,zpia,adaptive}`
-- `--model {minirocket,resnet1d,patchtst,timesnet}`
-- `--k-dir`
-- `--pia-gamma`
-- `--multiplier`
-- `--theory-diagnostics`
-- `--disable-safe-step`
-
-ACT-V2 options:
-
-- `--onthefly-aug`
-- `--steps-per-epoch`
-- `--aug-weight-mode {sigmoid,focal}`
-- `--tau-max`
-- `--tau-min`
-- `--tau-warmup-ratio`
-- `--consistency-regularization`
-- `--lambda-consistency`
-- `--consistency-mode {mse,kl}`
-- `--direction-bank-source {lraes,zpia_telm2,orthogonal_fusion}`
-- `--osf-alpha`
-- `--osf-beta`
-- `--osf-kappa`
-- `--router-temperature`
-- `--router-min-prob`
-- `--router-smoothing`
-
-## Current Layout
-
-- [run_act_pilot.py](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/run_act_pilot.py): canonical experiment entrypoint.
-- [core/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/core): latent geometry, bridge realization, and host backbones.
-- [utils/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/utils): datasets, loaders, evaluators, and ACT-V2 trainers.
-- [scripts/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/scripts): sweep, aggregation, paper-table, and visualization helpers.
-- [docs/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/docs): architecture and maintenance notes.
-- [results/](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/results): tracked evidence tables and current experiment outputs.
-
-See [docs/PROJECT_STRUCTURE.md](/home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/docs/PROJECT_STRUCTURE.md)
-for the cleaned structure map.
-
-## Supported Hosts
-
-- `resnet1d`
-- `patchtst`
-- `timesnet`
-- `minirocket` for the original `act` path only
-
-## Environment Rule
-
-Use the `pia` conda environment for all commands in this project:
+Use the `pia` conda environment:
 
 ```bash
 conda run -n pia python ...
 ```
-
-This avoids the missing-dependency noise present in the base environment.

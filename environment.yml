@@ -49,3 +49,6 @@ dependencies:
   - pip:
     - openpyxl>=3.0.0
     - einops>=0.8.0
+    - tsaug>=0.2.1
+    - tslearn>=0.6.0
+    - imbalanced-learn>=0.12.0

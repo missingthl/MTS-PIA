@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PROJECT_ROOT.parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.datasets import load_trials_for_dataset, make_trial_split
+from utils.evaluators import fit_eval_resnet1d, fit_eval_resnet1d_manifold_mixup, fit_eval_resnet1d_soft_labels
+from utils.external_baselines import (
+    ExternalAugResult,
+    dba_sameclass,
+    pca_cov_state,
+    random_cov_state,
+    raw_aug_jitter,
+    raw_aug_magnitude_warping,
+    raw_aug_scaling,
+    raw_aug_timewarp,
+    raw_aug_window_slicing,
+    raw_aug_window_warping,
+    raw_mixup,
+    raw_smote_flatten_balanced,
+    spawner_sameclass_style,
+    wdba_sameclass,
+)
+
+
+DEFAULT_DATASETS = [
+    "atrialfibrillation",
+    "ering",
+    "handmovementdirection",
+    "handwriting",
+    "japanesevowels",
+    "natops",
+    "racketsports",
+]
+
+DEFAULT_ARMS = [
+    "no_aug",
+    "raw_aug_jitter",
+    "raw_aug_scaling",
+    "raw_aug_timewarp",
+    "raw_mixup",
+    "dba_sameclass",
+    "raw_smote_flatten_balanced",
+    "random_cov_state",
+    "pca_cov_state",
+    "csta_top1_current",
+    "csta_group_template_top",
+]
+
+PHASE2_ARMS = [
+    "raw_aug_magnitude_warping",
+    "raw_aug_window_warping",
+    "raw_aug_window_slicing",
+    "wdba_sameclass",
+    "spawner_sameclass_style",
+]
+
+PHASE3_ARMS = [
+    "manifold_mixup",
+    "timevae_classwise_optional",
+]
+
+RAW_AUG_METHODS = {
+    "raw_aug_jitter",
+    "raw_aug_scaling",
+    "raw_aug_timewarp",
+    "raw_aug_magnitude_warping",
+    "raw_aug_window_warping",
+    "raw_aug_window_slicing",
+}
+REF_METHODS = [
+    "no_aug",
+    "best_rawaug",
+    "raw_mixup",
+    "dba_sameclass",
+    "raw_smote_flatten_balanced",
+    "random_cov_state",
+    "pca_cov_state",
+    "csta_top1_current",
+    "csta_group_template_top",
+]
+
+
+@dataclass(frozen=True)
+class MethodInfo:
+    source_space: str
+    label_mode: str
+    uses_external_library: bool
+    library_name: str
+    budget_matched: bool
+    selection_rule: str
+
+
+METHOD_INFO: Dict[str, MethodInfo] = {
+    "no_aug": MethodInfo("none", "hard", False, "", True, "none"),
+    "raw_aug_jitter": MethodInfo("raw_time", "hard", True, "tsaug", True, "repeat_train_anchors_addnoise"),
+    "raw_aug_scaling": MethodInfo("raw_time", "hard", False, "", True, "repeat_train_anchors_amplitude_uniform"),
+    "raw_aug_timewarp": MethodInfo("raw_time", "hard", True, "tsaug", True, "repeat_train_anchors_timewarp"),
+    "raw_aug_magnitude_warping": MethodInfo(
+        "raw_time",
+        "hard",
+        False,
+        "",
+        True,
+        "repeat_train_anchors_magnitude_warping",
+    ),
+    "raw_aug_window_warping": MethodInfo(
+        "raw_time",
+        "hard",
+        False,
+        "",
+        True,
+        "repeat_train_anchors_window_warping",
+    ),
+    "raw_aug_window_slicing": MethodInfo(
+        "raw_time",
+        "hard",
+        False,
+        "",
+        True,
+        "repeat_train_anchors_window_slicing",
+    ),
+    "raw_mixup": MethodInfo("raw_mixup", "soft", False, "", True, "train_split_random_pair_beta"),
+    "dba_sameclass": MethodInfo("dtw_barycenter", "hard", True, "tslearn", True, "same_class_dba"),
+    "wdba_sameclass": MethodInfo(
+        "dtw_barycenter",
+        "hard",
+        True,
+        "tslearn",
+        True,
+        "same_class_weighted_dba_anchor_dtw_softmax",
+    ),
+    "spawner_sameclass_style": MethodInfo(
+        "dtw_pattern_mix",
+        "hard",
+        True,
+        "tslearn",
+        True,
+        "spawner_style_same_class_dtw_aligned_average",
+    ),
+    "raw_smote_flatten_balanced": MethodInfo(
+        "flattened_raw",
+        "hard",
+        True,
+        "imbalanced-learn",
+        False,
+        "class_balancing_smote_auto",
+    ),
+    "random_cov_state": MethodInfo("covariance_state", "hard", False, "", True, "random_unit_z_direction"),
+    "pca_cov_state": MethodInfo("covariance_state", "hard", False, "", True, "pca_top_z_direction"),
+    "csta_top1_current": MethodInfo("covariance_template", "hard", False, "", True, "anchor_top_response"),
+    "csta_group_template_top": MethodInfo("covariance_template", "hard", False, "", True, "group_center_top_response"),
+    "manifold_mixup": MethodInfo("hidden_state", "soft", False, "", False, "resnet1d_hidden_state_beta_mixup"),
+    "timevae_classwise_optional": MethodInfo(
+        "generative_model",
+        "hard",
+        True,
+        "timeVAE",
+        False,
+        "classwise_timevae_optional_failfast",
+    ),
+}
+
+
+def _parse_csv(value: str) -> List[str]:
+    return [x.strip() for x in str(value).split(",") if x.strip()]
+
+
+def _stack_trials(trials) -> tuple[np.ndarray, np.ndarray]:
+    X = np.stack([t.x for t in trials], axis=0).astype(np.float32)
+    y = np.asarray([t.y for t in trials], dtype=np.int64)
+    return X, y
+
+
+def _one_hot(y: np.ndarray, n_classes: int) -> np.ndarray:
+    out = np.zeros((len(y), int(n_classes)), dtype=np.float32)
+    out[np.arange(len(y)), y.astype(np.int64)] = 1.0
+    return out
+
+
+def _fit_hard(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    args,
+    seed: int,
+):
+    return fit_eval_resnet1d(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=args.epochs,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        patience=args.patience,
+        device=args.device,
+        loader_seed=int(seed),
+    )
+
+
+def _fit_soft(
+    X_train,
+    y_train_soft,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    args,
+    seed: int,
+):
+    return fit_eval_resnet1d_soft_labels(
+        X_train,
+        y_train_soft,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs=args.epochs,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        patience=args.patience,
+        device=args.device,
+        loader_seed=int(seed),
+    )
+
+
+def _build_external_aug(method: str, X_train, y_train, args, seed: int, n_classes: int) -> ExternalAugResult:
+    builders: Dict[str, Callable[[], ExternalAugResult]] = {
+        "raw_aug_jitter": lambda: raw_aug_jitter(X_train, y_train, multiplier=args.multiplier, seed=seed),
+        "raw_aug_scaling": lambda: raw_aug_scaling(X_train, y_train, multiplier=args.multiplier, seed=seed),
+        "raw_aug_timewarp": lambda: raw_aug_timewarp(X_train, y_train, multiplier=args.multiplier, seed=seed),
+        "raw_aug_magnitude_warping": lambda: raw_aug_magnitude_warping(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            sigma=args.magnitude_warp_sigma,
+            knots=args.magnitude_warp_knots,
+            per_channel_curve=not args.magnitude_warp_shared_curve,
+        ),
+        "raw_aug_window_warping": lambda: raw_aug_window_warping(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            window_ratio=args.window_warp_ratio,
+            speed_factors=tuple(float(x) for x in _parse_csv(args.window_warp_speeds)),
+            min_window_len=args.window_min_len,
+        ),
+        "raw_aug_window_slicing": lambda: raw_aug_window_slicing(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            slice_ratio=args.window_slice_ratio,
+            min_window_len=args.window_min_len,
+        ),
+        "raw_mixup": lambda: raw_mixup(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            alpha=args.mixup_alpha,
+            n_classes=n_classes,
+        ),
+        "dba_sameclass": lambda: dba_sameclass(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            k=args.dba_k,
+            max_iter=args.dba_max_iter,
+        ),
+        "wdba_sameclass": lambda: wdba_sameclass(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            k=args.wdba_k,
+            max_iter=args.wdba_max_iter,
+        ),
+        "spawner_sameclass_style": lambda: spawner_sameclass_style(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            noise_scale=args.spawner_noise_scale,
+        ),
+        "raw_smote_flatten_balanced": lambda: raw_smote_flatten_balanced(X_train, y_train, seed=seed),
+        "random_cov_state": lambda: random_cov_state(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            gamma=args.pia_gamma,
+        ),
+        "pca_cov_state": lambda: pca_cov_state(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            gamma=args.pia_gamma,
+            k_dir=args.k_dir,
+        ),
+    }
+    if method not in builders:
+        raise ValueError(f"No external augmenter registered for method={method}")
+    return builders[method]()
+
+
+def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path) -> Dict[str, object]:
+    csta_root = out_root / "_csta_runs" / method / dataset / f"s{seed}"
+    csta_root.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable,
+        str(PROJECT_ROOT / "run_act_pilot.py"),
+        "--dataset",
+        dataset,
+        "--pipeline",
+        "act",
+        "--algo",
+        "zpia_top1_pool",
+        "--model",
+        "resnet1d",
+        "--seeds",
+        str(seed),
+        "--epochs",
+        str(args.epochs),
+        "--batch-size",
+        str(args.batch_size),
+        "--lr",
+        str(args.lr),
+        "--patience",
+        str(args.patience),
+        "--val-ratio",
+        str(args.val_ratio),
+        "--k-dir",
+        str(args.k_dir),
+        "--pia-gamma",
+        str(args.pia_gamma),
+        "--multiplier",
+        str(args.multiplier),
+        "--device",
+        args.device,
+        "--out-root",
+        str(csta_root),
+    ]
+    if method == "csta_group_template_top":
+        cmd.extend(["--template-selection", "group_top", "--group-size", str(args.group_size)])
+
+    (csta_root / "command.json").write_text(
+        json.dumps({"method": method, "command": cmd}, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+    log_path = csta_root / "run.log"
+    with log_path.open("w", encoding="utf-8") as log_f:
+        proc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=log_f, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{method} failed for {dataset} seed {seed}; see {log_path}")
+
+    result_csv = csta_root / f"{dataset}_results.csv"
+    if not result_csv.is_file():
+        raise FileNotFoundError(f"Missing CSTA result file: {result_csv}")
+    df = pd.read_csv(result_csv)
+    if df.empty or str(df.iloc[0].get("status", "success")) != "success":
+        raise RuntimeError(f"{method} did not produce a success row in {result_csv}")
+    row = df.iloc[0].to_dict()
+    return {
+        "base_f1": float(row.get("base_f1", np.nan)),
+        "aug_f1": float(row.get("act_f1", np.nan)),
+        "best_val_f1": float(row.get("act_best_val_f1", row.get("act_val_f1", row.get("base_best_val_f1", 0.0)))),
+        "stop_epoch": int(row.get("act_stop_epoch", 0)) if not pd.isna(row.get("act_stop_epoch", np.nan)) else 0,
+        "aug_count": int(row.get("aug_total_count", 0)) if "aug_total_count" in row else int(args.multiplier),
+        "warning_count": 0,
+    }
+
+
+def _base_result_row(
+    *,
+    dataset: str,
+    seed: int,
+    method: str,
+    base_f1: float,
+    aug_f1: float,
+    aug_count: int,
+    n_train: int,
+    info: MethodInfo,
+    best_val_f1: float,
+    stop_epoch: int,
+    warning_count: int = 0,
+    fallback_count: int = 0,
+    method_elapsed_sec: float = 0.0,
+    status: str = "success",
+    fail_reason: str = "",
+) -> Dict[str, object]:
+    actual_aug_ratio = float(aug_count) / max(float(n_train), 1.0)
+    return {
+        "dataset": dataset,
+        "seed": int(seed),
+        "method": method,
+        "status": status,
+        "fail_reason": fail_reason,
+        "base_f1": float(base_f1),
+        "aug_f1": float(aug_f1),
+        "gain": float(aug_f1) - float(base_f1),
+        "aug_count": int(aug_count),
+        "aug_ratio": float(actual_aug_ratio),
+        "actual_aug_ratio": float(actual_aug_ratio),
+        "source_space": info.source_space,
+        "label_mode": info.label_mode,
+        "backbone": "resnet1d",
+        "train_split_only": True,
+        "uses_external_library": bool(info.uses_external_library),
+        "library_name": info.library_name or "none",
+        "budget_matched": bool(info.budget_matched),
+        "selection_rule": info.selection_rule,
+        "best_val_f1": float(best_val_f1),
+        "stop_epoch": int(stop_epoch),
+        "warning_count": int(warning_count),
+        "fallback_count": int(fallback_count),
+        "method_elapsed_sec": float(method_elapsed_sec),
+    }
+
+
+def _write_summaries(rows: List[Dict[str, object]], out_root: Path) -> None:
+    out_root.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(rows)
+    per_seed_path = out_root / "per_seed_external.csv"
+    df.to_csv(per_seed_path, index=False)
+
+    ok = df[df["status"] == "success"].copy()
+    if ok.empty:
+        return
+
+    dataset_summary = (
+        ok.groupby(["dataset", "method"], as_index=False)
+        .agg(
+            aug_f1_mean=("aug_f1", "mean"),
+            aug_f1_std=("aug_f1", "std"),
+            gain_mean=("gain", "mean"),
+            gain_std=("gain", "std"),
+            best_val_f1_mean=("best_val_f1", "mean"),
+            aug_count_mean=("aug_count", "mean"),
+            actual_aug_ratio_mean=("actual_aug_ratio", "mean"),
+            n_seeds=("seed", "nunique"),
+        )
+        .sort_values(["dataset", "aug_f1_mean"], ascending=[True, False])
+    )
+    dataset_summary.to_csv(out_root / "dataset_summary_external.csv", index=False)
+
+    pivot = dataset_summary.pivot(index="dataset", columns="method", values="aug_f1_mean")
+    ranks = pivot.rank(axis=1, ascending=False, method="average")
+    overall_rows = []
+    for method in sorted(ok["method"].unique()):
+        vals = pivot[method].dropna() if method in pivot else pd.Series(dtype=float)
+        rank_vals = ranks[method].dropna() if method in ranks else pd.Series(dtype=float)
+        overall_rows.append(
+            {
+                "method": method,
+                "n_datasets": int(vals.shape[0]),
+                "mean_f1": float(vals.mean()) if not vals.empty else np.nan,
+                "mean_rank": float(rank_vals.mean()) if not rank_vals.empty else np.nan,
+                "win_count": int((rank_vals == 1.0).sum()) if not rank_vals.empty else 0,
+            }
+        )
+    pd.DataFrame(overall_rows).sort_values(["mean_rank", "mean_f1"], ascending=[True, False]).to_csv(
+        out_root / "overall_rank_external.csv",
+        index=False,
+    )
+
+    raw = ok[ok["method"].isin(RAW_AUG_METHODS)].copy()
+    best_rows = []
+    if not raw.empty:
+        for (dataset, seed), sub in raw.groupby(["dataset", "seed"]):
+            sub = sub.sort_values(["best_val_f1", "method"], ascending=[False, True])
+            best = sub.iloc[0].to_dict()
+            best["selected_method"] = best["method"]
+            best["method"] = "best_rawaug"
+            best_rows.append(best)
+    best_raw_df = pd.DataFrame(best_rows)
+    best_raw_df.to_csv(out_root / "best_rawaug_val_selected.csv", index=False)
+
+    combined = ok.copy()
+    if not best_raw_df.empty:
+        combined = pd.concat([combined, best_raw_df], ignore_index=True)
+    combined_summary = combined.groupby(["dataset", "method"], as_index=False).agg(aug_f1_mean=("aug_f1", "mean"))
+    comp = combined_summary.pivot(index="dataset", columns="method", values="aug_f1_mean").reset_index()
+    ref_rows = []
+    for _, row in comp.iterrows():
+        out = {"dataset": row["dataset"]}
+        csta = row.get("csta_top1_current", np.nan)
+        group = row.get("csta_group_template_top", np.nan)
+        for method in REF_METHODS:
+            out[method] = row.get(method, np.nan)
+        for ref in [
+            "no_aug",
+            "best_rawaug",
+            "raw_mixup",
+            "dba_sameclass",
+            "raw_smote_flatten_balanced",
+            "random_cov_state",
+            "pca_cov_state",
+        ]:
+            out[f"csta_top1_minus_{ref}"] = csta - row.get(ref, np.nan)
+            out[f"csta_group_minus_{ref}"] = group - row.get(ref, np.nan)
+        out["csta_group_minus_csta_top1"] = group - csta
+        ref_rows.append(out)
+    pd.DataFrame(ref_rows).to_csv(out_root / "csta_vs_external_refs.csv", index=False)
+
+
+def _write_phase1_phase2_combined_summaries(out_root: Path, locked_phase1_root: Optional[Path]) -> None:
+    if locked_phase1_root is None:
+        return
+    phase1_path = Path(locked_phase1_root) / "per_seed_external.csv"
+    phase2_path = Path(out_root) / "per_seed_external.csv"
+    if not phase1_path.is_file() or not phase2_path.is_file():
+        return
+    phase1 = pd.read_csv(phase1_path)
+    phase2 = pd.read_csv(phase2_path)
+    if phase1.empty or phase2.empty:
+        return
+    phase1 = phase1.copy()
+    phase2 = phase2.copy()
+    phase1["phase"] = "phase1_locked"
+    phase2["phase"] = "phase2_new"
+    combined = pd.concat([phase1, phase2], ignore_index=True, sort=False)
+    ok = combined[combined["status"].fillna("success") == "success"].copy()
+    if ok.empty:
+        return
+
+    summary = (
+        ok.groupby(["phase", "dataset", "method"], as_index=False)
+        .agg(
+            aug_f1_mean=("aug_f1", "mean"),
+            aug_f1_std=("aug_f1", "std"),
+            gain_mean=("gain", "mean"),
+            actual_aug_ratio_mean=("actual_aug_ratio", "mean"),
+            method_elapsed_sec_mean=("method_elapsed_sec", "mean"),
+            fallback_count_mean=("fallback_count", "mean"),
+            n_seeds=("seed", "nunique"),
+        )
+        .sort_values(["dataset", "aug_f1_mean"], ascending=[True, False])
+    )
+    summary.to_csv(out_root / "phase1_phase2_external_summary.csv", index=False)
+
+    dataset_summary = ok.groupby(["dataset", "method"], as_index=False).agg(aug_f1_mean=("aug_f1", "mean"))
+    pivot = dataset_summary.pivot(index="dataset", columns="method", values="aug_f1_mean").reset_index()
+    csta_rows = []
+    for _, row in pivot.iterrows():
+        out = {"dataset": row["dataset"]}
+        for col in pivot.columns:
+            if col != "dataset":
+                out[col] = row.get(col, np.nan)
+        csta = row.get("csta_top1_current", np.nan)
+        group = row.get("csta_group_template_top", np.nan)
+        for method in sorted(set(ok["method"])):
+            if method in {"csta_top1_current", "csta_group_template_top"}:
+                continue
+            out[f"csta_top1_minus_{method}"] = csta - row.get(method, np.nan)
+            out[f"csta_group_minus_{method}"] = group - row.get(method, np.nan)
+        out["csta_group_minus_csta_top1"] = group - csta
+        csta_rows.append(out)
+    pd.DataFrame(csta_rows).to_csv(out_root / "csta_vs_all_external_phase1_phase2.csv", index=False)
+
+    phase2_ok = ok[ok["method"].isin(PHASE2_ARMS)].copy()
+    if phase2_ok.empty:
+        return
+    method_means = phase2_ok.groupby("method", as_index=False).agg(mean_f1=("aug_f1", "mean"))
+    method_means = method_means.sort_values(["mean_f1", "method"], ascending=[False, True])
+    best_method = str(method_means.iloc[0]["method"])
+    best_mean = float(method_means.iloc[0]["mean_f1"])
+    best_rows = []
+    for dataset, sub in dataset_summary.groupby("dataset"):
+        vals = sub.set_index("method")["aug_f1_mean"]
+        best_rows.append(
+            {
+                "dataset": dataset,
+                "best_phase2_baseline": best_method,
+                "best_phase2_overall_mean_f1": best_mean,
+                "best_phase2_f1": float(vals.get(best_method, np.nan)),
+                "csta_top1_current": float(vals.get("csta_top1_current", np.nan)),
+                "csta_group_template_top": float(vals.get("csta_group_template_top", np.nan)),
+                "best_phase2_minus_csta_top1": float(vals.get(best_method, np.nan) - vals.get("csta_top1_current", np.nan)),
+                "best_phase2_minus_csta_group": float(vals.get(best_method, np.nan) - vals.get("csta_group_template_top", np.nan)),
+            }
+        )
+    pd.DataFrame(best_rows).to_csv(out_root / "best_phase2_vs_csta.csv", index=False)
+
+
+def run(args) -> List[Dict[str, object]]:
+    datasets = _parse_csv(args.datasets)
+    methods = _parse_csv(args.arms)
+    unknown = sorted(set(methods) - set(METHOD_INFO))
+    if unknown:
+        raise ValueError(f"Unknown external baseline arms: {unknown}")
+
+    out_root = Path(args.out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / "run_config.json").write_text(json.dumps(vars(args), indent=2, sort_keys=True), encoding="utf-8")
+
+    if args.dry_run:
+        for dataset in datasets:
+            for seed in _parse_csv(args.seeds):
+                for method in methods:
+                    print(f"DRY-RUN dataset={dataset} seed={seed} method={method}")
+        return []
+
+    rows: List[Dict[str, object]] = []
+    seeds = [int(s) for s in _parse_csv(args.seeds)]
+    for dataset in datasets:
+        trials = load_trials_for_dataset(dataset)
+        for seed in seeds:
+            train_trials, test_trials, val_trials = make_trial_split(trials, seed=seed, val_ratio=args.val_ratio)
+            X_train, y_train = _stack_trials(train_trials)
+            X_test, y_test = _stack_trials(test_trials)
+            X_val, y_val = _stack_trials(val_trials) if val_trials else (None, None)
+            n_train = int(len(X_train))
+            n_classes = int(max(y_train.max(), y_test.max(), y_val.max() if y_val is not None else 0) + 1)
+
+            print(f"[{dataset} s{seed}] fitting no_aug baseline")
+            base_res = _fit_hard(X_train, y_train, X_val, y_val, X_test, y_test, args, seed)
+            base_f1 = float(base_res["macro_f1"])
+            base_val = float(base_res.get("best_val_f1", np.nan))
+            base_stop = int(base_res.get("stop_epoch", 0))
+
+            for method in methods:
+                info = METHOD_INFO[method]
+                try:
+                    print(f"[{dataset} s{seed}] method={method}")
+                    t0 = time.perf_counter()
+                    if method == "no_aug":
+                        row = _base_result_row(
+                            dataset=dataset,
+                            seed=seed,
+                            method=method,
+                            base_f1=base_f1,
+                            aug_f1=base_f1,
+                            aug_count=0,
+                            n_train=n_train,
+                            info=info,
+                            best_val_f1=base_val,
+                            stop_epoch=base_stop,
+                            method_elapsed_sec=0.0,
+                        )
+                    elif method.startswith("csta_"):
+                        csta_res = _run_csta_method(dataset, seed, method, args, out_root)
+                        elapsed = time.perf_counter() - t0
+                        row = _base_result_row(
+                            dataset=dataset,
+                            seed=seed,
+                            method=method,
+                            base_f1=float(csta_res["base_f1"]),
+                            aug_f1=float(csta_res["aug_f1"]),
+                            aug_count=int(csta_res["aug_count"]),
+                            n_train=n_train,
+                            info=info,
+                            best_val_f1=float(csta_res.get("best_val_f1", np.nan)),
+                            stop_epoch=int(csta_res.get("stop_epoch", 0)),
+                            warning_count=int(csta_res.get("warning_count", 0)),
+                            fallback_count=int(csta_res.get("warning_count", 0)),
+                            method_elapsed_sec=elapsed,
+                        )
+                    elif method == "manifold_mixup":
+                        res = fit_eval_resnet1d_manifold_mixup(
+                            X_train,
+                            y_train,
+                            X_val,
+                            y_val,
+                            X_test,
+                            y_test,
+                            epochs=args.epochs,
+                            lr=args.lr,
+                            batch_size=args.batch_size,
+                            patience=args.patience,
+                            device=args.device,
+                            mixup_alpha=args.mixup_alpha,
+                            loader_seed=int(seed),
+                        )
+                        elapsed = time.perf_counter() - t0
+                        row = _base_result_row(
+                            dataset=dataset,
+                            seed=seed,
+                            method=method,
+                            base_f1=base_f1,
+                            aug_f1=float(res["macro_f1"]),
+                            aug_count=0,
+                            n_train=n_train,
+                            info=info,
+                            best_val_f1=float(res.get("best_val_f1", np.nan)),
+                            stop_epoch=int(res.get("stop_epoch", 0)),
+                            method_elapsed_sec=elapsed,
+                        )
+                        row["manifold_mixup_alpha"] = float(args.mixup_alpha)
+                    elif method == "timevae_classwise_optional":
+                        raise RuntimeError(
+                            "timevae_classwise_optional is an optional Phase 3 fail-fast placeholder; "
+                            "install and wire a vetted TimeVAE implementation before running this arm."
+                        )
+                    else:
+                        aug = _build_external_aug(method, X_train, y_train, args, seed, n_classes)
+                        aug_count = int(aug.X_aug.shape[0])
+                        if aug.label_mode == "soft":
+                            y_orig_soft = _one_hot(y_train, n_classes)
+                            X_mix = np.concatenate([X_train, aug.X_aug], axis=0).astype(np.float32)
+                            y_mix_soft = np.concatenate([y_orig_soft, aug.y_aug_soft], axis=0).astype(np.float32)
+                            res = _fit_soft(X_mix, y_mix_soft, X_val, y_val, X_test, y_test, args, seed)
+                        else:
+                            if aug_count > 0:
+                                X_mix = np.concatenate([X_train, aug.X_aug], axis=0).astype(np.float32)
+                                y_mix = np.concatenate([y_train, aug.y_aug], axis=0).astype(np.int64)
+                            else:
+                                X_mix = X_train
+                                y_mix = y_train
+                            res = _fit_hard(X_mix, y_mix, X_val, y_val, X_test, y_test, args, seed)
+                        elapsed = time.perf_counter() - t0
+                        row = _base_result_row(
+                            dataset=dataset,
+                            seed=seed,
+                            method=method,
+                            base_f1=base_f1,
+                            aug_f1=float(res["macro_f1"]),
+                            aug_count=aug_count,
+                            n_train=n_train,
+                            info=info,
+                            best_val_f1=float(res.get("best_val_f1", np.nan)),
+                            stop_epoch=int(res.get("stop_epoch", 0)),
+                            warning_count=int(aug.warning_count),
+                            fallback_count=int(getattr(aug, "fallback_count", 0) or aug.warning_count),
+                            method_elapsed_sec=elapsed,
+                        )
+                        for key, value in aug.meta.items():
+                            row[key] = value
+                    rows.append(row)
+                    _write_summaries(rows, out_root)
+                    _write_phase1_phase2_combined_summaries(out_root, Path(args.locked_phase1_root) if args.locked_phase1_root else None)
+                except Exception as exc:
+                    fail = _base_result_row(
+                        dataset=dataset,
+                        seed=seed,
+                        method=method,
+                        base_f1=base_f1,
+                        aug_f1=np.nan,
+                        aug_count=0,
+                        n_train=n_train,
+                        info=info,
+                        best_val_f1=np.nan,
+                        stop_epoch=0,
+                        method_elapsed_sec=time.perf_counter() - t0 if "t0" in locals() else 0.0,
+                        status="failed",
+                        fail_reason=str(exc),
+                    )
+                    rows.append(fail)
+                    _write_summaries(rows, out_root)
+                    _write_phase1_phase2_combined_summaries(out_root, Path(args.locked_phase1_root) if args.locked_phase1_root else None)
+                    if args.fail_fast:
+                        raise
+    _write_summaries(rows, out_root)
+    _write_phase1_phase2_combined_summaries(out_root, Path(args.locked_phase1_root) if args.locked_phase1_root else None)
+    return rows
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="CSTA external baseline runner for Phase 1/2/3 arms")
+    parser.add_argument("--out-root", type=str, default=str(PROJECT_ROOT / "results" / "csta_external_baselines_phase1" / "resnet1d_s123"))
+    parser.add_argument("--datasets", type=str, default=",".join(DEFAULT_DATASETS))
+    parser.add_argument("--arms", type=str, default=",".join(DEFAULT_ARMS))
+    parser.add_argument("--seeds", type=str, default="1,2,3")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--multiplier", type=int, default=10)
+    parser.add_argument("--k-dir", type=int, default=10)
+    parser.add_argument("--pia-gamma", type=float, default=0.1)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--mixup-alpha", type=float, default=0.4)
+    parser.add_argument("--dba-k", type=int, default=5)
+    parser.add_argument("--dba-max-iter", type=int, default=5)
+    parser.add_argument("--magnitude-warp-sigma", type=float, default=0.2)
+    parser.add_argument("--magnitude-warp-knots", type=int, default=4)
+    parser.add_argument("--magnitude-warp-shared-curve", action="store_true")
+    parser.add_argument("--window-warp-ratio", type=float, default=0.10)
+    parser.add_argument("--window-warp-speeds", type=str, default="0.5,2.0")
+    parser.add_argument("--window-slice-ratio", type=float, default=0.90)
+    parser.add_argument("--window-min-len", type=int, default=4)
+    parser.add_argument("--wdba-k", type=int, default=5)
+    parser.add_argument("--wdba-max-iter", type=int, default=5)
+    parser.add_argument("--spawner-noise-scale", type=float, default=0.05)
+    parser.add_argument(
+        "--locked-phase1-root",
+        type=str,
+        default=str(PROJECT_ROOT / "results" / "csta_external_baselines_phase1" / "resnet1d_s123"),
+        help="Optional locked Phase 1 root to merge with new Phase 2 rows.",
+    )
+    parser.add_argument("--group-size", type=int, default=5)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true")
+    args = parser.parse_args()
+    run(args)
+
+
+if __name__ == "__main__":
+    main()
