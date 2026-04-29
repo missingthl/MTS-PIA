@@ -1,0 +1,8 @@
+method,mean_f1,gap_sampling_best_minus_method,source
+wdba_sameclass,0.6679222249312298,-0.004893823101597916,phase2_locked
+dba_sameclass,0.6633089519049826,-0.0002805500753507717,phase1_locked
+csta_topk_uniform_top5,0.6630284018296319,0.0,sampling_v1
+spawner_sameclass_style,0.6608128472973602,0.002215554532271624,phase2_locked
+raw_aug_window_slicing,0.6592485456870069,0.0037798561426249933,phase2_locked
+raw_mixup,0.6215713496243738,0.04145705220525808,phase1_locked
+no_aug,0.6212367036616004,0.04179169816803141,phase1_locked

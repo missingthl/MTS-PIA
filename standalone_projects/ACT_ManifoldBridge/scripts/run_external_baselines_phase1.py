@@ -36,6 +36,7 @@ from utils.external_baselines import (
     spawner_sameclass_style,
     wdba_sameclass,
 )
+from core.pia_operator import pia_operator_metadata
 
 
 DEFAULT_DATASETS = [
@@ -73,6 +74,48 @@ PHASE2_ARMS = [
 PHASE3_ARMS = [
     "manifold_mixup",
     "timevae_classwise_optional",
+]
+
+CSTA_RESULT_PASSTHROUGH_FIELDS = [
+    "transport_error_fro_mean",
+    "transport_error_logeuc_mean",
+    "bridge_cond_A_mean",
+    "metric_preservation_error_mean",
+    "safe_radius_ratio_mean",
+    "manifold_margin_mean",
+    "gamma_requested_mean",
+    "gamma_used_mean",
+    "gamma_zero_rate",
+    "host_geom_cosine_mean",
+    "host_conflict_rate",
+    "candidate_total_count",
+    "aug_total_count",
+    "requested_k_dir",
+    "effective_k_dir",
+    "safe_clip_rate",
+    "template_usage_entropy",
+    "selected_template_entropy",
+    "top_template_concentration",
+    "direction_bank_source",
+    "utilization_mode",
+    "core_training_mode",
+    "aug_train_ratio",
+    "multi_template_pairs",
+    "template_selection",
+    "zpia_z_dim",
+    "zpia_n_train",
+    "zpia_n_train_lt_z_dim",
+    "zpia_row_norm_min",
+    "zpia_row_norm_max",
+    "zpia_row_norm_mean",
+    "zpia_fallback_row_count",
+    "telm2_recon_last",
+    "telm2_recon_mean",
+    "telm2_recon_std",
+    "telm2_n_iters",
+    "telm2_c_repr",
+    "telm2_activation",
+    "telm2_bias_update_mode",
 ]
 
 RAW_AUG_METHODS = {
@@ -195,6 +238,32 @@ def _one_hot(y: np.ndarray, n_classes: int) -> np.ndarray:
     out = np.zeros((len(y), int(n_classes)), dtype=np.float32)
     out[np.arange(len(y)), y.astype(np.int64)] = 1.0
     return out
+
+
+def _csta_policy_for_method(method: str) -> str:
+    if method == "csta_top1_current":
+        return "top1"
+    if method == "csta_group_template_top":
+        return "group_top"
+    if method.startswith("csta_topk_"):
+        return method.replace("csta_", "", 1)
+    return method
+
+
+def _clean_metric_value(value):
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    return value
+
+
+def _extract_csta_extra_metrics(result_row: Dict[str, object], method: str) -> Dict[str, object]:
+    extra = pia_operator_metadata(_csta_policy_for_method(method))
+    for field in CSTA_RESULT_PASSTHROUGH_FIELDS:
+        if field in result_row:
+            extra[field] = _clean_metric_value(result_row[field])
+    if "selected_template_entropy" not in extra and "template_usage_entropy" in extra:
+        extra["selected_template_entropy"] = extra["template_usage_entropy"]
+    return extra
 
 
 def _fit_hard(
@@ -394,6 +463,18 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
     if df.empty or str(df.iloc[0].get("status", "success")) != "success":
         raise RuntimeError(f"{method} did not produce a success row in {result_csv}")
     row = df.iloc[0].to_dict()
+    extra_metrics = _extract_csta_extra_metrics(row, method)
+    if (
+        float(extra_metrics.get("gamma_requested_mean", 0.0) or 0.0) == 0.0
+        and float(row.get("gamma_zero_rate", 0.0) or 0.0) == 0.0
+    ):
+        # Older zPIA result rows did not always surface the requested gamma
+        # from the ACT command even though the safe-step audit shows non-zero
+        # displacements.  Preserve the locked performance while carrying the
+        # run configuration into the external summary.
+        extra_metrics["gamma_requested_mean"] = float(args.pia_gamma)
+        if float(extra_metrics.get("safe_clip_rate", 0.0) or 0.0) == 0.0:
+            extra_metrics["gamma_used_mean"] = float(args.pia_gamma)
     return {
         "base_f1": float(row.get("base_f1", np.nan)),
         "aug_f1": float(row.get("act_f1", np.nan)),
@@ -401,6 +482,7 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         "stop_epoch": int(row.get("act_stop_epoch", 0)) if not pd.isna(row.get("act_stop_epoch", np.nan)) else 0,
         "aug_count": int(row.get("aug_total_count", 0)) if "aug_total_count" in row else int(args.multiplier),
         "warning_count": 0,
+        "extra_metrics": extra_metrics,
     }
 
 
@@ -421,9 +503,10 @@ def _base_result_row(
     method_elapsed_sec: float = 0.0,
     status: str = "success",
     fail_reason: str = "",
+    extra_metrics: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     actual_aug_ratio = float(aug_count) / max(float(n_train), 1.0)
-    return {
+    row = {
         "dataset": dataset,
         "seed": int(seed),
         "method": method,
@@ -449,6 +532,11 @@ def _base_result_row(
         "fallback_count": int(fallback_count),
         "method_elapsed_sec": float(method_elapsed_sec),
     }
+    if extra_metrics:
+        for key, value in extra_metrics.items():
+            if key not in row:
+                row[key] = value
+    return row
 
 
 def _write_summaries(rows: List[Dict[str, object]], out_root: Path) -> None:
@@ -688,6 +776,7 @@ def run(args) -> List[Dict[str, object]]:
                             warning_count=int(csta_res.get("warning_count", 0)),
                             fallback_count=int(csta_res.get("warning_count", 0)),
                             method_elapsed_sec=elapsed,
+                            extra_metrics=dict(csta_res.get("extra_metrics", {})),
                         )
                     elif method == "manifold_mixup":
                         res = fit_eval_resnet1d_manifold_mixup(

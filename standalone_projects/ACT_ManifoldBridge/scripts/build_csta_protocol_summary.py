@@ -35,7 +35,14 @@ PHASE2_METHODS = {
     "spawner_sameclass_style",
 }
 
-CSTA_METHODS = {"csta_top1_current", "csta_group_template_top"}
+CSTA_METHODS = {
+    "csta_top1_current",
+    "csta_group_template_top",
+    "csta_topk_softmax_tau_0.05",
+    "csta_topk_softmax_tau_0.10",
+    "csta_topk_softmax_tau_0.20",
+    "csta_topk_uniform_top5",
+}
 
 DEFAULT_PHASE1_ROOT = PROJECT_ROOT / "results" / "csta_external_baselines_phase1" / "resnet1d_s123"
 DEFAULT_PHASE2_ROOT = PROJECT_ROOT / "results" / "csta_external_baselines_phase2" / "resnet1d_s123"
@@ -731,23 +738,46 @@ def _build_mechanism_diagnostics(rows: pd.DataFrame) -> pd.DataFrame:
         "template_response_gap_mean",
         "template_confidence_mean",
         "selected_template_entropy",
+        "template_usage_entropy",
         "top_template_concentration",
         "safe_radius_ratio_mean",
         "safe_clip_rate",
+        "gamma_requested_mean",
+        "gamma_used_mean",
         "z_displacement_norm_mean",
         "transport_error_logeuc_mean",
         "aug_valid_rate",
+    ]
+    meta_fields = [
+        "operator_name",
+        "dictionary_estimator",
+        "activation_policy",
+        "activation_scope",
+        "activation_topk",
+        "activation_tau",
+        "safe_generator",
+        "bridge_realizer",
     ]
     output_rows = []
     for (dataset, method), sub in csta.groupby(["dataset", "method"], dropna=False):
         out = {"dataset": dataset, "method": method}
         available_count = 0
         for col in wanted:
-            if col in sub.columns:
-                value = pd.to_numeric(sub[col], errors="coerce").mean()
+            source_col = col
+            if col == "selected_template_entropy" and col not in sub.columns and "template_usage_entropy" in sub.columns:
+                source_col = "template_usage_entropy"
+            if source_col in sub.columns:
+                value = pd.to_numeric(sub[source_col], errors="coerce").mean()
                 out[col] = value
                 if not pd.isna(value):
                     available_count += 1
+            else:
+                out[col] = np.nan
+        if pd.isna(out.get("selected_template_entropy", np.nan)) and not pd.isna(out.get("template_usage_entropy", np.nan)):
+            out["selected_template_entropy"] = out["template_usage_entropy"]
+        for col in meta_fields:
+            if col in sub.columns:
+                out[col] = _first_non_null(sub[col])
             else:
                 out[col] = np.nan
         out["diagnostic_available"] = available_count == len(wanted)
