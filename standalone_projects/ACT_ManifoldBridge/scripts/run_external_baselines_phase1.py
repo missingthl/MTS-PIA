@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from utils.datasets import load_trials_for_dataset, make_trial_split
 from utils.backbone_trainers import (
     SUPPORTED_BACKBONES,
+    fit_jobda_backbone,
     fit_hard_backbone,
     fit_manifold_mixup_backbone,
     fit_soft_backbone,
@@ -28,17 +29,21 @@ from utils.backbone_trainers import (
 from utils.external_baselines import (
     ExternalAugResult,
     dba_sameclass,
+    dgw_sameclass,
     pca_cov_state,
     random_cov_state,
+    rgw_sameclass,
     raw_aug_jitter,
     raw_aug_magnitude_warping,
     raw_aug_scaling,
     raw_aug_timewarp,
     raw_aug_window_slicing,
     raw_aug_window_warping,
+    jobda_cleanroom_augmented_set,
     raw_mixup,
     raw_smote_flatten_balanced,
     spawner_sameclass_style,
+    timevae_classwise_optional,
     wdba_sameclass,
 )
 from core.pia_operator import pia_operator_metadata
@@ -74,6 +79,9 @@ PHASE2_ARMS = [
     "raw_aug_window_slicing",
     "wdba_sameclass",
     "spawner_sameclass_style",
+    "jobda_cleanroom",
+    "rgw_sameclass",
+    "dgw_sameclass",
 ]
 
 PHASE3_ARMS = [
@@ -221,6 +229,30 @@ METHOD_INFO: Dict[str, MethodInfo] = {
         True,
         "spawner_style_same_class_dtw_aligned_average",
     ),
+    "jobda_cleanroom": MethodInfo(
+        "raw_time_tsw",
+        "joint_hard",
+        False,
+        "",
+        False,
+        "jobda_cleanroom_tsw_joint_label",
+    ),
+    "rgw_sameclass": MethodInfo(
+        "dtw_guided_warp",
+        "hard",
+        False,
+        "",
+        True,
+        "random_guided_warp_same_class_dtw_cleanroom",
+    ),
+    "dgw_sameclass": MethodInfo(
+        "dtw_guided_warp",
+        "hard",
+        False,
+        "",
+        True,
+        "discriminative_guided_warp_same_class_dtw_cleanroom",
+    ),
     "raw_smote_flatten_balanced": MethodInfo(
         "flattened_raw",
         "hard",
@@ -241,10 +273,10 @@ METHOD_INFO: Dict[str, MethodInfo] = {
     "timevae_classwise_optional": MethodInfo(
         "generative_model",
         "hard",
-        True,
-        "timeVAE",
         False,
-        "classwise_timevae_optional_failfast",
+        "",
+        False,
+        "classwise_timevae_style_pytorch_cleanroom",
     ),
 }
 
@@ -407,6 +439,44 @@ def _build_external_aug(method: str, X_train, y_train, args, seed: int, n_classe
             multiplier=args.multiplier,
             seed=seed,
             noise_scale=args.spawner_noise_scale,
+        ),
+        "jobda_cleanroom": lambda: jobda_cleanroom_augmented_set(
+            X_train,
+            y_train,
+            transform_subseqs=tuple(int(x) for x in _parse_csv(args.jobda_transform_subseqs)),
+        ),
+        "rgw_sameclass": lambda: rgw_sameclass(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            slope_constraint=args.guided_warp_slope_constraint,
+            use_window=not args.guided_warp_no_window,
+        ),
+        "dgw_sameclass": lambda: dgw_sameclass(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            batch_size=args.guided_warp_batch_size,
+            slope_constraint=args.guided_warp_slope_constraint,
+            use_window=not args.guided_warp_no_window,
+            use_variable_slice=not args.dgw_no_variable_slice,
+            min_window_len=args.window_min_len,
+        ),
+        "timevae_classwise_optional": lambda: timevae_classwise_optional(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            epochs=args.timevae_epochs,
+            batch_size=args.timevae_batch_size,
+            lr=args.timevae_lr,
+            latent_dim=args.timevae_latent_dim,
+            hidden_dim=args.timevae_hidden_dim,
+            beta=args.timevae_beta,
+            min_class_size=args.timevae_min_class_size,
+            device=args.device,
         ),
         "raw_smote_flatten_balanced": lambda: raw_smote_flatten_balanced(X_train, y_train, seed=seed),
         "random_cov_state": lambda: random_cov_state(
@@ -813,6 +883,44 @@ def run(args) -> List[Dict[str, object]]:
                             method_elapsed_sec=elapsed,
                             extra_metrics=dict(csta_res.get("extra_metrics", {})),
                         )
+                    elif method == "jobda_cleanroom":
+                        aug = _build_external_aug(method, X_train, y_train, args, seed, n_classes)
+                        res = fit_jobda_backbone(
+                            args.backbone,
+                            aug.X_aug,
+                            aug.y_aug,
+                            X_val,
+                            y_val,
+                            X_test,
+                            y_test,
+                            num_classes=int(n_classes),
+                            num_transforms=int(aug.meta.get("jobda_num_transforms", 4)),
+                            epochs=args.epochs,
+                            lr=args.lr,
+                            batch_size=args.batch_size,
+                            patience=args.patience,
+                            device=args.device,
+                            seed=int(seed),
+                        )
+                        elapsed = time.perf_counter() - t0
+                        row = _base_result_row(
+                            dataset=dataset,
+                            seed=seed,
+                            method=method,
+                            backbone=args.backbone,
+                            base_f1=base_f1,
+                            aug_f1=float(res["macro_f1"]),
+                            aug_count=int(max(0, aug.X_aug.shape[0] - n_train)),
+                            n_train=n_train,
+                            info=info,
+                            best_val_f1=float(res.get("best_val_f1", np.nan)),
+                            stop_epoch=int(res.get("stop_epoch", 0)),
+                            warning_count=int(aug.warning_count),
+                            fallback_count=int(aug.fallback_count),
+                            method_elapsed_sec=elapsed,
+                        )
+                        for key, value in aug.meta.items():
+                            row[key] = value
                     elif method == "manifold_mixup":
                         res = fit_manifold_mixup_backbone(
                             args.backbone,
@@ -846,11 +954,6 @@ def run(args) -> List[Dict[str, object]]:
                             method_elapsed_sec=elapsed,
                         )
                         row["manifold_mixup_alpha"] = float(args.mixup_alpha)
-                    elif method == "timevae_classwise_optional":
-                        raise RuntimeError(
-                            "timevae_classwise_optional is an optional Phase 3 fail-fast placeholder; "
-                            "install and wire a vetted TimeVAE implementation before running this arm."
-                        )
                     else:
                         aug = _build_external_aug(method, X_train, y_train, args, seed, n_classes)
                         aug_count = int(aug.X_aug.shape[0])
@@ -947,6 +1050,18 @@ def main() -> None:
     parser.add_argument("--wdba-k", type=int, default=5)
     parser.add_argument("--wdba-max-iter", type=int, default=5)
     parser.add_argument("--spawner-noise-scale", type=float, default=0.05)
+    parser.add_argument("--jobda-transform-subseqs", type=str, default="0,2,4,8")
+    parser.add_argument("--guided-warp-batch-size", type=int, default=6)
+    parser.add_argument("--guided-warp-slope-constraint", type=str, choices=["symmetric", "asymmetric"], default="symmetric")
+    parser.add_argument("--guided-warp-no-window", action="store_true")
+    parser.add_argument("--dgw-no-variable-slice", action="store_true")
+    parser.add_argument("--timevae-epochs", type=int, default=30)
+    parser.add_argument("--timevae-batch-size", type=int, default=32)
+    parser.add_argument("--timevae-lr", type=float, default=1e-3)
+    parser.add_argument("--timevae-latent-dim", type=int, default=8)
+    parser.add_argument("--timevae-hidden-dim", type=int, default=128)
+    parser.add_argument("--timevae-beta", type=float, default=1.0)
+    parser.add_argument("--timevae-min-class-size", type=int, default=4)
     parser.add_argument(
         "--locked-phase1-root",
         type=str,

@@ -1,9 +1,10 @@
 # ACT ManifoldBridge
 
-Minimal release implementation for covariance-state Manifold Bridge
-Augmentation on multivariate time-series classification.
+Research implementation for covariance-state Manifold Bridge Augmentation,
+CSTA/PIA, and external time-series augmentation baselines on multivariate
+time-series classification.
 
-The published project is intentionally scoped to three method families:
+The original release comparison was scoped to three internal method families:
 
 - `mba_core_lraes`: original MBA baseline using LRAES directions in
   Log-Euclidean covariance space.
@@ -11,9 +12,12 @@ The published project is intentionally scoped to three method families:
 - `mba_core_zpia_top1_pool`: current SOTA in this project, using the top-response
   zPIA/TELM2 template direction with MBA core concat training.
 
-Historical branches such as wavelet objects, adaptive routers, progressive
-feedback, spectral OSF, and large paper-asset sweeps were removed from the
-release tree so the folder stays readable.
+The current research tree also contains external baselines, CSTA sampling arms,
+protocol summaries, and multi-backbone adapters.  The main maps are:
+
+- `docs/PROJECT_STRUCTURE.md`: project layout and result hygiene.
+- `docs/EXTERNAL_BASELINES.md`: where every external augmentation arm lives.
+- `docs/PIA_OPERATOR.md`: CSTA/PIA operator contract.
 
 ## Quick Start
 
@@ -54,6 +58,12 @@ conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/summarize
   --root standalone_projects/ACT_ManifoldBridge/results/local_matrix
 ```
 
+List external baselines and their code locations:
+
+```bash
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/list_external_baselines.py
+```
+
 ## Release Results
 
 The lightweight release table is kept at:
@@ -77,8 +87,17 @@ mba_core_zpia_top1_pool      mean F1 0.7314
 - `run_act_pilot.py`: canonical single-run entrypoint.
 - `core/`: Log-Euclidean bridge, zPIA/TELM2 direction banks, LRAES/MBA helpers,
   and host model definitions.
-- `utils/`: dataset loading and model evaluation utilities.
+- `utils/`: dataset loading, model evaluation utilities, backbone dispatch, and
+  external augmentation implementations.
+- Current project-native backbones live in `core/`:
+  `resnet1d.py`, `patchtst.py`, `timesnet.py`, and `mptsnet.py`.
+- `utils/external_baselines.py`: raw-domain, DTW, guided-warping, JobDA,
+  TimeVAE-style, SMOTE, and covariance-state baseline implementations.
+- `utils/external_baseline_manifest.py`: searchable method catalog.
 - `scripts/run_mba_vs_rc4_matrix.py`: queue runner for release comparison arms.
+- `scripts/run_external_baselines_phase1.py`: historical-name runner for
+  Phase 1/2/3 external baseline and CSTA sampling matrices.
+- `scripts/list_external_baselines.py`: prints the baseline catalog.
 - `scripts/summarize_mba_vs_rc4_matrix.py`: summary table generator.
 - `results/release_summary/`: compact result tables only; large experiment logs
   are intentionally not part of the release tree.

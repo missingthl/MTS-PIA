@@ -1,10 +1,18 @@
 # Standalone Projects
 
-更新时间：2026-04-19
+更新时间：2026-05-01
 
 这里放的是**独立项目**，不默认并入主仓库主线 ranking。
 
 ## 当前目录口径
+
+### `ACT_ManifoldBridge`
+
+- 当前 CSTA/PIA 协方差状态增强项目
+- 包含外部增强基线、PIA 算子、protocol summary、多 backbone 适配
+- 工程地图见：
+  - `ACT_ManifoldBridge/docs/PROJECT_STRUCTURE.md`
+  - `ACT_ManifoldBridge/docs/EXTERNAL_BASELINES.md`
 
 ### `MBA_ManifoldBridge`
 

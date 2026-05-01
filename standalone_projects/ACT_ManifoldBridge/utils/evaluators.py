@@ -20,6 +20,7 @@ from aeon.classification.convolution_based import MultiRocketHydraClassifier
 from core.resnet1d import ResNet1DClassifier
 from core.patchtst import PatchTST
 from core.timesnet import TimesNet
+from core.mptsnet import MPTSNetClassifier, infer_periods_from_train
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +261,32 @@ def _evaluate(model, loader, dev, criterion):
     return avg_loss, float(acc), float(f1)
 
 
+def _evaluate_jobda_joint(model, loader, dev, criterion, *, num_classes: int, num_transforms: int):
+    model.eval()
+    all_preds = []
+    all_targets = []
+    total_loss = 0.0
+    with torch.no_grad():
+        for bx, by in loader:
+            bx, by = bx.to(dev), by.to(dev)
+            logits = model(bx)
+            probs = torch.softmax(logits, dim=-1).reshape(bx.shape[0], int(num_classes), int(num_transforms))
+            original_probs = probs.sum(dim=-1)
+            original_preds = original_probs.argmax(dim=1)
+            # Validation/test loss is measured against the original class after
+            # summing joint-label probabilities, matching JobDA inference.
+            loss = criterion(torch.log(original_probs.clamp_min(1e-12)), by)
+            total_loss += float(loss.item()) * bx.size(0)
+            all_preds.append(original_preds.cpu().numpy())
+            all_targets.append(by.cpu().numpy())
+    y_pred = np.concatenate(all_preds)
+    y_true = np.concatenate(all_targets)
+    avg_loss = total_loss / len(loader.dataset)
+    acc = accuracy_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred, average="macro")
+    return avg_loss, float(acc), float(f1)
+
+
 def fit_eval_pytorch_model(
     model,
     X_train, y_train,
@@ -361,6 +388,104 @@ def fit_eval_pytorch_model(
     }
     if return_model_obj:
         res["model_obj"] = model  # Return for theory probing
+    return res
+
+
+def fit_eval_pytorch_model_jobda_joint_labels(
+    model,
+    X_train,
+    y_train_joint,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    *,
+    num_classes: int,
+    num_transforms: int,
+    epochs=100,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+) -> Dict[str, float]:
+    """Train JobDA joint labels and evaluate by summing transform probabilities."""
+    _set_training_seed(loader_seed)
+    dev = _get_dev(device)
+    model.to(dev)
+
+    train_loader = _make_tensor_loader(
+        X_train,
+        y_train_joint,
+        batch_size=batch_size,
+        shuffle=True,
+        indexed=False,
+        seed=loader_seed,
+    )
+    val_loader = None
+    if X_val is not None:
+        val_loader = _make_tensor_loader(X_val, y_val, batch_size=batch_size, shuffle=False, indexed=False)
+    test_loader = _make_tensor_loader(X_test, y_test, batch_size=batch_size, shuffle=False, indexed=False)
+
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    joint_criterion = nn.CrossEntropyLoss()
+    original_criterion = nn.NLLLoss()
+    early_stopping = EarlyStopping(patience=patience, mode='max')
+    best_val_f1 = 0.0
+    best_val_loss = float('inf')
+    stop_epoch = int(epochs)
+
+    for epoch in range(int(epochs)):
+        model.train()
+        for bx, by_joint in train_loader:
+            bx = bx.to(dev, non_blocking=True)
+            by_joint = by_joint.to(dev, non_blocking=True)
+            optimizer.zero_grad()
+            logits = model(bx)
+            loss = joint_criterion(logits, by_joint)
+            loss.backward()
+            optimizer.step()
+
+        if val_loader:
+            v_loss, _, v_f1 = _evaluate_jobda_joint(
+                model,
+                val_loader,
+                dev,
+                original_criterion,
+                num_classes=int(num_classes),
+                num_transforms=int(num_transforms),
+            )
+            if v_f1 > best_val_f1:
+                best_val_f1 = v_f1
+                best_val_loss = v_loss
+            early_stopping(v_f1, model)
+            if early_stopping.early_stop:
+                stop_epoch = epoch + 1
+                break
+        else:
+            stop_epoch = epoch + 1
+
+    if early_stopping.best_model_state:
+        model.load_state_dict(early_stopping.best_model_state)
+
+    _, t_acc, t_f1 = _evaluate_jobda_joint(
+        model,
+        test_loader,
+        dev,
+        original_criterion,
+        num_classes=int(num_classes),
+        num_transforms=int(num_transforms),
+    )
+    res = {
+        "accuracy": t_acc,
+        "macro_f1": t_f1,
+        "best_val_f1": best_val_f1,
+        "best_val_loss": best_val_loss,
+        "stop_epoch": stop_epoch,
+    }
+    if return_model_obj:
+        res["model_obj"] = model
     return res
 
 
@@ -1437,6 +1562,47 @@ def fit_eval_resnet1d_soft_labels(
     )
 
 
+def fit_eval_resnet1d_jobda_joint_labels(
+    X_train,
+    y_train_joint,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    *,
+    num_classes: int,
+    num_transforms: int,
+    epochs=30,
+    lr=1e-3,
+    batch_size=64,
+    patience=10,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
+    _set_training_seed(loader_seed)
+    in_channels = X_train.shape[1]
+    model = ResNet1DClassifier(in_channels, int(num_classes) * int(num_transforms))
+    return fit_eval_pytorch_model_jobda_joint_labels(
+        model,
+        X_train,
+        y_train_joint,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        num_classes=int(num_classes),
+        num_transforms=int(num_transforms),
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        patience=patience,
+        device=device,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
+
+
 def fit_eval_resnet1d_manifold_mixup(
     X_train,
     y_train,
@@ -1672,6 +1838,45 @@ def fit_eval_timesnet(
     seq_len = X_train.shape[2]
     num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
     model = TimesNet(in_channels, seq_len, num_classes)
+    return fit_eval_pytorch_model(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs,
+        lr,
+        batch_size,
+        patience,
+        device,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )
+
+
+def fit_eval_mptsnet(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=5e-4,
+    batch_size=32,
+    patience=15,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
+    _set_training_seed(loader_seed)
+    in_channels = X_train.shape[1]
+    seq_len = X_train.shape[2]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    periods = infer_periods_from_train(X_train, k=5)
+    model = MPTSNetClassifier(in_channels, seq_len, num_classes, periods=periods)
     return fit_eval_pytorch_model(
         model,
         X_train,
