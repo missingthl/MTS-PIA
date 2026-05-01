@@ -30,6 +30,7 @@ from core.pia import (
     build_pia_direction_bank,
     build_zpia_direction_bank,
 )
+from core.pia_audit import write_candidate_audit
 from host_alignment_probe import compute_gradient_alignment
 from utils.datasets import AEON_FIXED_SPLIT_SPECS, load_trials_for_dataset, make_trial_split
 from utils.evaluators import (
@@ -608,7 +609,9 @@ def _build_top_response_template_slots(
             responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
             top_indices = np.lexsort((np.arange(k), -responses))[:top_k_num]
             top_responses = responses[top_indices]
-            exp_r = np.exp(top_responses / tau)
+            logits = top_responses / max(float(tau), 1e-12)
+            logits = logits - float(np.max(logits))
+            exp_r = np.exp(logits)
             probs = exp_r / np.sum(exp_r)
             rng = np.random.default_rng(int(idx) + int(seed))
             chosen = rng.choice(top_indices, size=(pairs,), replace=True, p=probs)
@@ -812,8 +815,8 @@ def _materialize_z_aug_out(
         "safe_clip_rate": float(np.mean(clip_flags)) if clip_flags else 0.0,
         "manifold_margin_mean": float(np.mean(margins)) if margins else 0.0,
         "gamma_requested_mean": float(np.mean(gamma_req)) if gamma_req else 0.0,
-        "gamma_used_mean": float(np.mean(gamma_used)) if gamma_used else 0.0,
         "gamma_zero_rate": float(np.mean([1.0 if g < 1e-12 else 0.0 for g in gamma_used])) if gamma_used else 0.0,
+        "aug_valid_rate": float(1.0 - (float(np.mean([1.0 if g < 1e-12 else 0.0 for g in gamma_used])) if gamma_used else 0.0)),
         "eta_safe": eta_safe,
         "candidate_total_count": int(len(z_aug)),
         "aug_total_count": int(len(z_aug)),
@@ -854,7 +857,7 @@ def _build_act_realized_augmentations(
 
     gamma_budget = np.full((effective_k,), float(args.pia_gamma), dtype=np.float64)
     direction_probs = active_direction_probs(gamma_budget, freeze_eps=0.01)
-    eta_safe = None if args.disable_safe_step else 0.5
+    eta_safe = None if args.disable_safe_step else args.eta_safe
     tid_train = np.asarray([record.tid for record in train_recs], dtype=object)
 
     z_aug, y_aug, tid_aug, _, _, aug_meta = build_curriculum_aug_candidates(
@@ -978,7 +981,7 @@ def _build_zpia_template_pool_aug_out(
     )
     zpia_bank = np.asarray(bank_out["bank"], dtype=np.float64)
     zpia_meta = dict(bank_out["meta"])
-    eta_safe = None if args.disable_safe_step else 0.5
+    eta_safe = None if args.disable_safe_step else args.eta_safe
     slots = _build_top_response_template_slots(
         args=args,
         X_train_z=X_train_z,
@@ -993,7 +996,7 @@ def _build_zpia_template_pool_aug_out(
     direction_meta = {
         "bank_source": algo_label,
         "zpia_meta": zpia_meta,
-        "template_selection": "anchor_top_abs_response",
+        "template_selection": str(getattr(args, "template_selection", "top_response")),
         "template_slot_policy": "dual_sign_fixed_budget",
         "multi_template_pairs": int(slots["multi_template_pairs"]),
     }
@@ -1589,6 +1592,7 @@ def _run_act_pipeline(
         "effective_k": aug_out["effective_k"],
         "direction_bank_meta": aug_out.get("direction_bank_meta", {}),
         "audit_rows": aug_out.get("audit_rows", []),
+        "eta_safe": aug_out.get("eta_safe", None),
         "viz_payload": {
             "Z_orig": X_train_z,
             "Z_aug": aug_out["z_aug"],
@@ -1696,6 +1700,7 @@ def _run_act_zpia_template_pool_pipeline(
         "effective_k_zpia": aug_out.get("effective_k_zpia", 0),
         "direction_bank_meta": aug_out.get("direction_bank_meta", {}),
         "audit_rows": aug_out.get("audit_rows", []),
+        "eta_safe": aug_out.get("eta_safe", None),
         **_summarize_multitemplate_audit_rows(aug_out.get("audit_rows", [])),
         "multi_template_pairs": int(aug_out.get("multi_template_pairs", 0)),
         "viz_payload": {
@@ -1806,6 +1811,7 @@ def _run_act_rc4_multiz_fused_pipeline(
         "effective_k_zpia": aug_out.get("effective_k_zpia", 0),
         "direction_bank_meta": aug_out.get("direction_bank_meta", {}),
         "audit_rows": aug_out.get("audit_rows", []),
+        "eta_safe": aug_out.get("eta_safe", None),
         **_summarize_multitemplate_audit_rows(aug_out.get("audit_rows", [])),
         "viz_payload": {
             "Z_orig": X_train_z,
@@ -1906,6 +1912,7 @@ def _run_mba_feedback_pipeline(
         "res_act": res_act,
         "avg_bridge": aug_out["avg_bridge"],
         "audit_rows": aug_out.get("audit_rows", []),
+        "eta_safe": aug_out.get("eta_safe", None),
         "direction_bank_meta": aug_out.get("direction_bank_meta", {}),
         "safe_radius_ratio_mean": aug_out["safe_radius_ratio_mean"],
         "manifold_margin_mean": aug_out["manifold_margin_mean"],
@@ -2024,6 +2031,7 @@ def _run_act_fused_core_pipeline(
         "effective_k_zpia": fused_aug_out.get("effective_k_zpia", 0),
         "direction_bank_meta": fused_aug_out.get("direction_bank_meta", {}),
         "audit_rows": fused_aug_out.get("audit_rows", []),
+        "eta_safe": fused_aug_out.get("eta_safe", None),
         **_summarize_osf_audit_rows(fused_aug_out.get("audit_rows", [])),
         **(_summarize_spectral_audit_rows(fused_aug_out.get("audit_rows", [])) if fusion_mode == "spectral_osf" else {}),
         "viz_payload": {
@@ -2404,6 +2412,18 @@ def run_experiment(dataset_name, args):
                 f"ACT: {summary['act_f1']:.4f} | "
                 f"Gain: {summary['gain']:.4f} ({summary['f1_gain_pct']:.1f}%)"
             )
+            audit_rows = list(pipeline_out.get("audit_rows", []))
+            if audit_rows:
+                audit_summary = write_candidate_audit(
+                    audit_rows,
+                    out_dir=os.path.join(args.out_root, "candidate_audit"),
+                    dataset=dataset_name,
+                    seed=int(seed),
+                    method=str(getattr(args, "audit_method_label", "") or args.algo),
+                    activation_policy=str(getattr(args, "template_selection", args.algo)),
+                    eta_safe=pipeline_out.get("eta_safe", None),
+                )
+                summary.update(audit_summary)
             results.append(summary)
 
             if args.save_viz_samples:
@@ -2513,6 +2533,7 @@ def main():
     parser.add_argument("--template-source", type=str, choices=["zpia", "pca", "random_orth"], default="zpia")
     parser.add_argument("--group-size", type=int, default=5)
     parser.add_argument("--eta-safe", type=float, default=0.5)
+    parser.add_argument("--audit-method-label", type=str, default="")
     args = parser.parse_args()
 
     if args.pipeline == "mba":

@@ -192,11 +192,18 @@ def build_curriculum_aug_candidates(
             safe_upper_bound = float("inf")
             if eta_safe is not None:
                 safe_upper_bound = float(eta_safe) * float(d_min) / (float(u_norm) + 1e-12)
-                g_safe, ratio = apply_safe_step_constraint(g0, u_norm, d_min, eta=eta_safe)
+                g_safe, gamma_clip_ratio = apply_safe_step_constraint(g0, u_norm, d_min, eta=eta_safe)
+                safe_radius = float(eta_safe) * float(d_min)
+                safe_radius_ratio = (
+                    float(abs(g_safe) * float(u_norm) / (safe_radius + 1e-12))
+                    if safe_radius > 0.0
+                    else 0.0
+                )
             else:
-                g_safe, ratio = g0, 1.0
+                g_safe, gamma_clip_ratio = g0, 1.0
+                safe_radius_ratio = 1.0
             
-            safe_ratios.append(ratio)
+            safe_ratios.append(safe_radius_ratio)
             
             x_aug = X_sample + g_safe * sign * u_k
             
@@ -218,7 +225,8 @@ def build_curriculum_aug_candidates(
                     "gamma_used": float(g_safe),
                     "direction_norm": float(u_norm),
                     "safe_upper_bound": float(safe_upper_bound),
-                    "safe_radius_ratio": float(ratio),
+                    "gamma_clip_ratio": float(gamma_clip_ratio),
+                    "safe_radius_ratio": float(safe_radius_ratio),
                     "manifold_margin": float(d_min),
                 }
             )

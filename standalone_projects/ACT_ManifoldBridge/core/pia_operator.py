@@ -13,10 +13,14 @@ from .pia import build_zpia_direction_bank
 class PIAOperatorConfig:
     """Configuration for the CSTA-internal PIA operator facade.
 
-    This module intentionally wraps existing zPIA/CSTA building blocks instead
-    of introducing a new numerical path.  It gives the paper-facing four-step
-    operator a stable engineering surface: dictionary estimation, template
-    activation, safe vicinal generation, and metadata/audit emission.
+    WARNING: This module acts as a policy interface and metadata facade for 
+    the paper's "Four-Step Operator" narrative. It is NOT a full production-level
+    replacement for the low-level generation engine.
+
+    Known deviations from production path:
+    1. Single-sample per anchor (Production supports dual-sign slots);
+    2. No bridge realization logic (Uses simple additive shifts);
+    3. No group-consensus functional implementation (Implemented as metadata tag only).
     """
 
     k_dir: int = 10
@@ -126,7 +130,9 @@ def activate_templates(
         return np.asarray([int(rng.choice(top_ids))], dtype=np.int64)
     if meta["activation_policy"] == "softmax_topk":
         tau = max(float(meta["activation_tau"]), 1e-12)
-        weights = np.exp(responses[top_ids] / tau)
+        logits = responses[top_ids] / tau
+        logits = logits - float(np.max(logits))
+        weights = np.exp(logits)
         probs = weights / np.sum(weights)
         return np.asarray([int(rng.choice(top_ids, p=probs))], dtype=np.int64)
     return np.asarray([int(top_ids[0])], dtype=np.int64)

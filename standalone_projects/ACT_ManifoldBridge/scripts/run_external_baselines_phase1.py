@@ -19,7 +19,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.datasets import load_trials_for_dataset, make_trial_split
-from utils.evaluators import fit_eval_resnet1d, fit_eval_resnet1d_manifold_mixup, fit_eval_resnet1d_soft_labels
+from utils.backbone_trainers import (
+    SUPPORTED_BACKBONES,
+    fit_hard_backbone,
+    fit_manifold_mixup_backbone,
+    fit_soft_backbone,
+)
 from utils.external_baselines import (
     ExternalAugResult,
     dba_sameclass,
@@ -96,12 +101,32 @@ CSTA_RESULT_PASSTHROUGH_FIELDS = [
     "template_usage_entropy",
     "selected_template_entropy",
     "top_template_concentration",
+    "aug_valid_rate",
+    "candidate_audit_rows",
+    "candidate_audit_available",
+    "candidate_accept_rate",
+    "candidate_physics_ok",
+    "candidate_audit_path",
+    "z_displacement_norm_mean",
+    "template_response_abs_mean",
+    "gamma_requested_mean_audit",
+    "gamma_used_mean_audit",
+    "safe_radius_ratio_mean_audit",
+    "safe_clip_rate_audit",
+    "gamma_zero_rate_audit",
+    "manifold_margin_mean_audit",
+    "transport_error_logeuc_mean_audit",
+    "template_usage_entropy_audit",
+    "top_template_concentration_audit",
+    "gamma_used_gt_requested_count",
+    "safe_radius_ratio_out_of_bounds_count",
     "direction_bank_source",
     "utilization_mode",
     "core_training_mode",
     "aug_train_ratio",
     "multi_template_pairs",
     "template_selection",
+    "eta_safe",
     "zpia_z_dim",
     "zpia_n_train",
     "zpia_n_train_lt_z_dim",
@@ -276,7 +301,8 @@ def _fit_hard(
     args,
     seed: int,
 ):
-    return fit_eval_resnet1d(
+    return fit_hard_backbone(
+        args.backbone,
         X_train,
         y_train,
         X_val,
@@ -288,7 +314,8 @@ def _fit_hard(
         batch_size=args.batch_size,
         patience=args.patience,
         device=args.device,
-        loader_seed=int(seed),
+        seed=int(seed),
+        n_kernels=args.n_kernels,
     )
 
 
@@ -302,7 +329,8 @@ def _fit_soft(
     args,
     seed: int,
 ):
-    return fit_eval_resnet1d_soft_labels(
+    return fit_soft_backbone(
+        args.backbone,
         X_train,
         y_train_soft,
         X_val,
@@ -314,7 +342,7 @@ def _fit_soft(
         batch_size=args.batch_size,
         patience=args.patience,
         device=args.device,
-        loader_seed=int(seed),
+        seed=int(seed),
     )
 
 
@@ -415,7 +443,7 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         "--algo",
         "zpia_top1_pool",
         "--model",
-        "resnet1d",
+        args.backbone,
         "--seeds",
         str(seed),
         "--epochs",
@@ -430,6 +458,8 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         str(args.val_ratio),
         "--k-dir",
         str(args.k_dir),
+        "--n-kernels",
+        str(args.n_kernels),
         "--pia-gamma",
         str(args.pia_gamma),
         "--eta-safe",
@@ -440,6 +470,8 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         args.device,
         "--out-root",
         str(csta_root),
+        "--audit-method-label",
+        method,
     ]
     if method == "csta_group_template_top":
         cmd.extend(["--template-selection", "group_top", "--group-size", str(args.group_size)])
@@ -491,6 +523,7 @@ def _base_result_row(
     dataset: str,
     seed: int,
     method: str,
+    backbone: str,
     base_f1: float,
     aug_f1: float,
     aug_count: int,
@@ -520,7 +553,7 @@ def _base_result_row(
         "actual_aug_ratio": float(actual_aug_ratio),
         "source_space": info.source_space,
         "label_mode": info.label_mode,
-        "backbone": "resnet1d",
+        "backbone": str(backbone),
         "train_split_only": True,
         "uses_external_library": bool(info.uses_external_library),
         "library_name": info.library_name or "none",
@@ -750,6 +783,7 @@ def run(args) -> List[Dict[str, object]]:
                             dataset=dataset,
                             seed=seed,
                             method=method,
+                            backbone=args.backbone,
                             base_f1=base_f1,
                             aug_f1=base_f1,
                             aug_count=0,
@@ -766,6 +800,7 @@ def run(args) -> List[Dict[str, object]]:
                             dataset=dataset,
                             seed=seed,
                             method=method,
+                            backbone=args.backbone,
                             base_f1=float(csta_res["base_f1"]),
                             aug_f1=float(csta_res["aug_f1"]),
                             aug_count=int(csta_res["aug_count"]),
@@ -779,7 +814,8 @@ def run(args) -> List[Dict[str, object]]:
                             extra_metrics=dict(csta_res.get("extra_metrics", {})),
                         )
                     elif method == "manifold_mixup":
-                        res = fit_eval_resnet1d_manifold_mixup(
+                        res = fit_manifold_mixup_backbone(
+                            args.backbone,
                             X_train,
                             y_train,
                             X_val,
@@ -792,13 +828,14 @@ def run(args) -> List[Dict[str, object]]:
                             patience=args.patience,
                             device=args.device,
                             mixup_alpha=args.mixup_alpha,
-                            loader_seed=int(seed),
+                            seed=int(seed),
                         )
                         elapsed = time.perf_counter() - t0
                         row = _base_result_row(
                             dataset=dataset,
                             seed=seed,
                             method=method,
+                            backbone=args.backbone,
                             base_f1=base_f1,
                             aug_f1=float(res["macro_f1"]),
                             aug_count=0,
@@ -835,6 +872,7 @@ def run(args) -> List[Dict[str, object]]:
                             dataset=dataset,
                             seed=seed,
                             method=method,
+                            backbone=args.backbone,
                             base_f1=base_f1,
                             aug_f1=float(res["macro_f1"]),
                             aug_count=aug_count,
@@ -856,6 +894,7 @@ def run(args) -> List[Dict[str, object]]:
                         dataset=dataset,
                         seed=seed,
                         method=method,
+                        backbone=args.backbone,
                         base_f1=base_f1,
                         aug_f1=np.nan,
                         aug_count=0,
@@ -880,6 +919,7 @@ def run(args) -> List[Dict[str, object]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSTA external baseline runner for Phase 1/2/3 arms")
     parser.add_argument("--out-root", type=str, default=str(PROJECT_ROOT / "results" / "csta_external_baselines_phase1" / "resnet1d_s123"))
+    parser.add_argument("--backbone", type=str, choices=list(SUPPORTED_BACKBONES), default="resnet1d")
     parser.add_argument("--datasets", type=str, default=",".join(DEFAULT_DATASETS))
     parser.add_argument("--arms", type=str, default=",".join(DEFAULT_ARMS))
     parser.add_argument("--seeds", type=str, default="1,2,3")
@@ -890,6 +930,7 @@ def main() -> None:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--multiplier", type=int, default=10)
     parser.add_argument("--k-dir", type=int, default=10)
+    parser.add_argument("--n-kernels", type=int, default=10000)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
     parser.add_argument("--eta-safe", type=float, default=0.5)
     parser.add_argument("--device", type=str, default="cuda")
