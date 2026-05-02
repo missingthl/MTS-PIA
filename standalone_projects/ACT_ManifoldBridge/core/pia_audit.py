@@ -45,6 +45,27 @@ P0_CANDIDATE_AUDIT_COLUMNS = [
     "transport_error_logeuc",
     "x_aug_nan_flag",
     "x_aug_inf_flag",
+    "selection_stage",
+    "selector_name",
+    "feasible_flag",
+    "selector_accept_flag",
+    "selector_candidate_pool_size",
+    "selector_feasible_count",
+    "feasible_rate",
+    "selector_accept_rate",
+    "pre_filter_reject_count",
+    "post_bridge_reject_count",
+    "reject_reason_zero_gamma",
+    "reject_reason_safe_radius",
+    "reject_reason_bridge_fail",
+    "reject_reason_transport_error",
+    "relevance_score",
+    "safe_balance_score",
+    "fidelity_score",
+    "variety_score",
+    "fv_score",
+    "template_diversity_bonus",
+    "post_bridge_reject_reason",
     "candidate_status",
     "reject_reason",
 ]
@@ -87,17 +108,22 @@ def normalize_candidate_audit_rows(
         gamma_used = _to_float(row.get("gamma_used", np.nan))
         direction_norm = _to_float(row.get("direction_norm", np.nan))
         transport_error = _to_float(row.get("transport_error_logeuc", np.nan))
-        bridge_success = bool(np.isfinite(transport_error))
+        bridge_success = bool(row.get("bridge_success", np.isfinite(transport_error)))
         x_aug_nan_flag = False
         x_aug_inf_flag = False
-        reject_reason = ""
+        reject_reason = str(row.get("reject_reason", "") or "")
         if not bridge_success:
             reject_reason = "rejected_bridge_fail"
         if bool(x_aug_nan_flag):
             reject_reason = "rejected_nan"
         if bool(x_aug_inf_flag):
             reject_reason = "rejected_inf"
-        candidate_status = "accepted" if reject_reason == "" else reject_reason
+        candidate_status = str(row.get("candidate_status", "") or ("accepted" if reject_reason == "" else reject_reason))
+        relevance_score = _to_float(row.get("relevance_score", np.nan))
+        safe_balance_score = _to_float(row.get("safe_balance_score", np.nan))
+        fidelity_score = _to_float(row.get("fidelity_score", np.nan))
+        if not np.isfinite(fidelity_score) and np.isfinite(relevance_score) and np.isfinite(safe_balance_score):
+            fidelity_score = float(relevance_score + safe_balance_score)
 
         out.append(
             {
@@ -136,6 +162,27 @@ def normalize_candidate_audit_rows(
                 "transport_error_logeuc": transport_error,
                 "x_aug_nan_flag": x_aug_nan_flag,
                 "x_aug_inf_flag": x_aug_inf_flag,
+                "selection_stage": str(row.get("selection_stage", "")),
+                "selector_name": str(row.get("selector_name", "")),
+                "feasible_flag": _to_float(row.get("feasible_flag", np.nan)),
+                "selector_accept_flag": _to_float(row.get("selector_accept_flag", np.nan)),
+                "selector_candidate_pool_size": _to_float(row.get("selector_candidate_pool_size", np.nan)),
+                "selector_feasible_count": _to_float(row.get("selector_feasible_count", np.nan)),
+                "feasible_rate": _to_float(row.get("feasible_rate", np.nan)),
+                "selector_accept_rate": _to_float(row.get("selector_accept_rate", np.nan)),
+                "pre_filter_reject_count": _to_float(row.get("pre_filter_reject_count", np.nan)),
+                "post_bridge_reject_count": _to_float(row.get("post_bridge_reject_count", np.nan)),
+                "reject_reason_zero_gamma": _to_float(row.get("reject_reason_zero_gamma", np.nan)),
+                "reject_reason_safe_radius": _to_float(row.get("reject_reason_safe_radius", np.nan)),
+                "reject_reason_bridge_fail": _to_float(row.get("reject_reason_bridge_fail", np.nan)),
+                "reject_reason_transport_error": _to_float(row.get("reject_reason_transport_error", np.nan)),
+                "relevance_score": relevance_score,
+                "safe_balance_score": safe_balance_score,
+                "fidelity_score": fidelity_score,
+                "variety_score": _to_float(row.get("variety_score", np.nan)),
+                "fv_score": _to_float(row.get("fv_score", np.nan)),
+                "template_diversity_bonus": _to_float(row.get("template_diversity_bonus", np.nan)),
+                "post_bridge_reject_reason": str(row.get("post_bridge_reject_reason", "")),
                 "candidate_status": candidate_status,
                 "reject_reason": reject_reason,
             }
@@ -172,6 +219,13 @@ def summarize_candidate_audit(df: pd.DataFrame) -> Dict[str, object]:
         "gamma_zero_flag": "gamma_zero_rate_audit",
         "manifold_margin": "manifold_margin_mean_audit",
         "transport_error_logeuc": "transport_error_logeuc_mean_audit",
+        "feasible_flag": "feasible_rate_audit",
+        "selector_accept_flag": "selector_accept_rate_audit",
+        "relevance_score": "relevance_score_mean_audit",
+        "safe_balance_score": "safe_balance_score_mean_audit",
+        "fidelity_score": "fidelity_score_mean_audit",
+        "variety_score": "variety_score_mean_audit",
+        "fv_score": "fv_score_mean_audit",
     }
     for col, key in numeric_aggs.items():
         if col in df:
@@ -187,6 +241,17 @@ def summarize_candidate_audit(df: pd.DataFrame) -> Dict[str, object]:
             out["top_template_concentration_audit"] = float(probs.max())
     physics = validate_candidate_audit_physics(df)
     out.update(physics)
+    for col in [
+        "pre_filter_reject_count",
+        "post_bridge_reject_count",
+        "reject_reason_zero_gamma",
+        "reject_reason_safe_radius",
+        "reject_reason_bridge_fail",
+        "reject_reason_transport_error",
+    ]:
+        if col in df:
+            vals = pd.to_numeric(df[col], errors="coerce")
+            out[col] = int(vals.fillna(0).sum())
     return out
 
 

@@ -1,3 +1,0 @@
-phase,dataset,method,aug_f1_mean,aug_f1_std,gain_mean,actual_aug_ratio_mean,method_elapsed_sec_mean,fallback_count_mean,n_seeds
-phase1_locked,cricket,wdba_sameclass,0.0747549019607843,,0.0143684285308326,1.0,66.88429952797014,0.0,1
-phase2_new,cricket,wdba_sameclass,0.0747549019607843,,0.0143684285308326,1.0,66.88429952797014,0.0,1

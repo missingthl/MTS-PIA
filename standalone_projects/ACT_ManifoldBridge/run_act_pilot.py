@@ -504,18 +504,22 @@ def _build_direction_bank_for_args(
 def _resolve_multi_template_pairs(*, args, effective_k: int, top1_only: bool) -> int:
     if int(args.multiplier) <= 0:
         raise ValueError("multi-template pools require --multiplier > 0.")
-    if int(args.multiplier) % 2 != 0:
-        raise ValueError("multi-template pools require an even --multiplier for +/- template slots.")
     if top1_only:
         pairs = 1
-    else:
-        configured = int(getattr(args, "multi_template_pairs", 0))
-        pairs = configured if configured > 0 else int(args.multiplier) // 2
-        if 2 * pairs != int(args.multiplier):
+        if pairs > int(effective_k):
             raise ValueError(
-                "--multi-template-pairs must satisfy 2 * pairs == multiplier for zpia_multidir_pool "
-                "and rc4_multiz_fused."
+                f"--multi-template-pairs={pairs} exceeds effective zPIA bank size {effective_k}."
             )
+        return pairs
+    if int(args.multiplier) % 2 != 0:
+        raise ValueError("multi-template pools require an even --multiplier for +/- template slots.")
+    configured = int(getattr(args, "multi_template_pairs", 0))
+    pairs = configured if configured > 0 else int(args.multiplier) // 2
+    if 2 * pairs != int(args.multiplier):
+        raise ValueError(
+            "--multi-template-pairs must satisfy 2 * pairs == multiplier for zpia_multidir_pool "
+            "and rc4_multiz_fused."
+        )
     if pairs <= 0:
         raise ValueError("--multi-template-pairs must be positive.")
     if pairs > int(effective_k):
@@ -535,6 +539,24 @@ def _template_usage_stats(template_ids: List[int]) -> Dict[str, float]:
         "template_usage_entropy": entropy,
         "top_template_concentration": float(probs.max()) if probs.size else 0.0,
     }
+
+
+def _normalize_unit_interval(values: np.ndarray) -> np.ndarray:
+    vals = np.asarray(values, dtype=np.float64)
+    if vals.size == 0:
+        return vals
+    finite = np.isfinite(vals)
+    if not finite.any():
+        return np.zeros_like(vals, dtype=np.float64)
+    lo = float(np.min(vals[finite]))
+    hi = float(np.max(vals[finite]))
+    if hi <= lo + 1e-12:
+        out = np.zeros_like(vals, dtype=np.float64)
+        out[finite] = 0.5
+        return out
+    out = (vals - lo) / (hi - lo)
+    out[~finite] = 0.0
+    return out
 
 
 def _build_top_response_template_slots(
@@ -562,6 +584,10 @@ def _build_top_response_template_slots(
     mode = getattr(args, "template_selection", "top_response")
     neighbor_indices = None
     group_size = int(getattr(args, "group_size", 5))
+    fv_selector_modes = {"fv_filter_top5", "fv_score_top5", "random_feasible_selector"}
+    is_fv_selector = mode in fv_selector_modes
+    fv_top_k = 5
+    fv_rho = 0.75
 
     if mode.startswith("group_") or mode == "sameclass_zmix":
         if mode == "group_top_random_sameclass":
@@ -665,17 +691,23 @@ def _build_top_response_template_slots(
     w_slots: List[np.ndarray] = []
     slot_rows: List[Dict[str, object]] = []
     template_ids_used: List[int] = []
+    selector_total_proposed = 0
+    selector_total_feasible = 0
+    selector_total_selected = 0
+    pre_filter_reject_count = 0
+    reject_reason_zero_gamma = 0
+    reject_reason_safe_radius = 0
+    reject_reason_zero_direction = 0
+    reject_reason_zero_margin = 0
+    relevance_scores: List[float] = []
+    safe_balance_scores: List[float] = []
+    variety_scores: List[float] = []
+    fv_scores: List[float] = []
     eps = 1e-12
     pair_cycle = 2 * pairs
-    for slot_idx, spec in enumerate(row_specs):
-        idx = int(spec["anchor_index"])
-        tid = spec["tid"]
-        candidate_order = int(spec["candidate_order"])
-        top_ids = _top_ids_for_idx(idx)
-        pair_pos = (candidate_order % pair_cycle) // 2
-        template_sign = 1.0 if (candidate_order % 2 == 0) else -1.0
-        template_id = int(top_ids[pair_pos])
-        direction = np.asarray(zpia_bank[template_id], dtype=np.float64)
+
+    def _candidate_components(idx: int, template_id: int, template_sign: float) -> Dict[str, object]:
+        direction = np.asarray(zpia_bank[int(template_id)], dtype=np.float64)
         direction_norm = float(np.linalg.norm(direction))
         d_min = float(margins[idx])
         gamma_requested = float(args.pia_gamma)
@@ -687,7 +719,135 @@ def _build_top_response_template_slots(
             safe_upper_bound = float(eta_safe) * d_min / (direction_norm + eps)
             gamma_used = min(gamma_requested, safe_upper_bound)
             safe_radius = float(eta_safe) * d_min
-            safe_radius_ratio = float(abs(gamma_used) * direction_norm / (safe_radius + eps)) if safe_radius > 0 else 0.0
+            safe_radius_ratio = (
+                float(abs(gamma_used) * direction_norm / (safe_radius + eps))
+                if safe_radius > 0
+                else 0.0
+            )
+        W_i = (float(template_sign) * gamma_used * direction).astype(np.float32)
+        response_abs = float(abs(np.dot(np.asarray(X_train_z[idx], dtype=np.float64), direction)))
+        z_delta_norm = float(np.linalg.norm(W_i))
+        zero_gamma = bool(abs(gamma_used) <= eps)
+        zero_direction = bool(direction_norm <= eps)
+        zero_margin = bool(d_min <= eps)
+        safe_radius_bad = bool(safe_radius_ratio > 1.0 + 1e-9)
+        feasible = not (zero_gamma or zero_direction or zero_margin or safe_radius_bad)
+        return {
+            "template_id": int(template_id),
+            "template_sign": float(template_sign),
+            "direction": direction,
+            "direction_norm": direction_norm,
+            "manifold_margin": d_min,
+            "gamma_requested": gamma_requested,
+            "gamma_used": float(gamma_used),
+            "safe_upper_bound": float(safe_upper_bound),
+            "safe_radius_ratio": float(safe_radius_ratio),
+            "W_i": W_i,
+            "response_abs": response_abs,
+            "z_delta_norm": z_delta_norm,
+            "is_clipped": float(gamma_requested > (safe_upper_bound + 1e-9)),
+            "feasible": bool(feasible),
+            "reject_zero_gamma": int(zero_gamma),
+            "reject_safe_radius": int(safe_radius_bad),
+            "reject_zero_direction": int(zero_direction),
+            "reject_zero_margin": int(zero_margin),
+        }
+
+    def _select_fv_candidate(idx: int, candidate_order: int) -> Dict[str, object]:
+        responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
+        top_indices = np.lexsort((np.arange(zpia_bank.shape[0]), -responses))[: min(fv_top_k, zpia_bank.shape[0])]
+        pool: List[Dict[str, object]] = []
+        for rank, template_id in enumerate(top_indices):
+            for sign_val in (1.0, -1.0):
+                cand = _candidate_components(idx, int(template_id), sign_val)
+                cand["template_rank"] = int(rank)
+                pool.append(cand)
+
+        rel = _normalize_unit_interval(np.asarray([float(c["response_abs"]) for c in pool], dtype=np.float64))
+        safe_raw = np.asarray([-abs(float(c["safe_radius_ratio"]) - fv_rho) for c in pool], dtype=np.float64)
+        safe_bal = _normalize_unit_interval(safe_raw)
+        disp = _normalize_unit_interval(np.asarray([float(c["z_delta_norm"]) for c in pool], dtype=np.float64))
+        counts_so_far = {int(t): template_ids_used.count(int(t)) for t in top_indices}
+        diversity_bonus = np.asarray(
+            [1.0 / (1.0 + float(counts_so_far.get(int(c["template_id"]), 0))) for c in pool],
+            dtype=np.float64,
+        )
+        for j, cand in enumerate(pool):
+            variety = float(disp[j] + diversity_bonus[j])
+            cand["relevance_score"] = float(rel[j])
+            cand["safe_balance_score"] = float(safe_bal[j])
+            cand["variety_score"] = variety
+            cand["fv_score"] = float(rel[j] + safe_bal[j] + 0.5 * variety)
+            cand["template_diversity_bonus"] = float(diversity_bonus[j])
+
+        feasible_pool = [c for c in pool if bool(c["feasible"])]
+        rng = np.random.default_rng(int(idx) * 1009 + int(seed) * 9176 + int(candidate_order))
+        if feasible_pool:
+            if mode == "fv_score_top5":
+                ordered = sorted(feasible_pool, key=lambda c: (-float(c["fv_score"]), int(c["template_id"]), -float(c["template_sign"])))
+                shortlist = ordered[: min(fv_top_k, len(ordered))]
+                selected = dict(shortlist[int(rng.integers(0, len(shortlist)))])
+            else:
+                selected = dict(feasible_pool[int(rng.integers(0, len(feasible_pool)))])
+        else:
+            # Keep the run shape stable, but make the fallback explicit in audit.
+            selected = dict(pool[int(rng.integers(0, len(pool)))])
+            selected["selector_fallback_no_feasible"] = 1
+
+        selected["selector_candidate_pool_size"] = int(len(pool))
+        selected["selector_feasible_count"] = int(len(feasible_pool))
+        selected["pre_filter_reject_count"] = int(len(pool) - len(feasible_pool))
+        selected["reject_reason_zero_gamma"] = int(sum(int(c["reject_zero_gamma"]) for c in pool))
+        selected["reject_reason_safe_radius"] = int(sum(int(c["reject_safe_radius"]) for c in pool))
+        selected["reject_reason_zero_direction"] = int(sum(int(c["reject_zero_direction"]) for c in pool))
+        selected["reject_reason_zero_margin"] = int(sum(int(c["reject_zero_margin"]) for c in pool))
+        return selected
+
+    for slot_idx, spec in enumerate(row_specs):
+        idx = int(spec["anchor_index"])
+        tid = spec["tid"]
+        candidate_order = int(spec["candidate_order"])
+        if is_fv_selector:
+            selected = _select_fv_candidate(idx, candidate_order)
+            pair_pos = int(selected.get("template_rank", 0))
+            template_sign = float(selected["template_sign"])
+            template_id = int(selected["template_id"])
+            direction_norm = float(selected["direction_norm"])
+            d_min = float(selected["manifold_margin"])
+            gamma_requested = float(selected["gamma_requested"])
+            gamma_used = float(selected["gamma_used"])
+            safe_upper_bound = float(selected["safe_upper_bound"])
+            safe_radius_ratio = float(selected["safe_radius_ratio"])
+            W_i = np.asarray(selected["W_i"], dtype=np.float32)
+            response_abs = float(selected["response_abs"])
+            is_clipped = float(selected["is_clipped"])
+            selector_total_proposed += int(selected.get("selector_candidate_pool_size", 0))
+            selector_total_feasible += int(selected.get("selector_feasible_count", 0))
+            selector_total_selected += 1
+            pre_filter_reject_count += int(selected.get("pre_filter_reject_count", 0))
+            reject_reason_zero_gamma += int(selected.get("reject_reason_zero_gamma", 0))
+            reject_reason_safe_radius += int(selected.get("reject_reason_safe_radius", 0))
+            reject_reason_zero_direction += int(selected.get("reject_reason_zero_direction", 0))
+            reject_reason_zero_margin += int(selected.get("reject_reason_zero_margin", 0))
+            relevance_scores.append(float(selected.get("relevance_score", np.nan)))
+            safe_balance_scores.append(float(selected.get("safe_balance_score", np.nan)))
+            variety_scores.append(float(selected.get("variety_score", np.nan)))
+            fv_scores.append(float(selected.get("fv_score", np.nan)))
+        else:
+            top_ids = _top_ids_for_idx(idx)
+            pair_pos = (candidate_order % pair_cycle) // 2
+            template_sign = 1.0 if (candidate_order % 2 == 0) else -1.0
+            template_id = int(top_ids[pair_pos])
+            comp = _candidate_components(idx, template_id, template_sign)
+            direction_norm = float(comp["direction_norm"])
+            d_min = float(comp["manifold_margin"])
+            gamma_requested = float(comp["gamma_requested"])
+            gamma_used = float(comp["gamma_used"])
+            safe_upper_bound = float(comp["safe_upper_bound"])
+            safe_radius_ratio = float(comp["safe_radius_ratio"])
+            W_i = np.asarray(comp["W_i"], dtype=np.float32)
+            response_abs = float(comp["response_abs"])
+            is_clipped = float(comp["is_clipped"])
         if mode == "sameclass_zmix":
             group_ids = neighbor_indices[idx]
             rng = np.random.default_rng(int(idx) + int(seed) + int(candidate_order))
@@ -699,10 +859,6 @@ def _build_top_response_template_slots(
             template_id = -1
             response_abs = 0.0
             is_clipped = 0.0
-        else:
-            W_i = (template_sign * gamma_used * direction).astype(np.float32)
-            response_abs = float(abs(np.dot(np.asarray(X_train_z[idx], dtype=np.float64), direction)))
-            is_clipped = float(gamma_requested > (safe_upper_bound + 1e-9))
 
         z_aug.append((np.asarray(X_train_z[idx], dtype=np.float64) + W_i).astype(np.float32))
         y_aug.append(int(y_arr[idx]))
@@ -731,10 +887,28 @@ def _build_top_response_template_slots(
                 "manifold_margin": d_min,
                 "zpia_delta_norm": float(np.linalg.norm(W_i)),
                 "is_clipped": is_clipped,
+                "selection_stage": "pre_bridge_fv" if is_fv_selector else "response_only",
+                "selector_name": mode,
+                "feasible_flag": float(selected.get("feasible", 1.0)) if is_fv_selector else 1.0,
+                "selector_accept_flag": 1.0,
+                "selector_candidate_pool_size": int(selected.get("selector_candidate_pool_size", 1)) if is_fv_selector else 1,
+                "selector_feasible_count": int(selected.get("selector_feasible_count", 1)) if is_fv_selector else 1,
+                "pre_filter_reject_count": int(selected.get("pre_filter_reject_count", 0)) if is_fv_selector else 0,
+                "reject_reason_zero_gamma": int(selected.get("reject_reason_zero_gamma", 0)) if is_fv_selector else 0,
+                "reject_reason_safe_radius": int(selected.get("reject_reason_safe_radius", 0)) if is_fv_selector else 0,
+                "reject_reason_zero_direction": int(selected.get("reject_reason_zero_direction", 0)) if is_fv_selector else 0,
+                "reject_reason_zero_margin": int(selected.get("reject_reason_zero_margin", 0)) if is_fv_selector else 0,
+                "relevance_score": float(selected.get("relevance_score", np.nan)) if is_fv_selector else np.nan,
+                "safe_balance_score": float(selected.get("safe_balance_score", np.nan)) if is_fv_selector else np.nan,
+                "variety_score": float(selected.get("variety_score", np.nan)) if is_fv_selector else np.nan,
+                "fv_score": float(selected.get("fv_score", np.nan)) if is_fv_selector else np.nan,
+                "template_diversity_bonus": float(selected.get("template_diversity_bonus", np.nan)) if is_fv_selector else np.nan,
             }
         )
 
     usage_stats = _template_usage_stats(template_ids_used)
+    feasible_rate = float(selector_total_feasible / max(float(selector_total_proposed), 1.0)) if is_fv_selector else 1.0
+    selector_accept_rate = float(selector_total_selected / max(float(selector_total_feasible), 1.0)) if is_fv_selector else 1.0
     return {
         "z_aug": np.stack(z_aug).astype(np.float32) if z_aug else np.empty((0, X_train_z.shape[1]), dtype=np.float32),
         "y_aug": np.asarray(y_aug, dtype=np.int64),
@@ -744,6 +918,20 @@ def _build_top_response_template_slots(
         "multi_template_pairs": int(pairs),
         "template_usage_entropy": usage_stats["template_usage_entropy"],
         "top_template_concentration": usage_stats["top_template_concentration"],
+        "selection_stage": "pre_bridge_fv" if is_fv_selector else "response_only",
+        "selector_name": mode,
+        "feasible_rate": feasible_rate,
+        "selector_accept_rate": selector_accept_rate,
+        "pre_filter_reject_count": int(pre_filter_reject_count),
+        "reject_reason_zero_gamma": int(reject_reason_zero_gamma),
+        "reject_reason_safe_radius": int(reject_reason_safe_radius),
+        "reject_reason_zero_direction": int(reject_reason_zero_direction),
+        "reject_reason_zero_margin": int(reject_reason_zero_margin),
+        "relevance_score_mean": float(np.nanmean(relevance_scores)) if relevance_scores else np.nan,
+        "safe_balance_score_mean": float(np.nanmean(safe_balance_scores)) if safe_balance_scores else np.nan,
+        "fidelity_score_mean": float(np.nanmean(np.asarray(relevance_scores) + np.asarray(safe_balance_scores))) if relevance_scores else np.nan,
+        "variety_score_mean": float(np.nanmean(variety_scores)) if variety_scores else np.nan,
+        "fv_score_mean": float(np.nanmean(fv_scores)) if fv_scores else np.nan,
     }
 
 
@@ -777,15 +965,23 @@ def _materialize_z_aug_out(
         aug_trials.append({"x": x_aug.numpy(), "y": int(y_aug[i]), "tid": tid_aug[i]})
         bridge_metrics.append(bridge_meta)
         row = dict(audit_rows[i]) if i < len(audit_rows) else {}
+        transport_error = float(bridge_meta.get("transport_error_logeuc", np.nan))
+        bridge_success = bool(np.isfinite(transport_error))
+        post_bridge_reject_reason = "" if bridge_success else "rejected_bridge_fail"
         row.update(
             {
                 "algo": algo_name,
                 "engine_id": engine_id,
                 "direction_bank_source": direction_bank_meta.get("bank_source", algo_name),
                 "transport_error_fro": float(bridge_meta.get("transport_error_fro", 0.0)),
-                "transport_error_logeuc": float(bridge_meta.get("transport_error_logeuc", 0.0)),
+                "transport_error_logeuc": transport_error,
                 "bridge_cond_A": float(bridge_meta.get("bridge_cond_A", 0.0)),
                 "metric_preservation_error": float(bridge_meta.get("metric_preservation_error", 0.0)),
+                "bridge_success": bridge_success,
+                "post_bridge_reject_flag": float(0.0 if bridge_success else 1.0),
+                "post_bridge_reject_reason": post_bridge_reject_reason,
+                "candidate_status": "accepted" if bridge_success else post_bridge_reject_reason,
+                "reject_reason": post_bridge_reject_reason,
             }
         )
         out_rows.append(row)
@@ -798,6 +994,9 @@ def _materialize_z_aug_out(
     margins = [float(row.get("manifold_margin", 0.0)) for row in out_rows]
     gamma_used = [float(row.get("gamma_used", 0.0)) for row in out_rows]
     gamma_req = [float(row.get("gamma_requested", 0.0)) for row in out_rows]
+    z_delta_norms = [float(row.get("zpia_delta_norm", row.get("z_displacement_norm", 0.0))) for row in out_rows]
+    post_bridge_flags = [float(row.get("post_bridge_reject_flag", 0.0)) for row in out_rows]
+    bridge_fail_count = int(sum(1 for row in out_rows if row.get("post_bridge_reject_reason", "") == "rejected_bridge_fail"))
 
     out = {
         "effective_k": int(effective_k),
@@ -815,8 +1014,13 @@ def _materialize_z_aug_out(
         "safe_clip_rate": float(np.mean(clip_flags)) if clip_flags else 0.0,
         "manifold_margin_mean": float(np.mean(margins)) if margins else 0.0,
         "gamma_requested_mean": float(np.mean(gamma_req)) if gamma_req else 0.0,
+        "gamma_used_mean": float(np.mean(gamma_used)) if gamma_used else 0.0,
+        "z_displacement_norm_mean": float(np.mean(z_delta_norms)) if z_delta_norms else 0.0,
         "gamma_zero_rate": float(np.mean([1.0 if g < 1e-12 else 0.0 for g in gamma_used])) if gamma_used else 0.0,
         "aug_valid_rate": float(1.0 - (float(np.mean([1.0 if g < 1e-12 else 0.0 for g in gamma_used])) if gamma_used else 0.0)),
+        "post_bridge_reject_count": int(sum(post_bridge_flags)),
+        "reject_reason_bridge_fail": int(bridge_fail_count),
+        "reject_reason_transport_error": 0,
         "eta_safe": eta_safe,
         "candidate_total_count": int(len(z_aug)),
         "aug_total_count": int(len(z_aug)),
@@ -1017,6 +1221,20 @@ def _build_zpia_template_pool_aug_out(
             "multi_template_pairs": int(slots["multi_template_pairs"]),
             "template_usage_entropy": float(slots["template_usage_entropy"]),
             "top_template_concentration": float(slots["top_template_concentration"]),
+            "selection_stage": str(slots.get("selection_stage", "response_only")),
+            "selector_name": str(slots.get("selector_name", getattr(args, "template_selection", ""))),
+            "feasible_rate": float(slots.get("feasible_rate", 1.0)),
+            "selector_accept_rate": float(slots.get("selector_accept_rate", 1.0)),
+            "pre_filter_reject_count": int(slots.get("pre_filter_reject_count", 0)),
+            "reject_reason_zero_gamma": int(slots.get("reject_reason_zero_gamma", 0)),
+            "reject_reason_safe_radius": int(slots.get("reject_reason_safe_radius", 0)),
+            "reject_reason_zero_direction": int(slots.get("reject_reason_zero_direction", 0)),
+            "reject_reason_zero_margin": int(slots.get("reject_reason_zero_margin", 0)),
+            "relevance_score_mean": float(slots.get("relevance_score_mean", np.nan)),
+            "safe_balance_score_mean": float(slots.get("safe_balance_score_mean", np.nan)),
+            "fidelity_score_mean": float(slots.get("fidelity_score_mean", np.nan)),
+            "variety_score_mean": float(slots.get("variety_score_mean", np.nan)),
+            "fv_score_mean": float(slots.get("fv_score_mean", np.nan)),
         },
     )
 
@@ -1585,6 +1803,22 @@ def _run_act_pipeline(
         "gamma_used_mean": aug_out.get("gamma_used_mean", 0.0),
         "gamma_zero_rate": aug_out.get("gamma_zero_rate", 0.0),
         "safe_clip_rate": aug_out.get("safe_clip_rate", 0.0),
+        "selection_stage": aug_out.get("selection_stage", "response_only"),
+        "selector_name": aug_out.get("selector_name", str(getattr(args, "template_selection", ""))),
+        "feasible_rate": aug_out.get("feasible_rate", 1.0),
+        "selector_accept_rate": aug_out.get("selector_accept_rate", 1.0),
+        "pre_filter_reject_count": aug_out.get("pre_filter_reject_count", 0),
+        "post_bridge_reject_count": aug_out.get("post_bridge_reject_count", 0),
+        "reject_reason_zero_gamma": aug_out.get("reject_reason_zero_gamma", 0),
+        "reject_reason_safe_radius": aug_out.get("reject_reason_safe_radius", 0),
+        "reject_reason_bridge_fail": aug_out.get("reject_reason_bridge_fail", 0),
+        "reject_reason_transport_error": aug_out.get("reject_reason_transport_error", 0),
+        "relevance_score_mean": aug_out.get("relevance_score_mean", np.nan),
+        "safe_balance_score_mean": aug_out.get("safe_balance_score_mean", np.nan),
+        "fidelity_score_mean": aug_out.get("fidelity_score_mean", np.nan),
+        "variety_score_mean": aug_out.get("variety_score_mean", np.nan),
+        "fv_score_mean": aug_out.get("fv_score_mean", np.nan),
+        "z_displacement_norm_mean": aug_out.get("z_displacement_norm_mean", 0.0),
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
         "candidate_total_count": aug_out["candidate_total_count"],
@@ -1692,6 +1926,22 @@ def _run_act_zpia_template_pool_pipeline(
         "gamma_used_mean": aug_out.get("gamma_used_mean", 0.0),
         "gamma_zero_rate": aug_out.get("gamma_zero_rate", 0.0),
         "safe_clip_rate": aug_out.get("safe_clip_rate", 0.0),
+        "selection_stage": aug_out.get("selection_stage", "response_only"),
+        "selector_name": aug_out.get("selector_name", str(getattr(args, "template_selection", ""))),
+        "feasible_rate": aug_out.get("feasible_rate", 1.0),
+        "selector_accept_rate": aug_out.get("selector_accept_rate", 1.0),
+        "pre_filter_reject_count": aug_out.get("pre_filter_reject_count", 0),
+        "post_bridge_reject_count": aug_out.get("post_bridge_reject_count", 0),
+        "reject_reason_zero_gamma": aug_out.get("reject_reason_zero_gamma", 0),
+        "reject_reason_safe_radius": aug_out.get("reject_reason_safe_radius", 0),
+        "reject_reason_bridge_fail": aug_out.get("reject_reason_bridge_fail", 0),
+        "reject_reason_transport_error": aug_out.get("reject_reason_transport_error", 0),
+        "relevance_score_mean": aug_out.get("relevance_score_mean", np.nan),
+        "safe_balance_score_mean": aug_out.get("safe_balance_score_mean", np.nan),
+        "fidelity_score_mean": aug_out.get("fidelity_score_mean", np.nan),
+        "variety_score_mean": aug_out.get("variety_score_mean", np.nan),
+        "fv_score_mean": aug_out.get("fv_score_mean", np.nan),
+        "z_displacement_norm_mean": aug_out.get("z_displacement_norm_mean", 0.0),
         "host_geom_cosine_mean": alignment_metrics["host_geom_cosine_mean"],
         "host_conflict_rate": alignment_metrics["host_conflict_rate"],
         "candidate_total_count": aug_out["candidate_total_count"],
@@ -2330,6 +2580,24 @@ def run_experiment(dataset_name, args):
                 "safe_clip_rate": float(pipeline_out.get("safe_clip_rate", 0.0)),
                 "template_usage_entropy": float(pipeline_out.get("template_usage_entropy", 0.0)),
                 "top_template_concentration": float(pipeline_out.get("top_template_concentration", 0.0)),
+                "selection_stage": str(pipeline_out.get("selection_stage", "response_only")),
+                "selector_name": str(pipeline_out.get("selector_name", getattr(args, "template_selection", ""))),
+                "feasible_rate": float(pipeline_out.get("feasible_rate", 1.0)),
+                "selector_accept_rate": float(pipeline_out.get("selector_accept_rate", 1.0)),
+                "pre_filter_reject_count": int(pipeline_out.get("pre_filter_reject_count", 0)),
+                "post_bridge_reject_count": int(pipeline_out.get("post_bridge_reject_count", 0)),
+                "reject_reason_zero_gamma": int(pipeline_out.get("reject_reason_zero_gamma", 0)),
+                "reject_reason_safe_radius": int(pipeline_out.get("reject_reason_safe_radius", 0)),
+                "reject_reason_zero_direction": int(pipeline_out.get("reject_reason_zero_direction", 0)),
+                "reject_reason_zero_margin": int(pipeline_out.get("reject_reason_zero_margin", 0)),
+                "reject_reason_bridge_fail": int(pipeline_out.get("reject_reason_bridge_fail", 0)),
+                "reject_reason_transport_error": int(pipeline_out.get("reject_reason_transport_error", 0)),
+                "relevance_score_mean": float(pipeline_out.get("relevance_score_mean", np.nan)),
+                "safe_balance_score_mean": float(pipeline_out.get("safe_balance_score_mean", np.nan)),
+                "fidelity_score_mean": float(pipeline_out.get("fidelity_score_mean", np.nan)),
+                "variety_score_mean": float(pipeline_out.get("variety_score_mean", np.nan)),
+                "fv_score_mean": float(pipeline_out.get("fv_score_mean", np.nan)),
+                "z_displacement_norm_mean": float(pipeline_out.get("z_displacement_norm_mean", 0.0)),
             }
             direction_meta = dict(pipeline_out.get("direction_bank_meta", {}))
             summary["direction_bank_source"] = str(direction_meta.get("bank_source", args.algo))
@@ -2527,6 +2795,9 @@ def main():
             "topk_softmax_tau_0.10",
             "topk_softmax_tau_0.20",
             "topk_uniform_top5",
+            "fv_filter_top5",
+            "fv_score_top5",
+            "random_feasible_selector",
         ],
         default="top_response",
     )

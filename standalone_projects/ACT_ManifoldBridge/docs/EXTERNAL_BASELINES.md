@@ -81,6 +81,9 @@ results/csta_external_baselines_phase1/resnet1d_s123/
 ```
 
 Do not use this locked root for smoke or debug runs.
+The runner now blocks writes to locked Phase 1/2 roots unless
+`--allow-locked-root-overwrite` is explicitly supplied for intentional reference
+regeneration.
 
 ## Phase 2
 
@@ -136,6 +139,9 @@ through the external runner for fair comparison and compact summaries.
 | `csta_topk_softmax_tau_0.10` | PIA top-K softmax activation, tau 0.10 |
 | `csta_topk_softmax_tau_0.20` | PIA top-K softmax activation, tau 0.20 |
 | `csta_topk_uniform_top5` | PIA uniform sampling over top-5 templates |
+| `csta_fv_filter_top5` | Pre-bridge feasibility-filtered high-response top-5 selector |
+| `csta_fv_score_top5` | Pre-bridge fidelity-variety scored top-5 selector |
+| `csta_random_feasible_selector` | Feasible-only random control for the selector layer |
 
 ## Running A Small Smoke
 

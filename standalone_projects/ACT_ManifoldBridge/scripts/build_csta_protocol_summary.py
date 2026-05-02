@@ -747,6 +747,13 @@ def _build_mechanism_diagnostics(rows: pd.DataFrame) -> pd.DataFrame:
         "z_displacement_norm_mean",
         "transport_error_logeuc_mean",
         "aug_valid_rate",
+        "feasible_rate",
+        "selector_accept_rate",
+        "fidelity_score_mean",
+        "variety_score_mean",
+        "fv_score_mean",
+        "pre_filter_reject_count",
+        "post_bridge_reject_count",
     ]
     meta_fields = [
         "operator_name",

@@ -58,6 +58,27 @@ def normalize_activation_policy(policy: str) -> Dict[str, object]:
             "activation_topk": 5,
             "activation_tau": tau,
         }
+    if name == "fv_filter_top5":
+        return {
+            "activation_policy": "fv_filter_topk",
+            "activation_scope": "single_anchor_pre_bridge_selector",
+            "activation_topk": 5,
+            "activation_tau": np.nan,
+        }
+    if name == "fv_score_top5":
+        return {
+            "activation_policy": "fv_score_topk",
+            "activation_scope": "single_anchor_pre_bridge_selector",
+            "activation_topk": 5,
+            "activation_tau": np.nan,
+        }
+    if name == "random_feasible_selector":
+        return {
+            "activation_policy": "random_feasible_selector",
+            "activation_scope": "single_anchor_pre_bridge_selector",
+            "activation_topk": 5,
+            "activation_tau": np.nan,
+        }
     if name == "group_top":
         return {
             "activation_policy": "group_top",

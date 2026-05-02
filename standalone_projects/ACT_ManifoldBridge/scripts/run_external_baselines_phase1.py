@@ -59,6 +59,11 @@ DEFAULT_DATASETS = [
     "racketsports",
 ]
 
+LOCKED_RESULT_ROOTS = (
+    PROJECT_ROOT / "results" / "csta_external_baselines_phase1" / "resnet1d_s123",
+    PROJECT_ROOT / "results" / "csta_external_baselines_phase2" / "resnet1d_s123",
+)
+
 DEFAULT_ARMS = [
     "no_aug",
     "raw_aug_jitter",
@@ -126,6 +131,30 @@ CSTA_RESULT_PASSTHROUGH_FIELDS = [
     "transport_error_logeuc_mean_audit",
     "template_usage_entropy_audit",
     "top_template_concentration_audit",
+    "selection_stage",
+    "selector_name",
+    "feasible_rate",
+    "selector_accept_rate",
+    "pre_filter_reject_count",
+    "post_bridge_reject_count",
+    "reject_reason_zero_gamma",
+    "reject_reason_safe_radius",
+    "reject_reason_zero_direction",
+    "reject_reason_zero_margin",
+    "reject_reason_bridge_fail",
+    "reject_reason_transport_error",
+    "relevance_score_mean",
+    "safe_balance_score_mean",
+    "fidelity_score_mean",
+    "variety_score_mean",
+    "fv_score_mean",
+    "feasible_rate_audit",
+    "selector_accept_rate_audit",
+    "relevance_score_mean_audit",
+    "safe_balance_score_mean_audit",
+    "fidelity_score_mean_audit",
+    "variety_score_mean_audit",
+    "fv_score_mean_audit",
     "gamma_used_gt_requested_count",
     "safe_radius_ratio_out_of_bounds_count",
     "direction_bank_source",
@@ -269,6 +298,9 @@ METHOD_INFO: Dict[str, MethodInfo] = {
     "csta_topk_softmax_tau_0.10": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.10_response"),
     "csta_topk_softmax_tau_0.20": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.20_response"),
     "csta_topk_uniform_top5": MethodInfo("covariance_template", "hard", False, "", True, "uniform_top5_response"),
+    "csta_fv_filter_top5": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_fv_filter_top5"),
+    "csta_fv_score_top5": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_fv_score_top5"),
+    "csta_random_feasible_selector": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_random_feasible_control"),
     "manifold_mixup": MethodInfo("hidden_state", "soft", False, "", False, "resnet1d_hidden_state_beta_mixup"),
     "timevae_classwise_optional": MethodInfo(
         "generative_model",
@@ -283,6 +315,28 @@ METHOD_INFO: Dict[str, MethodInfo] = {
 
 def _parse_csv(value: str) -> List[str]:
     return [x.strip() for x in str(value).split(",") if x.strip()]
+
+
+def _resolved_path(value: str | Path) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+def _guard_locked_out_root(args) -> None:
+    """Prevent smoke/probe runs from overwriting locked reference summaries."""
+    out_root = _resolved_path(args.out_root)
+    locked = {_resolved_path(path) for path in LOCKED_RESULT_ROOTS}
+    if out_root not in locked:
+        return
+    if bool(getattr(args, "allow_locked_root_overwrite", False)):
+        return
+    locked_text = "\n".join(f"  - {path}" for path in sorted(str(path) for path in locked))
+    raise RuntimeError(
+        "Refusing to write to a locked external-baseline reference root.\n"
+        f"Requested out_root: {out_root}\n"
+        f"Locked roots:\n{locked_text}\n"
+        "Use a smoke/local output root, or pass --allow-locked-root-overwrite "
+        "only when intentionally regenerating locked references."
+    )
 
 
 def _stack_trials(trials) -> tuple[np.ndarray, np.ndarray]:
@@ -304,6 +358,12 @@ def _csta_policy_for_method(method: str) -> str:
         return "group_top"
     if method.startswith("csta_topk_"):
         return method.replace("csta_", "", 1)
+    if method == "csta_fv_filter_top5":
+        return "fv_filter_top5"
+    if method == "csta_fv_score_top5":
+        return "fv_score_top5"
+    if method == "csta_random_feasible_selector":
+        return "random_feasible_selector"
     return method
 
 
@@ -547,6 +607,8 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         cmd.extend(["--template-selection", "group_top", "--group-size", str(args.group_size)])
     elif method.startswith("csta_topk_"):
         cmd.extend(["--template-selection", method.replace("csta_", "")])
+    elif method in {"csta_fv_filter_top5", "csta_fv_score_top5", "csta_random_feasible_selector"}:
+        cmd.extend(["--template-selection", _csta_policy_for_method(method)])
 
     (csta_root / "command.json").write_text(
         json.dumps({"method": method, "command": cmd}, ensure_ascii=True, indent=2),
@@ -814,6 +876,7 @@ def run(args) -> List[Dict[str, object]]:
     if unknown:
         raise ValueError(f"Unknown external baseline arms: {unknown}")
 
+    _guard_locked_out_root(args)
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     (out_root / "run_config.json").write_text(json.dumps(vars(args), indent=2, sort_keys=True), encoding="utf-8")
@@ -1021,7 +1084,12 @@ def run(args) -> List[Dict[str, object]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSTA external baseline runner for Phase 1/2/3 arms")
-    parser.add_argument("--out-root", type=str, default=str(PROJECT_ROOT / "results" / "csta_external_baselines_phase1" / "resnet1d_s123"))
+    parser.add_argument(
+        "--out-root",
+        type=str,
+        default=str(PROJECT_ROOT / "results" / "csta_external_baselines_local" / "resnet1d_s123"),
+        help="Output root. Defaults to a local non-locked root; pass an explicit root for formal matrices.",
+    )
     parser.add_argument("--backbone", type=str, choices=list(SUPPORTED_BACKBONES), default="resnet1d")
     parser.add_argument("--datasets", type=str, default=",".join(DEFAULT_DATASETS))
     parser.add_argument("--arms", type=str, default=",".join(DEFAULT_ARMS))
@@ -1071,6 +1139,11 @@ def main() -> None:
     parser.add_argument("--group-size", type=int, default=5)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument(
+        "--allow-locked-root-overwrite",
+        action="store_true",
+        help="Allow writing to locked Phase 1/2 reference roots. Use only for intentional reference regeneration.",
+    )
     args = parser.parse_args()
     run(args)
 

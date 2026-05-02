@@ -79,9 +79,9 @@ def whitening_step(
     eps: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Step 1: Tangent Space Projection (Whitening). 
-    Maps the original signal to a spherical distribution, effectively projecting 
-    it to the tangent space at the current manifold point.
+    Step 1: Whitening.
+    Center the signal and remove the original covariance structure. This is the
+    first half of the whitening-coloring covariance realization bridge.
     """
     W_whiten = spd_invsqrtm(sigma_orig, eps=eps)
     x_centered = x_orig - x_orig.mean(dim=-1, keepdim=True)
@@ -96,9 +96,10 @@ def coloring_step(
     eps: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Step 2: Geodesic Parallel Transport (Coloring). 
-    Maps the whitened signal to the target covariance manifold by moving it along 
-    the geodesic from the identity (identity tangent point) to the target covariance.
+    Step 2: Coloring.
+    Inject the target covariance into the whitened signal. This realizes a
+    covariance target in raw time-series space; it is not claimed to be an
+    exact Bures-Wasserstein optimal transport map.
     """
     W_color = spd_sqrtm(sigma_target, eps=eps)
     x_colored = W_color @ x_white + x_mean_orig
@@ -112,11 +113,12 @@ def check_isometry(
     eps: float = 1e-12
 ) -> Dict[str, float]:
     """
-    Diagnostic for Approximate Metric Preservation. 
-    Checks if the Optimal Transport Map A preserves the local geometric metric 
-    by calculating the deviation of A^T A from the Identity.
+    Bridge deformation and conditioning diagnostics.
+    ``metric_preservation_error`` is a legacy field name kept for CSV
+    compatibility; interpret it as ||A^T A - I||_F, a deformation diagnostic,
+    not as a strict isometry guarantee.
     """
-    # Metric preservation error: ||A^T A - I||_F
+    # Legacy metric_preservation_error field: ||A^T A - I||_F.
     n = A.shape[-1]
     eye = torch.eye(n, device=A.device, dtype=A.dtype)
     isometry_err = torch.linalg.norm(A.transpose(-1, -2) @ A - eye)
@@ -143,9 +145,13 @@ def bridge_single(
     eps: float = 1e-5,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
-    Prop 1: Optimal Transport Map. 
-    Implements the ACT bridge as an Optimal Transport Map (A = Σ_a^1/2 * Σ_o^-1/2) 
-    in the Bures-Wasserstein metric space. 
+    Whitening-coloring covariance realization map.
+
+    Given an original signal, its covariance, and a target covariance, this
+    bridge whitens the original sample and colors it with the target covariance.
+    The returned diagnostics measure covariance-target fidelity and bridge
+    deformation/conditioning; the implementation does not claim exact Gaussian
+    OT or Bures-Wasserstein optimality.
     """
     x_orig = x_orig.to(dtype=torch.float64)
     sigma_orig = sigma_orig.to(dtype=torch.float64)
@@ -159,14 +165,14 @@ def bridge_single(
     # 2. Coloring
     x_aug, W_color = coloring_step(x_white, sigma_aug, mu_orig, eps=eps)
     
-    # 3. Geometric Operator Analysis
+    # 3. Bridge operator diagnostics
     A = W_color @ W_whiten
     iso_metrics = check_isometry(x_orig, x_aug, A, eps=eps)
 
-    # 4. Transport Fidelity Analysis
+    # 4. Covariance-target fidelity diagnostics
     cov_aug_emp = covariance_from_signal(x_aug, eps=eps)
     
-    # Transport Error (Proposition 1 Evidence)
+    # Covariance realization error.
     transport_err_fro = torch.linalg.norm(cov_aug_emp - sigma_aug)
     
     log_cov_aug_emp = spd_logm(cov_aug_emp, eps=eps)
