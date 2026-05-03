@@ -1,0 +1,2 @@
+observed_delta_mean,bootstrap_ci_lo_2.5,bootstrap_ci_hi_97.5,ci_crosses_zero,n_bootstrap
+-0.0020732117803092228,-0.018300400192507598,0.013493253909035259,True,10000

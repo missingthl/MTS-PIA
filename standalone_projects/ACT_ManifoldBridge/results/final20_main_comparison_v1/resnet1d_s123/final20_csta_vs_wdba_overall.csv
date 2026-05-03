@@ -1,0 +1,2 @@
+csta_mean_aug_f1,wdba_mean_aug_f1,delta_mean_aug_f1,csta_mean_gain,wdba_mean_gain,n_datasets,dataset_win,dataset_loss,dataset_tie,seed_win,seed_loss,seed_tie,csta_mean_elapsed_sec,wdba_mean_elapsed_sec
+0.7279262531262056,0.7299994649065149,-0.0020732117803092228,0.04050878544586185,0.042581997226171064,20,10,9,1,30,27,3,29.121179599551635,1426.1286180284224
