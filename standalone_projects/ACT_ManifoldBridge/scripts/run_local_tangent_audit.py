@@ -29,6 +29,7 @@ DEFAULT_DATASETS = (
     "japanesevowels,natops,racketsports"
 )
 DEFAULT_METHODS = "csta_topk_uniform_top5,csta_top1_current,random_cov_state,pca_cov_state"
+DEFAULT_SELECTOR_ROOT = PROJECT_ROOT / "results" / "csta_selector_ablation_v1" / "resnet1d_s123"
 
 
 def _parse_csv(text: str) -> List[str]:
@@ -55,6 +56,54 @@ def _load_train_states(dataset: str, seed: int, *, val_ratio: float):
     Z = np.stack([r.z for r in train_records], axis=0).astype(np.float64)
     y = np.asarray([r.y for r in train_records], dtype=np.int64)
     return train_records, Z, y
+
+
+def _candidate_path_from_summary(summary_path: Path, dataset: str, seed: int, method: str) -> Path | None:
+    if not summary_path.is_file():
+        return None
+    df = pd.read_csv(summary_path)
+    required = {"dataset", "seed", "method", "candidate_audit_path"}
+    if not required.issubset(df.columns):
+        return None
+    hit = df[
+        (df["dataset"].astype(str) == str(dataset))
+        & (df["seed"].astype(int) == int(seed))
+        & (df["method"].astype(str) == str(method))
+    ]
+    if hit.empty:
+        return None
+    raw = hit.iloc[0].get("candidate_audit_path", "")
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path if path.is_file() else None
+
+
+def _candidate_path_by_glob(selector_root: Path, dataset: str, seed: int, method: str) -> Path | None:
+    byarm = selector_root.parent / f"{selector_root.name}_byarm"
+    patterns = [
+        byarm / method / "_csta_runs" / method / dataset / f"s{seed}" / "candidate_audit" / f"{dataset}_s{seed}_{method}_candidate_audit.csv.gz",
+        selector_root / "_csta_runs" / method / dataset / f"s{seed}" / "candidate_audit" / f"{dataset}_s{seed}_{method}_candidate_audit.csv.gz",
+    ]
+    for path in patterns:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_actual_candidate_audit(selector_root: Path, dataset: str, seed: int, method: str) -> tuple[pd.DataFrame | None, str]:
+    if method not in {"csta_topk_uniform_top5", "csta_top1_current"}:
+        return None, ""
+    summary_path = selector_root / "per_seed_selector_with_refs.csv"
+    path = _candidate_path_from_summary(summary_path, dataset, seed, method)
+    if path is None:
+        path = _candidate_path_by_glob(selector_root, dataset, seed, method)
+    if path is None:
+        return None, ""
+    df = pd.read_csv(path)
+    return df, str(path)
 
 
 def run_one(dataset: str, seed: int, args) -> pd.DataFrame:
@@ -84,9 +133,18 @@ def run_one(dataset: str, seed: int, args) -> pd.DataFrame:
     pca_bank, pca_meta = build_pca_direction_bank(Z, k_dir=int(args.k_dir), seed=int(seed))
 
     rows = []
+    actual_paths: dict[str, str] = {}
     for method in _parse_csv(args.methods):
         if method not in {"csta_topk_uniform_top5", "csta_top1_current", "random_cov_state", "pca_cov_state"}:
             raise ValueError(f"Unsupported local tangent audit method: {method}")
+        actual_rows = None
+        actual_path = ""
+        audit_source = "policy_replay"
+        if method in {"csta_topk_uniform_top5", "csta_top1_current"}:
+            actual_rows, actual_path = _load_actual_candidate_audit(Path(args.selector_root), dataset, seed, method)
+            if actual_rows is not None and not actual_rows.empty:
+                audit_source = "actual_candidate_audit"
+                actual_paths[method] = actual_path
         rows.extend(
             build_alignment_rows(
                 dataset=dataset,
@@ -99,6 +157,8 @@ def run_one(dataset: str, seed: int, args) -> pd.DataFrame:
                 pca_bank=pca_bank,
                 multiplier=int(args.multiplier),
                 k_dir=int(args.k_dir),
+                actual_candidate_rows=actual_rows,
+                audit_source=audit_source,
             )
         )
     df = pd.DataFrame(rows)
@@ -111,6 +171,10 @@ def run_one(dataset: str, seed: int, args) -> pd.DataFrame:
     df["zpia_bank_source"] = str(zpia_meta.get("bank_source", "zpia_telm2"))
     df["pca_bank_source"] = str(pca_meta.get("bank_source", "pca"))
     df["n_train"] = int(len(train_records))
+    if "actual_candidate_audit_path" not in df.columns:
+        df["actual_candidate_audit_path"] = ""
+    for method, actual_path in actual_paths.items():
+        df.loc[df["method"] == method, "actual_candidate_audit_path"] = actual_path
     return df
 
 
@@ -152,6 +216,7 @@ def main() -> None:
     parser.add_argument("--telm2-activation", type=str, default="sine", choices=["sine", "sigmoid", "none"])
     parser.add_argument("--telm2-bias-update-mode", type=str, default="none", choices=["none", "mean", "ema"])
     parser.add_argument("--device", type=str, default="cpu", help="Accepted for interface consistency; audit is CPU/numpy.")
+    parser.add_argument("--selector-root", type=Path, default=DEFAULT_SELECTOR_ROOT)
     parser.add_argument(
         "--out-root",
         type=Path,
@@ -192,4 +257,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -216,12 +216,55 @@ def build_alignment_rows(
     multiplier: int = 10,
     policy: str = "top1",
     k_dir: int = 10,
+    actual_candidate_rows: Optional[pd.DataFrame] = None,
+    audit_source: str = "policy_replay",
 ) -> List[Dict[str, object]]:
     X = _as_2d_float(Z, name="Z")
     labels = np.asarray(y, dtype=np.int64).ravel()
     rows: List[Dict[str, object]] = []
     n, z_dim = X.shape
     mult = max(1, int(multiplier))
+
+    def _top5_alignment_stats(anchor_index: int, selected_template_id: int) -> Dict[str, object]:
+        if direction_bank is None:
+            return {
+                "top1_alignment": np.nan,
+                "top5_alignment_mean": np.nan,
+                "top5_alignment_std": np.nan,
+                "selected_alignment_rank_within_top5": np.nan,
+                "selected_alignment_minus_top5_mean": np.nan,
+                "top5_response_mean": np.nan,
+                "top5_response_std": np.nan,
+            }
+        D = _as_2d_float(direction_bank, name="direction_bank")
+        responses = np.abs(X[anchor_index] @ D.T)
+        order = np.lexsort((np.arange(D.shape[0]), -responses))
+        top5 = order[: min(5, D.shape[0])]
+        alignments = []
+        for tid in top5:
+            align, _ = compute_tangent_alignment(D[int(tid)], tangent.bases[anchor_index])
+            alignments.append(align)
+        arr = np.asarray(alignments, dtype=np.float64)
+        top1 = float(arr[0]) if arr.size and np.isfinite(arr[0]) else np.nan
+        selected_alignment = np.nan
+        if int(selected_template_id) >= 0:
+            selected_alignment, _ = compute_tangent_alignment(D[int(selected_template_id)], tangent.bases[anchor_index])
+        if np.isfinite(selected_alignment) and arr.size:
+            # Rank selected direction by alignment inside the high-response top5 set.
+            selected_rank = int(1 + np.sum(arr > selected_alignment + 1e-12))
+        else:
+            selected_rank = np.nan
+        return {
+            "top1_alignment": top1,
+            "top5_alignment_mean": float(np.nanmean(arr)) if np.isfinite(arr).any() else np.nan,
+            "top5_alignment_std": float(np.nanstd(arr)) if np.isfinite(arr).any() else np.nan,
+            "selected_alignment_rank_within_top5": selected_rank,
+            "selected_alignment_minus_top5_mean": float(selected_alignment - np.nanmean(arr))
+            if np.isfinite(selected_alignment) and np.isfinite(arr).any()
+            else np.nan,
+            "top5_response_mean": float(np.mean(responses[top5])) if top5.size else np.nan,
+            "top5_response_std": float(np.std(responses[top5])) if top5.size else np.nan,
+        }
 
     def add_row(
         *,
@@ -235,6 +278,7 @@ def build_alignment_rows(
         sign: float,
     ) -> None:
         alignment, leakage = compute_tangent_alignment(direction, tangent.bases[anchor_index])
+        top5_stats = _top5_alignment_stats(anchor_index, template_id)
         rows.append(
             {
                 "dataset": dataset,
@@ -260,6 +304,9 @@ def build_alignment_rows(
                 "z_dim": int(z_dim),
                 "fallback_flag": bool(tangent.fallback_flag[anchor_index]),
                 "fallback_reason": str(tangent.fallback_reason[anchor_index]),
+                "audit_source": str(audit_source),
+                "actual_candidate_audit_available": bool(audit_source == "actual_candidate_audit"),
+                **top5_stats,
             }
         )
 
@@ -268,24 +315,48 @@ def build_alignment_rows(
             raise ValueError("PIA methods require direction_bank.")
         D = _as_2d_float(direction_bank, name="direction_bank")
         audit_policy = "topk_uniform_top5" if method == "csta_topk_uniform_top5" else "top1"
+        actual_df = actual_candidate_rows.copy() if actual_candidate_rows is not None and not actual_candidate_rows.empty else None
+        if actual_df is not None:
+            required = {"anchor_index", "candidate_order", "template_id", "template_sign"}
+            missing = required - set(actual_df.columns)
+            if missing:
+                raise ValueError(f"actual_candidate_rows missing required columns: {sorted(missing)}")
+            actual_df = actual_df.sort_values(["anchor_index", "candidate_order", "slot_index" if "slot_index" in actual_df else "candidate_order"])
         for i in range(n):
-            # Mirror zpia_top1_pool usage: one selected template per anchor,
-            # repeated over +/- slots across multiplier candidates.
-            ids = top_response_template_ids(X[i], D, policy=audit_policy, seed=seed, anchor_index=i, pairs=1)
-            template_id = int(ids[0])
             responses = np.abs(X[i] @ D.T)
             order = np.lexsort((np.arange(D.shape[0]), -responses))
             rank_lookup = {int(tid): int(rank) for rank, tid in enumerate(order.tolist())}
-            for c in range(mult):
-                sign = 1.0 if c % 2 == 0 else -1.0
+            if actual_df is not None:
+                selected_specs = actual_df[actual_df["anchor_index"].astype(int) == int(i)]
+            else:
+                ids = top_response_template_ids(X[i], D, policy=audit_policy, seed=seed, anchor_index=i, pairs=1)
+                template_id = int(ids[0])
+                selected_specs = pd.DataFrame(
+                    [
+                        {
+                            "candidate_order": int(c),
+                            "template_id": template_id,
+                            "template_rank": rank_lookup.get(template_id, -1),
+                            "template_sign": 1.0 if c % 2 == 0 else -1.0,
+                            "template_response_abs": float(responses[template_id]),
+                        }
+                        for c in range(mult)
+                    ]
+                )
+            for _, spec in selected_specs.iterrows():
+                c = int(spec.get("candidate_order", 0))
+                template_id = int(spec.get("template_id", -1))
+                if template_id < 0 or template_id >= D.shape[0]:
+                    continue
+                sign = float(spec.get("template_sign", 1.0))
                 add_row(
                     anchor_index=i,
                     candidate_order=c,
                     direction=sign * D[template_id],
                     direction_source="pia_selected",
                     template_id=template_id,
-                    template_rank=rank_lookup.get(template_id, -1),
-                    template_response_abs=float(responses[template_id]),
+                    template_rank=int(spec.get("template_rank", rank_lookup.get(template_id, -1))),
+                    template_response_abs=float(spec.get("template_response_abs", responses[template_id])),
                     sign=sign,
                 )
 
@@ -402,6 +473,35 @@ def summarize_candidate_audit(rows: pd.DataFrame) -> pd.DataFrame:
                 "selected_normal_leakage_mean": float(leakage.get("pia_selected", np.nan)),
                 "random_normal_leakage_mean": float(leakage.get("random_cov", np.nan)),
                 "pca_normal_leakage_mean": float(leakage.get("pca_cov", np.nan)),
+                "actual_candidate_audit_available": bool(sub["actual_candidate_audit_available"].any())
+                if "actual_candidate_audit_available" in sub
+                else False,
+                "audit_source": ",".join(sorted(str(x) for x in sub.get("audit_source", pd.Series(dtype=str)).dropna().unique())),
+                "top1_alignment_mean": float(pd.to_numeric(sub.get("top1_alignment", np.nan), errors="coerce").mean())
+                if "top1_alignment" in sub
+                else np.nan,
+                "top5_alignment_mean": float(pd.to_numeric(sub.get("top5_alignment_mean", np.nan), errors="coerce").mean())
+                if "top5_alignment_mean" in sub
+                else np.nan,
+                "top5_alignment_std_mean": float(pd.to_numeric(sub.get("top5_alignment_std", np.nan), errors="coerce").mean())
+                if "top5_alignment_std" in sub
+                else np.nan,
+                "selected_alignment_rank_within_top5_mean": float(
+                    pd.to_numeric(sub[sub["direction_source"] == "pia_selected"].get("selected_alignment_rank_within_top5", np.nan), errors="coerce").mean()
+                )
+                if "selected_alignment_rank_within_top5" in sub
+                else np.nan,
+                "selected_alignment_minus_top5_mean": float(
+                    pd.to_numeric(sub[sub["direction_source"] == "pia_selected"].get("selected_alignment_minus_top5_mean", np.nan), errors="coerce").mean()
+                )
+                if "selected_alignment_minus_top5_mean" in sub
+                else np.nan,
+                "top5_response_mean": float(pd.to_numeric(sub.get("top5_response_mean", np.nan), errors="coerce").mean())
+                if "top5_response_mean" in sub
+                else np.nan,
+                "top5_response_std_mean": float(pd.to_numeric(sub.get("top5_response_std", np.nan), errors="coerce").mean())
+                if "top5_response_std" in sub
+                else np.nan,
             }
         )
     return pd.DataFrame(summaries)

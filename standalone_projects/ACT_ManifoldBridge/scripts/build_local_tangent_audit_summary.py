@@ -17,7 +17,7 @@ def _read_csv(path: Path) -> pd.DataFrame:
     if not path.is_file():
         return pd.DataFrame()
     try:
-        return pd.read_csv(path)
+        return pd.read_csv(path, low_memory=False)
     except Exception:
         return pd.DataFrame()
 
@@ -55,6 +55,13 @@ def _dataset_summary(per_seed: pd.DataFrame) -> pd.DataFrame:
         "pca_normal_leakage_mean",
         "fallback_count",
         "insufficient_neighbor_count",
+        "top1_alignment_mean",
+        "top5_alignment_mean",
+        "top5_alignment_std_mean",
+        "selected_alignment_rank_within_top5_mean",
+        "selected_alignment_minus_top5_mean",
+        "top5_response_mean",
+        "top5_response_std_mean",
     ]
     agg: Dict[str, Tuple[str, str]] = {"n_seeds": ("seed", "nunique")}
     for col in num_cols:
@@ -82,6 +89,9 @@ def _overall_summary(candidates: pd.DataFrame, per_seed: pd.DataFrame) -> pd.Dat
                 "n_datasets": int(sub["dataset"].nunique()),
                 "n_seeds": int(sub[["dataset", "seed"]].drop_duplicates().shape[0]),
                 "available_rate": float(anchors["tangent_available"].mean()) if "tangent_available" in anchors else np.nan,
+                "actual_candidate_audit_available_rate": float(anchors["actual_candidate_audit_available"].mean())
+                if "actual_candidate_audit_available" in anchors
+                else np.nan,
             }
         )
     out = pd.DataFrame(rows)
