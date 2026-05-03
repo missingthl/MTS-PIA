@@ -1,0 +1,5 @@
+method,expected_rows,n_rows,n_success,n_failed,n_datasets,n_seeds
+csta_topk_uniform_top5,21,21,21,0,7,3
+csta_fv_filter_top5,21,21,21,0,7,3
+csta_fv_score_top5,21,21,21,0,7,3
+csta_random_feasible_selector,21,21,21,0,7,3
