@@ -43,6 +43,7 @@ from utils.evaluators import (
     fit_eval_resnet1d,
     fit_eval_resnet1d_weighted_aug_ce,
     fit_eval_timesnet,
+    fit_eval_mptsnet,
 )
 
 
@@ -337,6 +338,9 @@ def _fit_host_model(
     if args.model == "timesnet":
         kwargs["loader_seed"] = loader_seed
         return fit_eval_timesnet(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
+    if args.model == "mptsnet":
+        kwargs["loader_seed"] = loader_seed
+        return fit_eval_mptsnet(X_tr, y_tr, X_val_raw, y_val, X_test_raw, y_test, **kwargs)
 
     model = build_model(n_kernels=args.n_kernels, random_state=loader_seed or 42)
     return fit_eval_minirocket(model, X_tr, y_tr, X_test_raw, y_test)
@@ -2750,7 +2754,7 @@ def main():
         ],
         default="lraes",
     )
-    parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet"], default="resnet1d")
+    parser.add_argument("--model", type=str, choices=["minirocket", "resnet1d", "patchtst", "timesnet", "mptsnet"], default="resnet1d")
     parser.add_argument("--host-config", type=str, choices=["none", "resnet1d_default", "patchtst_default", "timesnet_default"], default="none")
     parser.add_argument("--seeds", type=str, default="1,2,3")
     parser.add_argument("--k-dir", type=int, default=10)
