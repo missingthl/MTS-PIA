@@ -17,6 +17,7 @@ class ExternalBaselineSpec:
     name: str
     phase: str
     family: str
+    method_type: str  # "external_baseline" | "csta_internal" | "csta_control"
     source_space: str
     label_mode: str
     budget_matched: bool
@@ -32,6 +33,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="no_aug",
         phase="phase1",
         family="control",
+        method_type="csta_control",
         source_space="none",
         label_mode="hard",
         budget_matched=True,
@@ -45,6 +47,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_aug_jitter",
         phase="phase1",
         family="raw_time",
+        method_type="external_baseline",
         source_space="raw_time",
         label_mode="hard",
         budget_matched=True,
@@ -58,6 +61,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_aug_scaling",
         phase="phase1",
         family="raw_time",
+        method_type="external_baseline",
         source_space="raw_time",
         label_mode="hard",
         budget_matched=True,
@@ -71,6 +75,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_aug_timewarp",
         phase="phase1",
         family="raw_time",
+        method_type="external_baseline",
         source_space="raw_time",
         label_mode="hard",
         budget_matched=True,
@@ -84,6 +89,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_aug_magnitude_warping",
         phase="phase2",
         family="raw_time",
+        method_type="external_baseline",
         source_space="raw_time",
         label_mode="hard",
         budget_matched=True,
@@ -97,6 +103,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_aug_window_warping",
         phase="phase2",
         family="raw_time",
+        method_type="external_baseline",
         source_space="raw_time",
         label_mode="hard",
         budget_matched=True,
@@ -110,6 +117,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_aug_window_slicing",
         phase="phase2",
         family="raw_time",
+        method_type="external_baseline",
         source_space="raw_time",
         label_mode="hard",
         budget_matched=True,
@@ -123,6 +131,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_mixup",
         phase="phase1",
         family="vicinal",
+        method_type="external_baseline",
         source_space="raw_mixup",
         label_mode="soft",
         budget_matched=True,
@@ -136,6 +145,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="raw_smote_flatten_balanced",
         phase="phase1",
         family="vicinal",
+        method_type="external_baseline",
         source_space="flattened_raw",
         label_mode="hard",
         budget_matched=False,
@@ -149,6 +159,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="dba_sameclass",
         phase="phase1",
         family="dtw_barycenter",
+        method_type="external_baseline",
         source_space="dtw_barycenter",
         label_mode="hard",
         budget_matched=True,
@@ -162,6 +173,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="wdba_sameclass",
         phase="phase2",
         family="dtw_barycenter",
+        method_type="external_baseline",
         source_space="dtw_barycenter",
         label_mode="hard",
         budget_matched=True,
@@ -175,6 +187,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="spawner_sameclass_style",
         phase="phase2",
         family="dtw_pattern_mix",
+        method_type="external_baseline",
         source_space="dtw_pattern_mix",
         label_mode="hard",
         budget_matched=True,
@@ -188,6 +201,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="rgw_sameclass",
         phase="phase2",
         family="dtw_guided_warp",
+        method_type="external_baseline",
         source_space="dtw_guided_warp",
         label_mode="hard",
         budget_matched=True,
@@ -201,6 +215,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="dgw_sameclass",
         phase="phase2",
         family="dtw_guided_warp",
+        method_type="external_baseline",
         source_space="dtw_guided_warp",
         label_mode="hard",
         budget_matched=True,
@@ -214,6 +229,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="jobda_cleanroom",
         phase="phase2",
         family="supervised_augmentation",
+        method_type="external_baseline",
         source_space="raw_time_tsw",
         label_mode="joint_hard",
         budget_matched=False,
@@ -227,6 +243,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="random_cov_state",
         phase="phase1",
         family="covariance_state",
+        method_type="csta_control",
         source_space="covariance_state",
         label_mode="hard",
         budget_matched=True,
@@ -240,6 +257,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="pca_cov_state",
         phase="phase1",
         family="covariance_state",
+        method_type="csta_control",
         source_space="covariance_state",
         label_mode="hard",
         budget_matched=True,
@@ -253,6 +271,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_top1_current",
         phase="phase1",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -266,6 +285,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_group_template_top",
         phase="phase1",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -279,6 +299,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_topk_softmax_tau_0.05",
         phase="csta_sampling",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -292,6 +313,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_topk_softmax_tau_0.10",
         phase="csta_sampling",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -305,6 +327,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_topk_softmax_tau_0.20",
         phase="csta_sampling",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -318,6 +341,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_topk_uniform_top5",
         phase="csta_sampling",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -331,6 +355,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_fv_filter_top5",
         phase="csta_selector",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -344,6 +369,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_fv_score_top5",
         phase="csta_selector",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -357,6 +383,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="csta_random_feasible_selector",
         phase="csta_selector",
         family="csta_pia",
+        method_type="csta_internal",
         source_space="covariance_template",
         label_mode="hard",
         budget_matched=True,
@@ -370,6 +397,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="manifold_mixup",
         phase="phase3",
         family="hidden_state",
+        method_type="external_baseline",
         source_space="hidden_state",
         label_mode="soft",
         budget_matched=False,
@@ -383,6 +411,7 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         name="timevae_classwise_optional",
         phase="phase3",
         family="generative_model",
+        method_type="external_baseline",
         source_space="generative_model",
         label_mode="hard",
         budget_matched=False,
@@ -391,6 +420,34 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         code_file="utils/external_baselines.py",
         runner="run_external_baselines_phase1.py --arms timevae_classwise_optional",
         notes="Classwise TimeVAE-style generator; records target/actual ratio and is not yet full official TimeVAE parity.",
+    ),
+    "diffusionts_classwise": ExternalBaselineSpec(
+        name="diffusionts_classwise",
+        phase="phase3",
+        family="generative_model",
+        method_type="external_baseline",
+        source_space="generative_model",
+        label_mode="hard",
+        budget_matched=True,
+        implementation_status="external_official_adapter",
+        code_symbol="diffusionts_classwise",
+        code_file="utils/external_baselines.py",
+        runner="run_external_baselines_phase1.py --arms diffusionts_classwise",
+        notes="Classwise Diffusion-TS generator with classifier guidance (ICLR 2024).",
+    ),
+    "timevqvae_classwise": ExternalBaselineSpec(
+        name="timevqvae_classwise",
+        phase="phase3",
+        family="generative_model",
+        method_type="external_baseline",
+        source_space="generative_model",
+        label_mode="hard",
+        budget_matched=True,
+        implementation_status="external_official_adapter",
+        code_symbol="timevqvae_classwise",
+        code_file="utils/external_baselines.py",
+        runner="run_external_baselines_phase1.py --arms timevqvae_classwise",
+        notes="Classwise TimeVQVAE generator (AISTATS 2023).",
     ),
 }
 
@@ -405,3 +462,30 @@ def names_by_phase(phase: str) -> List[str]:
 
 def names_by_family(family: str) -> List[str]:
     return sorted(name for name, spec in EXTERNAL_BASELINE_CATALOG.items() if spec.family == family)
+
+
+# ── Method type filters (added 2026-05-05) ─────────────────────────────
+
+def external_baselines_only() -> List[ExternalBaselineSpec]:
+    """Return only true external baseline methods (not CSTA internal or controls)."""
+    return [s for s in catalog_rows() if s.method_type == "external_baseline"]
+
+
+def csta_methods() -> List[ExternalBaselineSpec]:
+    """Return CSTA internal method variants."""
+    return [s for s in catalog_rows() if s.method_type == "csta_internal"]
+
+
+def csta_controls() -> List[ExternalBaselineSpec]:
+    """Return CSTA control baselines (no_aug, random_cov, pca_cov)."""
+    return [s for s in catalog_rows() if s.method_type == "csta_control"]
+
+
+def is_external_baseline(name: str) -> bool:
+    spec = EXTERNAL_BASELINE_CATALOG.get(name)
+    return spec is not None and spec.method_type == "external_baseline"
+
+
+def is_csta_method(name: str) -> bool:
+    spec = EXTERNAL_BASELINE_CATALOG.get(name)
+    return spec is not None and spec.method_type in ("csta_internal", "csta_control")
