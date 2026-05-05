@@ -138,7 +138,7 @@ class LayerNorm(nn.Module):
 
     def __init__(self, channels, eps=1e-6, data_format="channels_last"):
         super(LayerNorm, self).__init__()
-        self.norm = nn.Layernorm(channels)
+        self.norm = nn.LayerNorm(channels)
 
     def forward(self, x):
 
@@ -223,8 +223,8 @@ class ReparamLargeKernelConv(nn.Module):
         else:
             pad_left = torch.ones(D_out, D_in, pad_length_left) * pad_values
             pad_right = torch.ones(D_out, D_in, pad_length_right) * pad_values
-        x = torch.cat([pad_left,x],dims=-1)
-        x = torch.cat([x,pad_right],dims=-1)
+        x = torch.cat([pad_left,x],dim=-1)
+        x = torch.cat([x,pad_right],dim=-1)
         return x
 
     def get_equivalent_kernel_bias(self):

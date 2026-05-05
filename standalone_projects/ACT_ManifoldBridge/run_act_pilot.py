@@ -156,7 +156,8 @@ def _apply_rc4_safe_governance(
             )
 
     zero_perp_mask = (~has_perp).reshape(-1)
-    clipped_mask = ((~zero_perp_mask) & ((norm_delta_r_raw.reshape(-1) - r_risk.reshape(-1)) > tol))
+    restored_mask = (~zero_perp_mask) & (norm_u_restored.reshape(-1) > eps)
+    clipped_mask = (~zero_perp_mask) & ((norm_delta_r_raw.reshape(-1) - r_risk.reshape(-1)) > tol)
     safe_clip_rate = float(clipped_mask.float().mean().item())
 
     return {
@@ -180,7 +181,6 @@ def _apply_rc4_safe_governance(
         "norm_delta_r_raw": norm_delta_r_raw,
         "risk_scale": risk_scale,
         "delta_r": delta_r,
-        "norm_final": norm_final,
         "zero_perp_mask": zero_perp_mask,
         "restored_mask": restored_mask,
         "clipped_mask": clipped_mask,
@@ -660,7 +660,12 @@ def _build_top_response_template_slots(
         elif mode == "group_top" or mode == "group_top_random_sameclass":
             # Group top: use the center of the group to select templates
             group_ids = neighbor_indices[idx]
-            z_G = np.mean(X_train_z[group_ids], axis=0)
+            z_G_raw = np.mean(X_train_z[group_ids], axis=0)
+            if class_means:
+                cls = int(y_arr[idx])
+                z_G = z_G_raw - class_means.get(cls, 0.0)
+            else:
+                z_G = z_G_raw
             responses = np.abs(np.asarray(z_G, dtype=np.float64) @ zpia_bank.T)
             order = np.lexsort((np.arange(k), -responses))
             return order[:pairs]
@@ -668,6 +673,9 @@ def _build_top_response_template_slots(
             # Group avg response: average the absolute responses across the group
             group_ids = neighbor_indices[idx]
             group_pts = X_train_z[group_ids] # (k_group, z_dim)
+            if class_means:
+                cls = int(y_arr[idx])
+                group_pts = group_pts - class_means.get(cls, 0.0)
             group_responses = np.abs(np.asarray(group_pts, dtype=np.float64) @ zpia_bank.T) # (k_group, n_templates)
             mean_responses = np.mean(group_responses, axis=0)
             order = np.lexsort((np.arange(k), -mean_responses))
@@ -2675,6 +2683,33 @@ def run_experiment(dataset_name, args):
                         ),
                     }
                 )
+            if str(direction_meta.get("bank_source", "")).startswith("ao_"):
+                ao_key_map = {
+                    "rho_scale": "ao_rho_scale",
+                    "rho_value": "ao_rho_value",
+                    "lambda_pos": "ao_lambda_pos",
+                    "lambda_neg": "ao_lambda_neg",
+                    "k_pos": "ao_k_pos",
+                    "k_neg": "ao_k_neg",
+                    "sw_trace": "ao_sw_trace",
+                    "sb_trace": "ao_sb_trace",
+                    "sp_trace": "ao_sp_trace",
+                    "sn_trace": "ao_sn_trace",
+                    "eig_top": "ao_eig_top",
+                    "eig_mean": "ao_eig_mean",
+                    "eig_min": "ao_eig_min",
+                    "eig_max": "ao_eig_max",
+                    "eig_fallback": "ao_eig_fallback",
+                    "eig_fallback_reason": "ao_eig_fallback_reason",
+                    "response_centering": "ao_response_centering",
+                    "direction_norm_mean": "ao_direction_norm_mean",
+                    "direction_norm_min": "ao_direction_norm_min",
+                    "direction_norm_max": "ao_direction_norm_max",
+                    "ao_direction_pad_count": "ao_direction_pad_count",
+                }
+                for src, dst in ao_key_map.items():
+                    if src in direction_meta:
+                        summary[dst] = direction_meta[src]
             if args.algo in {"zpia_top1_pool", "zpia_multidir_pool", "rc4_multiz_fused"}:
                 summary.update(
                     {
@@ -2860,6 +2895,11 @@ def main():
     parser.add_argument("--group-size", type=int, default=5)
     parser.add_argument("--eta-safe", type=float, default=0.5)
     parser.add_argument("--audit-method-label", type=str, default="")
+    parser.add_argument("--ao-rho-scale", type=float, default=1e-3)
+    parser.add_argument("--ao-lambda-pos", type=float, default=0.5)
+    parser.add_argument("--ao-lambda-neg", type=float, default=0.5)
+    parser.add_argument("--ao-k-pos", type=int, default=5)
+    parser.add_argument("--ao-k-neg", type=int, default=5)
     args = parser.parse_args()
 
     if args.pipeline == "mba":
