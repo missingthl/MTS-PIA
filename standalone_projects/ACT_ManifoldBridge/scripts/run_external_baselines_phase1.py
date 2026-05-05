@@ -736,7 +736,8 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         "best_val_f1": float(row.get("act_best_val_f1", row.get("act_val_f1", row.get("base_best_val_f1", 0.0)))),
         "stop_epoch": int(row.get("act_stop_epoch", 0)) if not pd.isna(row.get("act_stop_epoch", np.nan)) else 0,
         "aug_count": int(row.get("aug_total_count", 0)) if "aug_total_count" in row else int(args.multiplier),
-        "warning_count": 0,
+        "warning_count": int(row.get("warning_count", 0)),
+        "fallback_count": int(row.get("fallback_count", 0)),
         "extra_metrics": extra_metrics,
     }
 
@@ -1033,7 +1034,7 @@ def run(args) -> List[Dict[str, object]]:
                             best_val_f1=float(csta_res.get("best_val_f1", np.nan)),
                             stop_epoch=int(csta_res.get("stop_epoch", 0)),
                             warning_count=int(csta_res.get("warning_count", 0)),
-                            fallback_count=int(csta_res.get("warning_count", 0)),
+                            fallback_count=int(csta_res.get("fallback_count", 0)),
                             method_elapsed_sec=elapsed,
                             extra_metrics=dict(csta_res.get("extra_metrics", {})),
                         )

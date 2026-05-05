@@ -1,9 +1,0 @@
-[natops s1] fitting no_aug baseline
-[natops s1] method=csta_topk_uniform_top5_ao_fisher
-[natops s1] method=csta_topk_uniform_top5_ao_contrastive
-[natops s2] fitting no_aug baseline
-[natops s2] method=csta_topk_uniform_top5_ao_fisher
-[natops s2] method=csta_topk_uniform_top5_ao_contrastive
-[natops s3] fitting no_aug baseline
-[natops s3] method=csta_topk_uniform_top5_ao_fisher
-[natops s3] method=csta_topk_uniform_top5_ao_contrastive

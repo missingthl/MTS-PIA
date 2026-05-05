@@ -80,12 +80,18 @@ def _overall_summary(candidates: pd.DataFrame, per_seed: pd.DataFrame) -> pd.Dat
     rows = []
     for (method, source), sub in df.groupby(["method", "direction_source"], dropna=False):
         anchors = sub.drop_duplicates(["dataset", "seed", "anchor_index"])
+        
+        # Dataset-Seed equal-weighted mean (Unified Evidence Layer Policy)
+        # Each unique (dataset, seed) run contributes equally to the mean
+        per_run_align = sub.groupby(["dataset", "seed"])["tangent_alignment"].mean()
+        per_run_leak = sub.groupby(["dataset", "seed"])["normal_leakage"].mean()
+        
         rows.append(
             {
                 "method": method,
                 "direction_source": source,
-                "mean_tangent_alignment": float(sub["tangent_alignment"].mean()),
-                "mean_normal_leakage": float(sub["normal_leakage"].mean()),
+                "mean_tangent_alignment": float(per_run_align.mean()),
+                "mean_normal_leakage": float(per_run_leak.mean()),
                 "n_datasets": int(sub["dataset"].nunique()),
                 "n_seeds": int(sub[["dataset", "seed"]].drop_duplicates().shape[0]),
                 "available_rate": float(anchors["tangent_available"].mean()) if "tangent_available" in anchors else np.nan,

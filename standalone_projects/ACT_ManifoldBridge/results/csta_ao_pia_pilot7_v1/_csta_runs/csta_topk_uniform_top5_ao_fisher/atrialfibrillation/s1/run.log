@@ -1,9 +1,0 @@
-
->>>> Dataset: atrialfibrillation | Model: resnet1d <<<<
-Seed 1...
-Requested K: 10 | Effective K: 3 | Source: ao_fisher | Classes: 3
-Fitting baseline...
-Fitting ACT model (132 samples)...
-Base: 0.2165 | ACT: 0.1082 | Gain: -0.1082 (-50.0%)
-
-Sweep complete. Results saved to /home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/results/csta_ao_pia_pilot7_v1/_csta_runs/csta_topk_uniform_top5_ao_fisher/atrialfibrillation/s1/atrialfibrillation_results.csv

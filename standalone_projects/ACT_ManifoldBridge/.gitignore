@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+results/**/_csta_runs/
+results/**/_job_logs/
+logs/
+scratch/
+references/
+moderntcn_smoke.py

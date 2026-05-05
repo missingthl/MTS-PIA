@@ -62,6 +62,8 @@ def _mechanism_main(perf: pd.DataFrame, local_overall: pd.DataFrame, local_per_s
             "pca_cov": "pca_alignment_mean",
         }
         for source, col in source_map.items():
+            # Dataset-Seed equal-weighted mean (Unified Evidence Layer Policy)
+            # method_seed is already at per-seed granularity if the input CSV is per-seed
             out[f"{source}_tangent_alignment"] = (
                 float(pd.to_numeric(method_seed[col], errors="coerce").mean()) if col in method_seed else np.nan
             )

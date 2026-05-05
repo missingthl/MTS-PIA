@@ -67,10 +67,5 @@ class ModernTCNClassifier(nn.Module):
         
     def forward(self, x):
         # x is [B, C, L]
-        # ModernTCN expects [B, L, C] inside forward (it will permute internally if needed, 
-        # wait! Let's check: core/moderntcn.py line 508 does x = x.permute(0, 2, 1) assuming input is [B, L, C]!)
-        # If our framework passes [B, C, L], and ModernTCN permutes it to [B, C, L] internally assuming it was [B, L, C]...
-        # Wait! If input is [B, C, L], we should permute it to [B, L, C] so ModernTCN permutes it BACK to [B, C, L].
-        # Let's permute just in case.
-        x = x.permute(0, 2, 1) # to [B, L, C]
+        # ModernTCN Model forward expects [B, C, L] which aligns with our framework.
         return self.model(x, None, None, None)
