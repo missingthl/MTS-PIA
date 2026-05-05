@@ -138,6 +138,27 @@ CSTA_RESULT_PASSTHROUGH_FIELDS = [
     "template_usage_entropy_audit",
     "top_template_concentration_audit",
     "selection_stage",
+    "ao_rho_scale",
+    "ao_rho_value",
+    "ao_lambda_pos",
+    "ao_lambda_neg",
+    "ao_k_pos",
+    "ao_k_neg",
+    "ao_sw_trace",
+    "ao_sb_trace",
+    "ao_sp_trace",
+    "ao_sn_trace",
+    "ao_eig_top",
+    "ao_eig_mean",
+    "ao_eig_min",
+    "ao_eig_max",
+    "ao_eig_fallback",
+    "ao_eig_fallback_reason",
+    "ao_response_centering",
+    "ao_direction_norm_mean",
+    "ao_direction_norm_min",
+    "ao_direction_norm_max",
+    "ao_direction_pad_count",
     "selector_name",
     "feasible_rate",
     "selector_accept_rate",
@@ -656,6 +677,16 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         str(args.multiplier),
         "--device",
         args.device,
+        "--ao-rho-scale",
+        str(getattr(args, "ao_rho_scale", 1e-3)),
+        "--ao-lambda-pos",
+        str(getattr(args, "ao_lambda_pos", 0.5)),
+        "--ao-lambda-neg",
+        str(getattr(args, "ao_lambda_neg", 0.5)),
+        "--ao-k-pos",
+        str(getattr(args, "ao_k_pos", 5)),
+        "--ao-k-neg",
+        str(getattr(args, "ao_k_neg", 5)),
         "--out-root",
         str(csta_root),
         "--audit-method-label",
@@ -1203,6 +1234,12 @@ def main() -> None:
         action="store_true",
         help="Allow writing to locked Phase 1/2 reference roots. Use only for intentional reference regeneration.",
     )
+    parser.add_argument("--ao-rho-scale", type=float, default=1e-3)
+    parser.add_argument("--ao-lambda-pos", type=float, default=0.5)
+    parser.add_argument("--ao-lambda-neg", type=float, default=0.5)
+    parser.add_argument("--ao-k-pos", type=int, default=5)
+    parser.add_argument("--ao-k-neg", type=int, default=5)
+
     args = parser.parse_args()
     run(args)
 

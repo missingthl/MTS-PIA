@@ -100,6 +100,7 @@ def _build_trial_records(trials, spd_eps: float = 1e-4):
 
 def _apply_rc4_safe_governance(
     *,
+    args,
     W: torch.Tensor,
     U: torch.Tensor,
     U_perp: torch.Tensor,
@@ -597,6 +598,7 @@ def _build_top_response_template_slots(
     candidate_rows: Optional[List[Dict[str, object]]] = None,
     top1_only: bool = False,
     eta_safe: Optional[float] = 0.5,
+    direction_meta: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     zpia_bank = np.asarray(zpia_bank, dtype=np.float64)
     if zpia_bank.ndim != 2 or zpia_bank.shape[0] <= 0:
@@ -629,6 +631,20 @@ def _build_top_response_template_slots(
             # Default kNN group
             neighbor_indices = find_same_class_knn_neighbors(X_train_z, y_arr, k=group_size)
 
+    # Pre-calculate class means for residual response if needed
+    class_means = {}
+    if direction_meta and direction_meta.get("response_centering") == "class_residual":
+        for c in np.unique(y_arr):
+            class_means[int(c)] = np.mean(X_train_z[y_arr == c], axis=0).astype(np.float64)
+
+    def _get_effective_z(idx: int) -> np.ndarray:
+        z = np.asarray(X_train_z[idx], dtype=np.float64)
+        if class_means:
+            cls = int(y_arr[idx])
+            if cls in class_means:
+                return z - class_means[cls]
+        return z
+
     def _top_ids_for_idx(idx: int) -> np.ndarray:
         k = zpia_bank.shape[0]
         if mode == "random":
@@ -659,7 +675,8 @@ def _build_top_response_template_slots(
         elif mode.startswith("topk_softmax_tau_"):
             tau = float(mode.split("_")[-1])
             top_k_num = 5
-            responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
+            z_eff = _get_effective_z(idx)
+            responses = np.abs(z_eff @ zpia_bank.T)
             top_indices = np.lexsort((np.arange(k), -responses))[:top_k_num]
             top_responses = responses[top_indices]
             logits = top_responses / max(float(tau), 1e-12)
@@ -671,14 +688,16 @@ def _build_top_response_template_slots(
             return chosen
         elif mode.startswith("topk_uniform_top"):
             top_k_num = int(mode.split("top")[-1])
-            responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
+            z_eff = _get_effective_z(idx)
+            responses = np.abs(z_eff @ zpia_bank.T)
             top_indices = np.lexsort((np.arange(k), -responses))[:top_k_num]
             rng = np.random.default_rng(int(idx) + int(seed))
             chosen = rng.choice(top_indices, size=(pairs,), replace=True)
             return chosen
         else:
             # Default: top_response
-            responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
+            z_eff = _get_effective_z(idx)
+            responses = np.abs(z_eff @ zpia_bank.T)
             # Sort by response descending, then template id ascending for deterministic ties.
             order = np.lexsort((np.arange(k), -responses))
             return order[:pairs]
@@ -736,6 +755,8 @@ def _build_top_response_template_slots(
     def _candidate_components(idx: int, template_id: int, template_sign: float) -> Dict[str, object]:
         direction = np.asarray(zpia_bank[int(template_id)], dtype=np.float64)
         direction_norm = float(np.linalg.norm(direction))
+        z_eff = _get_effective_z(idx)
+        response_abs = float(np.abs(z_eff @ direction))
         d_min = float(margins[idx])
         gamma_requested = float(args.pia_gamma)
         if eta_safe is None:
@@ -1223,6 +1244,7 @@ def _build_zpia_template_pool_aug_out(
         candidate_rows=None,
         top1_only=top1_only,
         eta_safe=eta_safe,
+        direction_meta=zpia_meta,
     )
     direction_meta = {
         "bank_source": algo_label,
@@ -1373,6 +1395,7 @@ def _build_rc4_fused_aug_out(
     if fusion_mode == "rank1_osf":
         proj_out = _project_rank1_structure_out(W=W, U=U)
         rc4 = _apply_rc4_safe_governance(
+            args=args,
             W=W,
             U=U,
             U_perp=proj_out["U_perp"],
@@ -1393,6 +1416,7 @@ def _build_rc4_fused_aug_out(
         spectral_basis = torch.from_numpy(spectral_basis_np).to(dtype=z_o.dtype)
         spectral_proj = _project_spectral_structure_out(U=U, spectral_basis=spectral_basis)
         rc4 = _apply_rc4_safe_governance(
+            args=args,
             W=W,
             U=U,
             U_perp=spectral_proj["U_perp"],
@@ -1593,6 +1617,7 @@ def _build_rc4_multiz_fused_aug_out(
         candidate_rows=list(aug_out_lraes.get("audit_rows", [])),
         top1_only=False,
         eta_safe=eta_safe,
+        direction_meta=zpia_meta,
     )
     if len(aug_out_lraes["tid_aug"]) != len(slots["tid_aug"]):
         raise ValueError("rc4_multiz_fused requires aligned LRAES and zPIA slot counts.")
@@ -1621,6 +1646,7 @@ def _build_rc4_multiz_fused_aug_out(
 
     proj_out = _project_rank1_structure_out(W=W, U=U)
     rc4 = _apply_rc4_safe_governance(
+        args=args,
         W=W,
         U=U,
         U_perp=proj_out["U_perp"],
