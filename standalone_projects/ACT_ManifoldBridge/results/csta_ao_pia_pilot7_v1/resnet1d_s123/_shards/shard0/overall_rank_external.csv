@@ -1,0 +1,3 @@
+method,n_datasets,mean_f1,mean_rank,win_count
+csta_topk_uniform_top5_ao_contrastive,1,0.9826985046027326,1.0,1
+csta_topk_uniform_top5_ao_fisher,1,0.9731112731308517,2.0,0

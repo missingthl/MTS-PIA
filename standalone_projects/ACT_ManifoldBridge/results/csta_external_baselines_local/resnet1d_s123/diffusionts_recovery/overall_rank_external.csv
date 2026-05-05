@@ -1,0 +1,2 @@
+method,n_datasets,mean_f1,mean_rank,win_count
+diffusionts_classwise,3,0.42870486628592913,1.0,3

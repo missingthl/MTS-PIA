@@ -1,0 +1,9 @@
+
+>>>> Dataset: handmovementdirection | Model: resnet1d <<<<
+Seed 3...
+Requested K: 10 | Effective K: 10 | Source: ao_fisher | Classes: 4
+Fitting baseline...
+Fitting ACT model (1408 samples)...
+Base: 0.1876 | ACT: 0.3413 | Gain: 0.1537 (81.9%)
+
+Sweep complete. Results saved to /home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/results/csta_ao_pia_pilot7_v1/resnet1d_s123/_shards/shard2/_csta_runs/csta_topk_uniform_top5_ao_fisher/handmovementdirection/s3/handmovementdirection_results.csv

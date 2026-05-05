@@ -1,0 +1,9 @@
+
+>>>> Dataset: ering | Model: resnet1d <<<<
+Seed 2...
+Requested K: 10 | Effective K: 10 | Source: ao_fisher | Classes: 6
+Fitting baseline...
+Fitting ACT model (264 samples)...
+Base: 0.8481 | ACT: 0.8548 | Gain: 0.0067 (0.8%)
+
+Sweep complete. Results saved to /home/THL/project/MTS-PIA/standalone_projects/ACT_ManifoldBridge/results/csta_ao_pia_pilot7_v1/_csta_runs/csta_topk_uniform_top5_ao_fisher/ering/s2/ering_results.csv

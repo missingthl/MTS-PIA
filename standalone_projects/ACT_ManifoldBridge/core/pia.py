@@ -410,3 +410,295 @@ def _build_spectral_structure_basis_from_zpia_bank(
         "spectral_basis_orth_error": orth_error,
     }
     return B.astype(np.float32), meta
+
+
+# ═══════════════════════════════════════════════════════════════════
+# AO-PIA: Augmentation-Objective PIA direction estimators
+# ═══════════════════════════════════════════════════════════════════
+
+def _symmetrize(S: np.ndarray) -> np.ndarray:
+    return 0.5 * (S + S.T)
+
+
+def _normalize_trace(S: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    tr = float(np.trace(S))
+    z_dim = int(S.shape[0])
+    denom = max(float(tr / z_dim), float(eps))
+    return S / denom
+
+
+def _class_balanced_within_scatter(
+    Z: np.ndarray, y: np.ndarray, eps: float = 1e-12
+) -> Tuple[np.ndarray, Dict[int, np.ndarray]]:
+    """Class-balanced within-class scatter S_W."""
+    Z = np.asarray(Z, dtype=np.float64)
+    y = np.asarray(y, dtype=np.int64).ravel()
+    classes = sorted(np.unique(y).tolist())
+    d = int(Z.shape[1])
+    S_W = np.zeros((d, d), dtype=np.float64)
+    mu_by_class: Dict[int, np.ndarray] = {}
+    for c in classes:
+        Zc = Z[y == c]
+        if Zc.shape[0] <= 0:
+            continue
+        mu_c = np.mean(Zc, axis=0).astype(np.float64)
+        mu_by_class[int(c)] = mu_c
+        diff = Zc - mu_c[None, :]
+        S_W += (diff.T @ diff) / float(max(1, Zc.shape[0]))
+    S_W /= float(max(1, len(classes)))
+    return _symmetrize(S_W), mu_by_class
+
+
+def _between_class_scatter(
+    mu_by_class: Dict[int, np.ndarray], global_mean: np.ndarray
+) -> np.ndarray:
+    """Between-class scatter S_B."""
+    classes = sorted(mu_by_class.keys())
+    d = int(global_mean.shape[0])
+    S_B = np.zeros((d, d), dtype=np.float64)
+    for c in classes:
+        dm = mu_by_class[c] - global_mean
+        S_B += np.outer(dm, dm)
+    S_B /= float(max(1, len(classes)))
+    return _symmetrize(S_B)
+
+
+def _same_class_knn_pair_scatter(
+    Z: np.ndarray, y: np.ndarray, k_pos: int = 5
+) -> np.ndarray:
+    """Same-class kNN positive-pair scatter S_P."""
+    y_arr = np.asarray(y, dtype=np.int64).ravel()
+    classes = np.unique(y_arr)
+    d = int(Z.shape[1])
+    S_P = np.zeros((d, d), dtype=np.float64)
+    pair_count = 0
+    for c in classes:
+        idx_c = np.where(y_arr == c)[0]
+        Zc = Z[idx_c]
+        nc = Zc.shape[0]
+        k_eff = min(int(k_pos), nc - 1)
+        if k_eff <= 0:
+            continue
+        nn = NearestNeighbors(n_neighbors=min(k_eff + 1, nc), metric="euclidean")
+        nn.fit(Zc)
+        nn_idx = nn.kneighbors(Zc, return_distance=False)
+        for i_local in range(nc):
+            for j_local in nn_idx[i_local, 1 : k_eff + 1]:
+                j_local = int(j_local)
+                diff = Zc[i_local] - Zc[j_local]
+                S_P += np.outer(diff, diff)
+                pair_count += 1
+    if pair_count > 0:
+        S_P /= float(pair_count)
+    return _symmetrize(S_P)
+
+
+def _diff_class_knn_pair_scatter(
+    Z: np.ndarray, y: np.ndarray, k_neg: int = 5
+) -> np.ndarray:
+    """Different-class kNN negative-pair scatter S_N."""
+    y_arr = np.asarray(y, dtype=np.int64).ravel()
+    classes = np.unique(y_arr)
+    d = int(Z.shape[1])
+    S_N = np.zeros((d, d), dtype=np.float64)
+    pair_count = 0
+    # Build per-class trees
+    class_trees = {
+        int(c): NearestNeighbors(
+            n_neighbors=min(int(k_neg), max(1, int(np.sum(y_arr == c)) - 1)),
+            metric="euclidean",
+        ).fit(Z[y_arr == c])
+        for c in classes
+        if np.sum(y_arr == c) > 0
+    }
+    for c in classes:
+        idx_c = np.where(y_arr == c)[0]
+        if len(idx_c) == 0:
+            continue
+        for idx_i in idx_c:
+            zi = Z[idx_i]
+            for other_c in classes:
+                if int(other_c) == int(c):
+                    continue
+                tree = class_trees.get(int(other_c))
+                if tree is None:
+                    continue
+                k_other = min(int(k_neg), int(np.sum(y_arr == other_c)))
+                if k_other <= 0:
+                    continue
+                _, nn_local = tree.kneighbors(zi.reshape(1, -1), n_neighbors=k_other)
+                Z_other = Z[y_arr == other_c]
+                for j_local in nn_local[0]:
+                    j_local = int(j_local)
+                    if j_local >= Z_other.shape[0]:
+                        continue
+                    diff = zi - Z_other[j_local]
+                    S_N += np.outer(diff, diff)
+                    pair_count += 1
+    if pair_count > 0:
+        S_N /= float(pair_count)
+    return _symmetrize(S_N)
+
+
+def _solve_generalized_eigen(
+    S_plus: np.ndarray,
+    S_minus: np.ndarray,
+    rho: float,
+    k_dir: int,
+    eps: float = 1e-12,
+) -> Tuple[np.ndarray, np.ndarray, bool, str]:
+    """Solve S_plus d = lambda * (S_minus + rho I) d."""
+    d = S_plus.shape[0]
+    M = S_minus + rho * np.eye(d)
+    M = _symmetrize(M)
+    # Add small ridge for numerical stability
+    M += eps * np.eye(d)
+
+    eig_fallback = False
+    eig_fallback_reason = ""
+
+    try:
+        from scipy.linalg import eigh as scipy_eigh
+        eigvals, eigvecs = scipy_eigh(S_plus, M)
+    except (ImportError, np.linalg.LinAlgError):
+        # Fallback: regular EVD of M^{-1} S_plus
+        try:
+            A = np.linalg.solve(M, S_plus)
+            eigvals, eigvecs = np.linalg.eig(A)
+            eigvals = np.real(eigvals)
+            eigvecs = np.real(eigvecs)
+            eig_fallback = True
+            eig_fallback_reason = "generalized_eigh_failed_used_eig_of_invM_Splus"
+        except np.linalg.LinAlgError:
+            # Last resort: PCA of S_plus
+            eigvals, eigvecs = np.linalg.eigh(S_plus)
+            eig_fallback = True
+            eig_fallback_reason = "all_eig_failed_used_pca_of_Splus"
+
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    k_actual = min(int(k_dir), d)
+    return eigvals[:k_actual], eigvecs[:, :k_actual], eig_fallback, eig_fallback_reason
+
+
+def build_ao_pia_direction_bank(
+    Z: np.ndarray,
+    y: np.ndarray,
+    k_dir: int = 10,
+    rho_scale: float = 1e-3,
+    mode: str = "ao_fisher",
+    lambda_pos: float = 0.5,
+    lambda_neg: float = 0.5,
+    k_pos: int = 5,
+    k_neg: int = 5,
+    seed: int = 1,
+    eps: float = 1e-12,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Build augmentation-objective-guided PIA direction bank.
+
+    Modes:
+      - ``ao_fisher``: within-class (S_W) vs between-class (S_B)
+      - ``ao_contrastive``: within+positive (S_W+S_P) vs between+negative (S_B+S_N)
+
+    Returns (direction_bank [k_dir, z_dim], meta).
+    """  # noqa: D401
+    Z = np.asarray(Z, dtype=np.float64)
+    y = np.asarray(y, dtype=np.int64).ravel()
+    if Z.ndim != 2 or Z.shape[0] <= 0 or Z.shape[1] <= 0:
+        raise ValueError("Z must be a non-empty 2D array.")
+    if not np.isfinite(Z).all():
+        raise ValueError("Z contains NaN or inf values.")
+
+    if mode not in ("ao_fisher", "ao_contrastive"):
+        raise ValueError(f"Unsupported AO-PIA mode: {mode}")
+
+    z_dim = int(Z.shape[1])
+    k_actual = min(int(k_dir), z_dim)
+    global_mean = np.mean(Z, axis=0).astype(np.float64)
+
+    # --- Compute scatter matrices ---
+    S_W, mu_by_class = _class_balanced_within_scatter(Z, y, eps=eps)
+    S_B = _between_class_scatter(mu_by_class, global_mean)
+
+    S_P = np.zeros((z_dim, z_dim), dtype=np.float64)
+    S_N = np.zeros((z_dim, z_dim), dtype=np.float64)
+
+    if mode == "ao_contrastive":
+        S_P = _same_class_knn_pair_scatter(Z, y, k_pos=int(k_pos))
+        S_N = _diff_class_knn_pair_scatter(Z, y, k_neg=int(k_neg))
+
+    # --- Build S_plus and S_minus ---
+    S_plus_raw = _normalize_trace(S_W, eps=eps)
+    S_minus_raw = _normalize_trace(S_B, eps=eps)
+
+    sw_trace = float(np.trace(S_W))
+    sb_trace = float(np.trace(S_B))
+    sp_trace = float(np.trace(S_P))
+    sn_trace = float(np.trace(S_N))
+
+    if mode == "ao_contrastive":
+        S_plus_raw = S_plus_raw + float(lambda_pos) * _normalize_trace(S_P, eps=eps)
+        S_minus_raw = S_minus_raw + float(lambda_neg) * _normalize_trace(S_N, eps=eps)
+
+    S_plus = _symmetrize(S_plus_raw)
+    S_minus = _symmetrize(S_minus_raw)
+
+    # --- Rho ---
+    tr_sminus = float(np.trace(S_minus))
+    if np.isfinite(tr_sminus) and tr_sminus > eps:
+        rho = float(rho_scale) * tr_sminus / float(z_dim)
+    else:
+        rho = float(rho_scale)
+    rho = max(rho, eps)
+
+    # --- Solve generalized eigenvalue problem ---
+    eigvals, eigvecs, eig_fallback, eig_fallback_reason = _solve_generalized_eigen(
+        S_plus, S_minus, rho, k_actual, eps=eps
+    )
+
+    # --- Normalize directions ---
+    bank = np.zeros((k_actual, z_dim), dtype=np.float64)
+    for i in range(k_actual):
+        v = eigvecs[:, i].copy()
+        nrm = float(np.linalg.norm(v))
+        if nrm > eps:
+            v /= nrm
+        else:
+            v = np.zeros(z_dim)
+            v[i % z_dim] = 1.0
+        bank[i] = _canonicalize_axis(v)
+
+    row_norms = np.linalg.norm(bank, axis=1)
+
+    # --- Meta ---
+    eig_top_all = eigvals.tolist() if len(eigvals) > 0 else []
+    eig_finite = eigvals[np.isfinite(eigvals)]
+    meta: Dict[str, object] = {
+        "bank_source": mode,
+        "k_dir": k_actual,
+        "z_dim": z_dim,
+        "n_train": int(Z.shape[0]),
+        "rho_scale": float(rho_scale),
+        "rho_value": float(rho),
+        "lambda_pos": float(lambda_pos),
+        "lambda_neg": float(lambda_neg),
+        "k_pos": int(k_pos),
+        "k_neg": int(k_neg),
+        "sw_trace": sw_trace,
+        "sb_trace": sb_trace,
+        "sp_trace": sp_trace,
+        "sn_trace": sn_trace,
+        "eig_top": eig_top_all[0] if len(eig_top_all) > 0 else np.nan,
+        "eig_mean": float(np.mean(eig_finite)) if eig_finite.size > 0 else np.nan,
+        "eig_min": float(np.min(eig_finite)) if eig_finite.size > 0 else np.nan,
+        "eig_max": float(np.max(eig_finite)) if eig_finite.size > 0 else np.nan,
+        "eig_fallback": bool(eig_fallback),
+        "eig_fallback_reason": eig_fallback_reason,
+        "response_centering": "class_residual",
+        "direction_norm_mean": float(np.mean(row_norms)),
+        "direction_norm_min": float(np.min(row_norms)),
+        "direction_norm_max": float(np.max(row_norms)),
+    }
+    return bank.astype(np.float32), meta

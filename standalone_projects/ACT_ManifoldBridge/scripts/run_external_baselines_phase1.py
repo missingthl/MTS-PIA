@@ -44,6 +44,8 @@ from utils.external_baselines import (
     raw_smote_flatten_balanced,
     spawner_sameclass_style,
     timevae_classwise_optional,
+    diffusionts_classwise,
+    timevqvae_classwise,
     wdba_sameclass,
 )
 from core.pia_operator import pia_operator_metadata
@@ -92,6 +94,10 @@ PHASE2_ARMS = [
 PHASE3_ARMS = [
     "manifold_mixup",
     "timevae_classwise_optional",
+    "diffusionts_classwise",
+    "timevqvae_classwise",
+    "random_cov_state",
+    "pca_cov_state",
 ]
 
 CSTA_RESULT_PASSTHROUGH_FIELDS = [
@@ -301,6 +307,8 @@ METHOD_INFO: Dict[str, MethodInfo] = {
     "csta_fv_filter_top5": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_fv_filter_top5"),
     "csta_fv_score_top5": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_fv_score_top5"),
     "csta_random_feasible_selector": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_random_feasible_control"),
+    "csta_topk_uniform_top5_ao_fisher": MethodInfo("covariance_template", "hard", False, "", True, "ao_fisher_uniform_top5"),
+    "csta_topk_uniform_top5_ao_contrastive": MethodInfo("covariance_template", "hard", False, "", True, "ao_contrastive_uniform_top5"),
     "manifold_mixup": MethodInfo("hidden_state", "soft", False, "", False, "resnet1d_hidden_state_beta_mixup"),
     "timevae_classwise_optional": MethodInfo(
         "generative_model",
@@ -309,6 +317,22 @@ METHOD_INFO: Dict[str, MethodInfo] = {
         "",
         False,
         "classwise_timevae_style_pytorch_cleanroom",
+    ),
+    "diffusionts_classwise": MethodInfo(
+        "generative_model",
+        "hard",
+        True,
+        "Diffusion-TS",
+        True,
+        "classwise_diffusionts_classifier_guidance",
+    ),
+    "timevqvae_classwise": MethodInfo(
+        "generative_model",
+        "hard",
+        True,
+        "TimeVQVAE",
+        True,
+        "classwise_timevqvae_maskgit",
     ),
 }
 
@@ -356,13 +380,15 @@ def _csta_policy_for_method(method: str) -> str:
         return "top1"
     if method == "csta_group_template_top":
         return "group_top"
-    if method.startswith("csta_topk_"):
-        return method.replace("csta_", "", 1)
-    if method == "csta_fv_filter_top5":
+    # Strip AO-PIA suffixes before extracting policy
+    clean = method.replace("_ao_fisher", "").replace("_ao_contrastive", "")
+    if clean.startswith("csta_topk_"):
+        return clean.replace("csta_", "", 1)
+    if clean == "csta_fv_filter_top5":
         return "fv_filter_top5"
-    if method == "csta_fv_score_top5":
+    if clean == "csta_fv_score_top5":
         return "fv_score_top5"
-    if method == "csta_random_feasible_selector":
+    if clean == "csta_random_feasible_selector":
         return "random_feasible_selector"
     return method
 
@@ -538,6 +564,25 @@ def _build_external_aug(method: str, X_train, y_train, args, seed: int, n_classe
             min_class_size=args.timevae_min_class_size,
             device=args.device,
         ),
+        "diffusionts_classwise": lambda: diffusionts_classwise(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            max_epochs=args.diffusionts_epochs,
+            batch_size=args.diffusionts_batch_size,
+            device=args.device,
+        ),
+        "timevqvae_classwise": lambda: timevqvae_classwise(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            vqvae_epochs=args.timevqvae_vqvae_epochs,
+            maskgit_epochs=args.timevqvae_maskgit_epochs,
+            batch_size=args.timevqvae_batch_size,
+            device=args.device,
+        ),
         "raw_smote_flatten_balanced": lambda: raw_smote_flatten_balanced(X_train, y_train, seed=seed),
         "random_cov_state": lambda: random_cov_state(
             X_train,
@@ -561,8 +606,21 @@ def _build_external_aug(method: str, X_train, y_train, args, seed: int, n_classe
 
 
 def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path) -> Dict[str, object]:
+    out_root = out_root.resolve()
     csta_root = out_root / "_csta_runs" / method / dataset / f"s{seed}"
     csta_root.mkdir(parents=True, exist_ok=True)
+
+    # Determine algo name from method
+    if "ao_fisher" in method:
+        algo_name = "ao_fisher"
+        selection = "topk_uniform_top5"
+    elif "ao_contrastive" in method:
+        algo_name = "ao_contrastive"
+        selection = "topk_uniform_top5"
+    else:
+        algo_name = "zpia_top1_pool"
+        selection = None
+
     cmd = [
         sys.executable,
         str(PROJECT_ROOT / "run_act_pilot.py"),
@@ -571,7 +629,7 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         "--pipeline",
         "act",
         "--algo",
-        "zpia_top1_pool",
+        algo_name,
         "--model",
         args.backbone,
         "--seeds",
@@ -603,7 +661,9 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         "--audit-method-label",
         method,
     ]
-    if method == "csta_group_template_top":
+    if selection is not None:
+        cmd.extend(["--template-selection", selection])
+    elif method == "csta_group_template_top":
         cmd.extend(["--template-selection", "group_top", "--group-size", str(args.group_size)])
     elif method.startswith("csta_topk_"):
         cmd.extend(["--template-selection", method.replace("csta_", "")])
@@ -1123,13 +1183,12 @@ def main() -> None:
     parser.add_argument("--guided-warp-slope-constraint", type=str, choices=["symmetric", "asymmetric"], default="symmetric")
     parser.add_argument("--guided-warp-no-window", action="store_true")
     parser.add_argument("--dgw-no-variable-slice", action="store_true")
-    parser.add_argument("--timevae-epochs", type=int, default=30)
-    parser.add_argument("--timevae-batch-size", type=int, default=32)
-    parser.add_argument("--timevae-lr", type=float, default=1e-3)
-    parser.add_argument("--timevae-latent-dim", type=int, default=8)
-    parser.add_argument("--timevae-hidden-dim", type=int, default=128)
-    parser.add_argument("--timevae-beta", type=float, default=1.0)
     parser.add_argument("--timevae-min-class-size", type=int, default=4)
+    parser.add_argument("--diffusionts-epochs", type=int, default=500)
+    parser.add_argument("--diffusionts-batch-size", type=int, default=128)
+    parser.add_argument("--timevqvae-vqvae-epochs", type=int, default=100)
+    parser.add_argument("--timevqvae-maskgit-epochs", type=int, default=100)
+    parser.add_argument("--timevqvae-batch-size", type=int, default=64)
     parser.add_argument(
         "--locked-phase1-root",
         type=str,

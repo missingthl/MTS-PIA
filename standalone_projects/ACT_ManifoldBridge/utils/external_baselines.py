@@ -487,6 +487,93 @@ def timevae_classwise_optional(
     )
 
 
+def diffusionts_classwise(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    multiplier: int,
+    seed: int,
+    max_epochs: int = 500,
+    batch_size: int = 128,
+    device: str = "cpu",
+) -> ExternalAugResult:
+    """Classwise Diffusion-TS generator with classifier guidance.
+
+    This baseline utilizes the Diffusion-TS (ICLR 2024) official implementation
+    adapted for class-conditional synthesis within the PIA framework.
+    """
+    from utils.diffusionts_wrapper import fit_sample_diffusionts
+
+    X_aug, y_aug = fit_sample_diffusionts(
+        X_train_ct=X_train,
+        y_train=y_train,
+        multiplier=multiplier,
+        seed=seed,
+        device=device,
+        max_epochs=max_epochs,
+        batch_size=batch_size
+    )
+
+    return ExternalAugResult(
+        X_aug=X_aug,
+        y_aug=y_aug,
+        source_space="generative_model",
+        label_mode="hard",
+        uses_external_library=True,
+        library_name="Diffusion-TS",
+        budget_matched=True,
+        selection_rule="classwise_diffusionts_classifier_guidance",
+        meta={
+            "diffusionts_max_epochs": float(max_epochs),
+            "target_aug_ratio": float(multiplier),
+            "actual_aug_ratio": float(X_aug.shape[0]) / max(float(len(X_train)), 1.0),
+        }
+    )
+
+
+def timevqvae_classwise(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    multiplier: int,
+    seed: int,
+    vqvae_epochs: int = 100,
+    maskgit_epochs: int = 100,
+    batch_size: int = 64,
+    device: str = "cpu",
+) -> ExternalAugResult:
+    """Classwise TimeVQVAE generator (AISTATS 2023)."""
+    from utils.timevqvae_wrapper import fit_sample_timevqvae
+
+    X_aug, y_aug = fit_sample_timevqvae(
+        X_train_ct=X_train,
+        y_train=y_train,
+        multiplier=multiplier,
+        seed=seed,
+        device=device,
+        vqvae_epochs=vqvae_epochs,
+        maskgit_epochs=maskgit_epochs,
+        batch_size=batch_size
+    )
+
+    return ExternalAugResult(
+        X_aug=X_aug,
+        y_aug=y_aug,
+        source_space="generative_model",
+        label_mode="hard",
+        uses_external_library=True,
+        library_name="TimeVQVAE",
+        budget_matched=True,
+        selection_rule="classwise_timevqvae_maskgit",
+        meta={
+            "timevqvae_vqvae_epochs": float(vqvae_epochs),
+            "timevqvae_maskgit_epochs": float(maskgit_epochs),
+            "target_aug_ratio": float(multiplier),
+            "actual_aug_ratio": float(X_aug.shape[0]) / max(float(len(X_train)), 1.0),
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Raw-domain transformation baselines
 # ---------------------------------------------------------------------------

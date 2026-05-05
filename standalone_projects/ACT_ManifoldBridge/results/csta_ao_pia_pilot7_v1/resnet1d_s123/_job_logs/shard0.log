@@ -1,0 +1,10 @@
+[japanesevowels s1] fitting no_aug baseline
+[japanesevowels s1] method=csta_topk_uniform_top5_ao_fisher
+[japanesevowels s1] method=csta_topk_uniform_top5_ao_contrastive
+[japanesevowels s2] fitting no_aug baseline
+[japanesevowels s2] method=csta_topk_uniform_top5_ao_fisher
+[japanesevowels s2] method=csta_topk_uniform_top5_ao_contrastive
+[japanesevowels s3] fitting no_aug baseline
+[japanesevowels s3] method=csta_topk_uniform_top5_ao_fisher
+[japanesevowels s3] method=csta_topk_uniform_top5_ao_contrastive
+ta_topk_uniform_top5_ao_contrastive

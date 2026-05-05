@@ -1,0 +1,9 @@
+[handmovementdirection s1] fitting no_aug baseline
+[handmovementdirection s1] method=csta_topk_uniform_top5_ao_fisher
+[handmovementdirection s1] method=csta_topk_uniform_top5_ao_contrastive
+[handmovementdirection s2] fitting no_aug baseline
+[handmovementdirection s2] method=csta_topk_uniform_top5_ao_fisher
+[handmovementdirection s2] method=csta_topk_uniform_top5_ao_contrastive
+[handmovementdirection s3] fitting no_aug baseline
+[handmovementdirection s3] method=csta_topk_uniform_top5_ao_fisher
+[handmovementdirection s3] method=csta_topk_uniform_top5_ao_contrastive

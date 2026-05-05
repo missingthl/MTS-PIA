@@ -1,0 +1,3 @@
+dataset,method,aug_f1_mean,aug_f1_std,gain_mean,gain_std,best_val_f1_mean,aug_count_mean,actual_aug_ratio_mean,n_seeds
+handwriting,csta_topk_uniform_top5_ao_fisher,0.46381582659792936,0.02540548679691683,0.06371580891015305,0.03153168018126298,0.42164814814814805,1200.0,10.0,3
+handwriting,csta_topk_uniform_top5_ao_contrastive,0.45289309483036977,0.016690994926078798,0.052793077142593424,0.02524443854214168,0.377037037037037,1200.0,10.0,3

@@ -1,0 +1,3 @@
+dataset,method,aug_f1_mean,aug_f1_std,gain_mean,gain_std,best_val_f1_mean,aug_count_mean,actual_aug_ratio_mean,n_seeds
+japanesevowels,csta_topk_uniform_top5_ao_contrastive,0.9826985046027326,0.00325793994073079,0.016547545570353723,0.007235117915434461,1.0,2160.0,10.0,3
+japanesevowels,csta_topk_uniform_top5_ao_fisher,0.9731112731308517,0.005698739025342678,0.006960314098472827,0.01367198958511184,0.9875679875679876,2160.0,10.0,3

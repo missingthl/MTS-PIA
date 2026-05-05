@@ -1,0 +1,2 @@
+method,n_datasets,mean_f1,mean_rank,win_count
+timevqvae_classwise,7,0.5882951177053243,1.0,7

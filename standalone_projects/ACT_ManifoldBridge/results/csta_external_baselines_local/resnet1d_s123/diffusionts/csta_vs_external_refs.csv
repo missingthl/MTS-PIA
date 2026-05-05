@@ -1,0 +1,5 @@
+dataset,no_aug,best_rawaug,raw_mixup,dba_sameclass,raw_smote_flatten_balanced,random_cov_state,pca_cov_state,csta_top1_current,csta_group_template_top,csta_top1_minus_no_aug,csta_group_minus_no_aug,csta_top1_minus_best_rawaug,csta_group_minus_best_rawaug,csta_top1_minus_raw_mixup,csta_group_minus_raw_mixup,csta_top1_minus_dba_sameclass,csta_group_minus_dba_sameclass,csta_top1_minus_raw_smote_flatten_balanced,csta_group_minus_raw_smote_flatten_balanced,csta_top1_minus_random_cov_state,csta_group_minus_random_cov_state,csta_top1_minus_pca_cov_state,csta_group_minus_pca_cov_state,csta_group_minus_csta_top1
+handmovementdirection,,,,,,,,,,,,,,,,,,,,,,,,
+japanesevowels,,,,,,,,,,,,,,,,,,,,,,,,
+natops,,,,,,,,,,,,,,,,,,,,,,,,
+racketsports,,,,,,,,,,,,,,,,,,,,,,,,

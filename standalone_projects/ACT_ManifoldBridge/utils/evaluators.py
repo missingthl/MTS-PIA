@@ -1934,3 +1934,44 @@ def fit_eval_timesnet_weighted_aug_ce(
         tau_scheduler=tau_scheduler,
         steps_per_epoch=steps_per_epoch,
     )
+
+from utils.moderntcn_wrapper import ModernTCNClassifier
+
+def fit_eval_moderntcn(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    X_test,
+    y_test,
+    epochs=100,
+    lr=5e-4,
+    batch_size=64,
+    patience=15,
+    device="cuda",
+    return_model_obj=False,
+    loader_seed: Optional[int] = None,
+):
+    _set_training_seed(loader_seed)
+    in_channels = X_train.shape[1]
+    seq_len = X_train.shape[2]
+    num_classes = int(max(y_train.max(), (y_val.max() if y_val is not None else 0), y_test.max()) + 1)
+    
+    model = ModernTCNClassifier(in_channels, seq_len, num_classes)
+    return fit_eval_pytorch_model(
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        epochs,
+        lr,
+        batch_size,
+        patience,
+        device,
+        use_cosine_annealing=True,
+        return_model_obj=return_model_obj,
+        loader_seed=loader_seed,
+    )

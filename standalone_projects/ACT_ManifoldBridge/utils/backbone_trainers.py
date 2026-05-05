@@ -14,10 +14,11 @@ from utils.evaluators import (
     fit_eval_resnet1d_manifold_mixup,
     fit_eval_resnet1d_soft_labels,
     fit_eval_timesnet,
+    fit_eval_moderntcn,
 )
 
 
-SUPPORTED_BACKBONES = ("resnet1d", "minirocket", "patchtst", "timesnet", "mptsnet")
+SUPPORTED_BACKBONES = ("resnet1d", "minirocket", "patchtst", "timesnet", "mptsnet", "moderntcn")
 SOFT_LABEL_BACKBONES = ("resnet1d",)
 MANIFOLD_MIXUP_BACKBONES = ("resnet1d",)
 JOBDA_BACKBONES = ("resnet1d",)
@@ -91,6 +92,21 @@ def fit_hard_backbone(
         )
     if backbone == "mptsnet":
         return fit_eval_mptsnet(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            X_test,
+            y_test,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+            patience=patience,
+            device=device,
+            loader_seed=int(seed),
+        )
+    if backbone == "moderntcn":
+        return fit_eval_moderntcn(
             X_train,
             y_train,
             X_val,

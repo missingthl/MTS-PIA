@@ -1,0 +1,8 @@
+dataset,no_aug,best_rawaug,raw_mixup,dba_sameclass,raw_smote_flatten_balanced,random_cov_state,pca_cov_state,csta_top1_current,csta_group_template_top,csta_top1_minus_no_aug,csta_group_minus_no_aug,csta_top1_minus_best_rawaug,csta_group_minus_best_rawaug,csta_top1_minus_raw_mixup,csta_group_minus_raw_mixup,csta_top1_minus_dba_sameclass,csta_group_minus_dba_sameclass,csta_top1_minus_raw_smote_flatten_balanced,csta_group_minus_raw_smote_flatten_balanced,csta_top1_minus_random_cov_state,csta_group_minus_random_cov_state,csta_top1_minus_pca_cov_state,csta_group_minus_pca_cov_state,csta_group_minus_csta_top1
+atrialfibrillation,,,,,,0.17222222222222225,0.11259666259666261,,,,,,,,,,,,,,,,,
+ering,,,,,,0.7878228568457231,0.8501776214953166,,,,,,,,,,,,,,,,,
+handmovementdirection,,,,,,0.2903481591789633,0.2976569238271552,,,,,,,,,,,,,,,,,
+handwriting,,,,,,0.4643840351655004,0.4674405889172228,,,,,,,,,,,,,,,,,
+japanesevowels,,,,,,0.9839705286795409,0.9701810617784153,,,,,,,,,,,,,,,,,
+natops,,,,,,0.9535241013126406,0.9512742307142527,,,,,,,,,,,,,,,,,
+racketsports,,,,,,0.8846388859417199,0.8798842950588853,,,,,,,,,,,,,,,,,
