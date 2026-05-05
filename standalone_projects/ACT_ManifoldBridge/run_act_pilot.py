@@ -603,6 +603,10 @@ def _build_top_response_template_slots(
     zpia_bank = np.asarray(zpia_bank, dtype=np.float64)
     if zpia_bank.ndim != 2 or zpia_bank.shape[0] <= 0:
         raise ValueError("multi-template zPIA requires a non-empty 2D direction bank.")
+    
+    direction_meta = direction_meta or {}
+    eig_count = int(direction_meta.get("eig_direction_count", zpia_bank.shape[0]))
+
     pairs = _resolve_multi_template_pairs(args=args, effective_k=zpia_bank.shape[0], top1_only=top1_only)
 
     tid_arr = np.asarray([record.tid for record in train_recs], dtype=object)
@@ -765,6 +769,7 @@ def _build_top_response_template_slots(
         direction_norm = float(np.linalg.norm(direction))
         z_eff = _get_effective_z(idx)
         response_abs = float(np.abs(z_eff @ direction))
+        is_padded = bool(int(template_id) >= eig_count)
         d_min = float(margins[idx])
         gamma_requested = float(args.pia_gamma)
         if eta_safe is None:
@@ -807,6 +812,7 @@ def _build_top_response_template_slots(
             "reject_safe_radius": int(safe_radius_bad),
             "reject_zero_direction": int(zero_direction),
             "reject_zero_margin": int(zero_margin),
+            "is_padded_direction": is_padded,
         }
 
     def _select_fv_candidate(idx: int, candidate_order: int) -> Dict[str, object]:
@@ -1156,6 +1162,7 @@ def _build_act_realized_augmentations(
             "sign": 0.0,
             "gamma_used": 0.0,
             "safe_radius_ratio": 0.0,
+            "is_padded_direction": False,
         }
         audit.update(
             {
@@ -2706,10 +2713,20 @@ def run_experiment(dataset_name, args):
                     "direction_norm_min": "ao_direction_norm_min",
                     "direction_norm_max": "ao_direction_norm_max",
                     "ao_direction_pad_count": "ao_direction_pad_count",
+                    "eig_direction_count": "ao_eig_direction_count",
+                    "direction_pad_mode": "ao_direction_pad_mode",
+                    "positive_pair_mode": "ao_positive_pair_mode",
+                    "negative_pair_mode": "ao_negative_pair_mode",
                 }
                 for src, dst in ao_key_map.items():
                     if src in direction_meta:
                         summary[dst] = direction_meta[src]
+                
+                # Calculate padded usage rate from audit rows if available
+                audit_rows = list(pipeline_out.get("audit_rows", []))
+                if audit_rows:
+                    padded_flags = [bool(row.get("is_padded_direction", False)) for row in audit_rows]
+                    summary["ao_padded_template_usage_rate"] = float(np.mean(padded_flags)) if padded_flags else 0.0
             if args.algo in {"zpia_top1_pool", "zpia_multidir_pool", "rc4_multiz_fused"}:
                 summary.update(
                     {
