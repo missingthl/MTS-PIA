@@ -84,6 +84,73 @@ as a neighborhood-consensus extension.
 core/bridge.py
   Log-Euclidean target realization back to raw time-series space.
 
+core/csta/
+  Refactored CSTA internals used by the historical `run_act_pilot.py`
+  entrypoint.  This package is the preferred place for new CSTA implementation
+  logic.
+
+core/csta/state.py
+  Trial records and canonical Log-Euclidean covariance-state extraction.
+  Local tangent audits and CSTA training runs should share this builder.
+
+core/csta/template_slots.py
+  Converts template policy outputs into concrete candidate slots and audit rows.
+
+core/csta/template_policies.py
+  Reviewable PIA template-id policy logic: top1, topK uniform/softmax,
+  group policies, bank-random controls, and policy neighbor preparation.
+
+core/csta/template_candidate_scoring.py
+  Pre-bridge candidate physics and FV selector scoring helpers used by
+  template slot construction.
+
+core/csta/materialize.py
+  z-space candidate materialization through the whitening-coloring bridge and
+  bridge/candidate metric aggregation.
+
+core/csta/augment_builders.py
+  Compatibility re-export shim for historical imports.  New implementation
+  logic should live in the mechanism-specific builder modules below.
+
+core/csta/act_builder.py
+  Base ACT/LRAES/zPIA realized augmentation and feedback margin scoring.
+
+core/csta/template_pool_builder.py
+  zPIA/PIA top1/topK/template-pool augmentation builder.
+
+core/csta/rc4_osf_builders.py
+  Legacy RC4/OSF fused, spectral OSF, rank-1 OSF, and multi-z fused builders.
+
+core/csta/pipelines.py
+  High-level training pipeline orchestration for ACT/CSTA, zPIA template-pool,
+  RC4 fused, multi-z fused, and feedback variants.
+
+core/csta/experiment.py
+  Dataset/seed loop, train/val/test split preparation, pipeline dispatch,
+  result-row helper calls, candidate-audit helper calls, and optional viz sample
+  writing for the public ACT runner.
+
+core/csta/result_rows.py
+  Centralized success/failure row construction, direction-bank metadata merge,
+  CSTA diagnostic merge, and candidate-audit summary write/merge.
+
+core/csta/cli.py
+  Argument parser, argument validation, dataset selection, and final CSV writing
+  for the public ACT runner.
+
+core/csta/diagnostics.py
+  Host-alignment probes, template usage summaries, and response diagnostics.
+
+core/csta/direction_banks.py
+  Dispatch for LRAES/zPIA/PCA/random-orth/AO direction-bank builders.
+
+core/csta/training.py
+  Thin backbone-training dispatch wrappers used by `run_act_pilot.py`.
+
+run_act_pilot.py
+  Thin public entrypoint that preserves environment-thread defaults and calls
+  `core.csta.cli.main()`.  Keep command-line compatibility here.
+
 core/pia.py
   LRAES/zPIA/TELM2 direction-bank construction.
 

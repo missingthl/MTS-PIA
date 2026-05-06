@@ -128,6 +128,13 @@ CSTA_RESULT_PASSTHROUGH_FIELDS = [
     "candidate_audit_path",
     "z_displacement_norm_mean",
     "template_response_abs_mean",
+    "template_response_top1_mean",
+    "template_response_top5_mean",
+    "template_response_gap_top1_top5_mean",
+    "template_response_entropy_mean",
+    "pre_safe_displacement_norm_mean",
+    "post_safe_displacement_norm_mean",
+    "gamma_used_ratio_mean",
     "gamma_requested_mean_audit",
     "gamma_used_mean_audit",
     "safe_radius_ratio_mean_audit",
@@ -135,30 +142,17 @@ CSTA_RESULT_PASSTHROUGH_FIELDS = [
     "gamma_zero_rate_audit",
     "manifold_margin_mean_audit",
     "transport_error_logeuc_mean_audit",
+    "template_response_top1_mean_audit",
+    "template_response_top5_mean_audit",
+    "template_response_gap_top1_top5_mean_audit",
+    "template_response_entropy_mean_audit",
+    "selected_template_response_abs_mean_audit",
+    "gamma_used_ratio_mean_audit",
+    "pre_safe_displacement_norm_mean_audit",
+    "post_safe_displacement_norm_mean_audit",
     "template_usage_entropy_audit",
     "top_template_concentration_audit",
     "selection_stage",
-    "ao_rho_scale",
-    "ao_rho_value",
-    "ao_lambda_pos",
-    "ao_lambda_neg",
-    "ao_k_pos",
-    "ao_k_neg",
-    "ao_sw_trace",
-    "ao_sb_trace",
-    "ao_sp_trace",
-    "ao_sn_trace",
-    "ao_eig_top",
-    "ao_eig_mean",
-    "ao_eig_min",
-    "ao_eig_max",
-    "ao_eig_fallback",
-    "ao_eig_fallback_reason",
-    "ao_response_centering",
-    "ao_direction_norm_mean",
-    "ao_direction_norm_min",
-    "ao_direction_norm_max",
-    "ao_direction_pad_count",
     "selector_name",
     "feasible_rate",
     "selector_accept_rate",
@@ -325,6 +319,7 @@ METHOD_INFO: Dict[str, MethodInfo] = {
     "csta_topk_softmax_tau_0.10": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.10_response"),
     "csta_topk_softmax_tau_0.20": MethodInfo("covariance_template", "hard", False, "", True, "softmax_tau_0.20_response"),
     "csta_topk_uniform_top5": MethodInfo("covariance_template", "hard", False, "", True, "uniform_top5_response"),
+    "csta_template_random_within_bank": MethodInfo("covariance_template", "hard", False, "", True, "csta_bank_random"),
     "csta_fv_filter_top5": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_fv_filter_top5"),
     "csta_fv_score_top5": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_fv_score_top5"),
     "csta_random_feasible_selector": MethodInfo("covariance_template", "hard", False, "", True, "pre_bridge_random_feasible_control"),
@@ -405,6 +400,8 @@ def _csta_policy_for_method(method: str) -> str:
     clean = method.replace("_ao_fisher", "").replace("_ao_contrastive", "")
     if clean.startswith("csta_topk_"):
         return clean.replace("csta_", "", 1)
+    if clean == "csta_template_random_within_bank":
+        return "random"
     if clean == "csta_fv_filter_top5":
         return "fv_filter_top5"
     if clean == "csta_fv_score_top5":
@@ -677,16 +674,6 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         str(args.multiplier),
         "--device",
         args.device,
-        "--ao-rho-scale",
-        str(getattr(args, "ao_rho_scale", 1e-3)),
-        "--ao-lambda-pos",
-        str(getattr(args, "ao_lambda_pos", 0.5)),
-        "--ao-lambda-neg",
-        str(getattr(args, "ao_lambda_neg", 0.5)),
-        "--ao-k-pos",
-        str(getattr(args, "ao_k_pos", 5)),
-        "--ao-k-neg",
-        str(getattr(args, "ao_k_neg", 5)),
         "--out-root",
         str(csta_root),
         "--audit-method-label",
@@ -698,7 +685,12 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         cmd.extend(["--template-selection", "group_top", "--group-size", str(args.group_size)])
     elif method.startswith("csta_topk_"):
         cmd.extend(["--template-selection", method.replace("csta_", "")])
-    elif method in {"csta_fv_filter_top5", "csta_fv_score_top5", "csta_random_feasible_selector"}:
+    elif method in {
+        "csta_template_random_within_bank",
+        "csta_fv_filter_top5",
+        "csta_fv_score_top5",
+        "csta_random_feasible_selector",
+    }:
         cmd.extend(["--template-selection", _csta_policy_for_method(method)])
 
     (csta_root / "command.json").write_text(
@@ -736,8 +728,7 @@ def _run_csta_method(dataset: str, seed: int, method: str, args, out_root: Path)
         "best_val_f1": float(row.get("act_best_val_f1", row.get("act_val_f1", row.get("base_best_val_f1", 0.0)))),
         "stop_epoch": int(row.get("act_stop_epoch", 0)) if not pd.isna(row.get("act_stop_epoch", np.nan)) else 0,
         "aug_count": int(row.get("aug_total_count", 0)) if "aug_total_count" in row else int(args.multiplier),
-        "warning_count": int(row.get("warning_count", 0)),
-        "fallback_count": int(row.get("fallback_count", 0)),
+        "warning_count": 0,
         "extra_metrics": extra_metrics,
     }
 
@@ -1034,7 +1025,7 @@ def run(args) -> List[Dict[str, object]]:
                             best_val_f1=float(csta_res.get("best_val_f1", np.nan)),
                             stop_epoch=int(csta_res.get("stop_epoch", 0)),
                             warning_count=int(csta_res.get("warning_count", 0)),
-                            fallback_count=int(csta_res.get("fallback_count", 0)),
+                            fallback_count=int(csta_res.get("warning_count", 0)),
                             method_elapsed_sec=elapsed,
                             extra_metrics=dict(csta_res.get("extra_metrics", {})),
                         )
@@ -1235,12 +1226,6 @@ def main() -> None:
         action="store_true",
         help="Allow writing to locked Phase 1/2 reference roots. Use only for intentional reference regeneration.",
     )
-    parser.add_argument("--ao-rho-scale", type=float, default=1e-3)
-    parser.add_argument("--ao-lambda-pos", type=float, default=0.5)
-    parser.add_argument("--ao-lambda-neg", type=float, default=0.5)
-    parser.add_argument("--ao-k-pos", type=int, default=5)
-    parser.add_argument("--ao-k-neg", type=int, default=5)
-
     args = parser.parse_args()
     run(args)
 
