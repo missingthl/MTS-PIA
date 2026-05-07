@@ -15,6 +15,7 @@ The original release comparison was scoped to three internal method families:
 The current research tree also contains external baselines, CSTA sampling arms,
 protocol summaries, and multi-backbone adapters.  The main maps are:
 
+- `docs/DIRECTORY_GUIDE.md`: shortest map for where code lives.
 - `docs/PROJECT_STRUCTURE.md`: project layout and result hygiene.
 - `docs/EXTERNAL_BASELINES.md`: where every external augmentation arm lives.
 - `docs/PIA_OPERATOR.md`: CSTA/PIA operator contract.
@@ -89,10 +90,15 @@ mba_core_zpia_top1_pool      mean F1 0.7314
   and host model definitions.
 - `utils/`: dataset loading, model evaluation utilities, backbone dispatch, and
   external augmentation implementations.
+- `external/`: vendored third-party repositories only, not the external
+  comparison matrix.  Current contents are DiffusionTS and TimeVQVAE code trees.
 - Current project-native backbones live in `core/`:
-  `resnet1d.py`, `patchtst.py`, `timesnet.py`, and `mptsnet.py`.
-- `utils/external_baselines.py`: raw-domain, DTW, guided-warping, JobDA,
-  TimeVAE-style, SMOTE, and covariance-state baseline implementations.
+  `resnet1d.py`, `patchtst.py`, `timesnet.py`, `mptsnet.py`, and
+  `moderntcn.py`; see `docs/BACKBONES.md`.
+- `utils/external_baseline_methods/`: actual external baseline implementations:
+  raw-domain, DTW, guided-warping, JobDA, TimeVAE-style, SMOTE, and
+  covariance-state controls.
+- `utils/external_baselines.py`: compatibility facade for historical imports.
 - `utils/external_baseline_manifest.py`: searchable method catalog.
 - `scripts/run_mba_vs_rc4_matrix.py`: queue runner for release comparison arms.
 - `scripts/run_external_baselines_phase1.py`: historical-name runner for

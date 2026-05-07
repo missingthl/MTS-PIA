@@ -73,6 +73,24 @@ core/csta/result_rows.py
 core/csta/cli.py
   Argument parser, argument validation, dataset selection, and final CSV
   writing for the public ACT runner.
+
+utils/external_runner_registry.py
+  External-runner constants, phase arm groups, method metadata, CSTA diagnostic
+  passthrough fields, CSTA policy mapping, and locked-root protection.  This
+  keeps the external matrix runner focused on orchestration rather than method
+  registration.
+
+utils/external_aug_dispatch.py
+  Method-to-external-augmenter dispatch.  External algorithm implementations
+  remain in `utils/external_baselines.py`; this layer keeps construction
+  branching out of the public matrix runner.
+
+utils/external_baseline_methods/
+  Method-specific external augmentation implementations.  The historical
+  `utils/external_baselines.py` file is now a compatibility facade.
+
+references/external_baselines/
+  Downloaded PDF references and source index for the external baseline papers.
 ```
 
 `run_act_pilot.py` remains the canonical CLI entrypoint but is now intentionally
@@ -93,8 +111,12 @@ result schema compatibility through result_rows.py
 ```
 
 Result-row/schema construction is now centralized in `core/csta/result_rows.py`.
-The next safe extraction step is not more line-count reduction; it is either
-pipeline dispatch cleanup or external runner documentation, each guarded by
+External-runner method registration is now centralized in
+`utils/external_runner_registry.py`, external augmentation construction is
+dispatched through `utils/external_aug_dispatch.py`, and concrete external
+baseline implementations are split under `utils/external_baseline_methods/`.
+The next safe extraction step is not more line-count reduction; it is isolating
+runner summary writing or splitting legacy RC4 builders further, each guarded by
 smoke/identity checks.
 
 ## Compatibility Checks
@@ -108,6 +130,8 @@ PYTHONDONTWRITEBYTECODE=1 python -m py_compile \
   standalone_projects/ACT_ManifoldBridge/core/pia.py \
   standalone_projects/ACT_ManifoldBridge/core/pia_audit.py \
   standalone_projects/ACT_ManifoldBridge/core/bridge.py \
+  standalone_projects/ACT_ManifoldBridge/utils/external_aug_dispatch.py \
+  standalone_projects/ACT_ManifoldBridge/utils/external_runner_registry.py \
   standalone_projects/ACT_ManifoldBridge/scripts/run_external_baselines_phase1.py
 ```
 

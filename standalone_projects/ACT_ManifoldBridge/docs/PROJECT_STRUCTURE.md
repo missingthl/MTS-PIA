@@ -12,6 +12,12 @@ multi-backbone training adapters
 protocol summaries and audit outputs
 ```
 
+For a shorter "where do I look first?" map, see:
+
+```text
+docs/DIRECTORY_GUIDE.md
+```
+
 ## Layout
 
 ```text
@@ -24,7 +30,7 @@ ACT_ManifoldBridge/
 
   utils/
     Dataset loading, evaluator/trainer utilities, backbone dispatch, and
-    external baseline generators.
+    external baseline adapters.
 
   scripts/
     Matrix runners, protocol builders, diagnostic reports, and shell launchers.
@@ -35,7 +41,8 @@ ACT_ManifoldBridge/
 
   references/
     Small reference papers or citation-support files.  Do not vendor large
-    external repositories here.
+    external repositories here.  External-baseline PDFs and their source index
+    live under `references/external_baselines/`.
 
   results/
     Lightweight summaries and selected protocol artifacts.  Large run outputs,
@@ -43,6 +50,17 @@ ACT_ManifoldBridge/
 
   logs/
     Local execution logs.  Not required for release claims.
+```
+
+Important naming caveat:
+
+```text
+external/
+  Vendored third-party repositories only.  It is not the external comparison
+  matrix and currently contains only DiffusionTS / TimeVQVAE code trees.
+
+utils/external_baseline_methods/
+  Actual project-native external baseline method implementations.
 ```
 
 ## Core Method Surface
@@ -164,6 +182,7 @@ core/resnet1d.py
 core/patchtst.py
 core/timesnet.py
 core/mptsnet.py
+core/moderntcn.py
   Backbone implementations.
 
 Backbone files are currently kept at the top level of `core/` for compatibility
@@ -175,6 +194,7 @@ core.resnet1d
 core.patchtst
 core.timesnet
 core.mptsnet
+core.moderntcn
 ```
 
 utils/evaluators.py
@@ -184,8 +204,21 @@ utils/backbone_trainers.py
   Unified hard/soft/jobDA/manifold-mixup backbone dispatch.
 
 utils/external_baselines.py
-  External augmentation baselines: raw transforms, Mixup, DBA/wDBA,
-  SPAWNER-style, RGW/DGW, JobDA-cleanroom, TimeVAE-style, cov-state baselines.
+  Compatibility facade that re-exports external augmentation methods from
+  `utils/external_baseline_methods/`.
+
+utils/external_baseline_methods/
+  Method-specific external baseline implementations: raw transforms, Mixup,
+  DBA/wDBA, SPAWNER-style, RGW/DGW, JobDA-cleanroom, TimeVAE-style generators,
+  SMOTE, and naive covariance-state controls.
+
+utils/external_aug_dispatch.py
+  Method-to-augmenter dispatch used by the external matrix runner.  This keeps
+  runner orchestration separate from external augmentation construction.
+
+utils/external_runner_registry.py
+  External-runner method registry, phase arm groups, CSTA passthrough fields,
+  method metadata, CSTA policy mapping, and locked-result-root guard.
 
 utils/external_baseline_manifest.py
   Searchable catalog that maps every external/CSTA sampling arm to its
@@ -205,6 +238,22 @@ scripts/build_step3_diagnostic_report.py
 
 docs/EXTERNAL_BASELINES.md
   Human-readable index for all external baseline arms and their code locations.
+
+docs/INTERNAL_BASELINES.md
+  Human-readable index for internal CSTA/MBA/RC4 baselines, release-era arm
+  names, current CSTA arm names, runners, and implementation locations.
+
+docs/BACKBONES.md
+  Human-readable index for downstream host backbones, model files, dispatch
+  layers, and hard-label versus soft-label support boundaries.
+
+docs/EXTERNAL_BASELINE_PAPERS.md
+  Tracked source index for baseline papers downloaded locally under ignored
+  `references/external_baselines/`.
+
+docs/DIRECTORY_GUIDE.md
+  Short directory map that explains the CSTA flow, external-baseline flow, and
+  why `external/` is a vendor-code directory rather than the method matrix.
 ```
 
 ## Result Policy
