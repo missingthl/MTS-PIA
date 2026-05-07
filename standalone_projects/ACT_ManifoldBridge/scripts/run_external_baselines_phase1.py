@@ -672,7 +672,7 @@ def main() -> None:
     parser.add_argument("--k-dir", type=int, default=10)
     parser.add_argument("--n-kernels", type=int, default=10000)
     parser.add_argument("--pia-gamma", type=float, default=0.1)
-    parser.add_argument("--eta-safe", type=float, default=0.5)
+    parser.add_argument("--eta-safe", type=float, default=0.75)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--mixup-alpha", type=float, default=0.4)
     parser.add_argument("--dba-k", type=int, default=5)

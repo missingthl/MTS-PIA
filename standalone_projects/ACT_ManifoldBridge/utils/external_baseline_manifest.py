@@ -1,15 +1,17 @@
-"""Discoverable registry for external CSTA baseline arms.
+"""Discoverable catalog for external CSTA baseline arms.
 
-The runner historically grew faster than the documentation.  This manifest is
-the stable map from a method name to its implementation file, conceptual family,
-and intended runner entrypoint.  Keep it synchronized with
-``utils.external_runner_registry.METHOD_INFO``.
+The runtime source of truth is ``utils.external_runner_registry.METHOD_INFO``.
+This manifest is a documentation/search layer: it stores conceptual family,
+implementation location, and notes, then projects runtime fields such as
+``source_space``, ``label_mode``, and ``budget_matched`` from the registry below.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List
+
+from utils.external_runner_registry import METHOD_INFO
 
 
 @dataclass(frozen=True)
@@ -492,6 +494,31 @@ EXTERNAL_BASELINE_CATALOG: Dict[str, ExternalBaselineSpec] = {
         notes="Classwise TimeVQVAE generator (AISTATS 2023).",
     ),
 }
+
+
+def _apply_runtime_registry(spec: ExternalBaselineSpec) -> ExternalBaselineSpec:
+    """Overlay fields owned by the runtime registry onto a documentation spec."""
+    info = METHOD_INFO.get(spec.name)
+    if info is None:
+        raise KeyError(f"Manifest entry {spec.name!r} is missing from external_runner_registry.METHOD_INFO.")
+    return replace(
+        spec,
+        source_space=info.source_space,
+        label_mode=info.label_mode,
+        budget_matched=info.budget_matched,
+    )
+
+
+EXTERNAL_BASELINE_CATALOG = {
+    name: _apply_runtime_registry(spec)
+    for name, spec in EXTERNAL_BASELINE_CATALOG.items()
+}
+
+
+def validate_catalog_against_runtime_registry() -> None:
+    missing = sorted(set(EXTERNAL_BASELINE_CATALOG) - set(METHOD_INFO))
+    if missing:
+        raise KeyError(f"Manifest methods missing from runtime registry: {missing}")
 
 
 def catalog_rows() -> List[ExternalBaselineSpec]:

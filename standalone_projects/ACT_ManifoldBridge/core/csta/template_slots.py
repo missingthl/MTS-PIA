@@ -11,7 +11,9 @@ from .template_candidate_scoring import build_template_candidate_components, sel
 from .template_policies import (
     FV_SELECTOR_MODES,
     FV_TOP_K,
+    build_response_class_means,
     prepare_template_neighbor_indices,
+    response_vector_for_anchor,
     select_template_ids_for_policy,
 )
 
@@ -50,7 +52,8 @@ def build_top_response_template_slots(
     seed: int,
     candidate_rows: Optional[List[Dict[str, object]]] = None,
     top1_only: bool = False,
-    eta_safe: Optional[float] = 0.5,
+    eta_safe: Optional[float] = 0.75,
+    direction_meta: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     """Build PIA candidate slots without realizing them in raw space."""
 
@@ -61,6 +64,7 @@ def build_top_response_template_slots(
 
     tid_arr = np.asarray([record.tid for record in train_recs], dtype=object)
     y_arr = np.asarray(y_train, dtype=np.int64).ravel()
+    response_class_means = build_response_class_means(X_train_z, y_arr, direction_meta)
     tid_to_idx = {tid: i for i, tid in enumerate(tid_arr)}
     margins = estimate_local_manifold_margins(X_train_z, y_arr)
 
@@ -137,7 +141,14 @@ def build_top_response_template_slots(
         idx = int(spec["anchor_index"])
         tid = spec["tid"]
         candidate_order = int(spec["candidate_order"])
-        response_profile = template_response_profile(X_train_z[idx], zpia_bank)
+        z_response = response_vector_for_anchor(
+            idx=idx,
+            X_train_z=X_train_z,
+            y_arr=y_arr,
+            direction_meta=direction_meta,
+            response_class_means=response_class_means,
+        )
+        response_profile = template_response_profile(z_response, zpia_bank)
         if is_fv_selector:
             selected = select_fv_candidate(
                 mode=mode,
@@ -150,6 +161,9 @@ def build_top_response_template_slots(
                 seed=seed,
                 template_ids_used=template_ids_used,
                 eta_safe=eta_safe,
+                y_arr=y_arr,
+                direction_meta=direction_meta,
+                response_class_means=response_class_means,
                 fv_top_k=fv_top_k,
                 eps=eps,
             )
@@ -188,6 +202,9 @@ def build_top_response_template_slots(
                 X_train_z=X_train_z,
                 zpia_bank=zpia_bank,
                 seed=seed,
+                y_arr=y_arr,
+                direction_meta=direction_meta,
+                response_class_means=response_class_means,
                 neighbor_indices=neighbor_indices,
             )
             pair_pos = (candidate_order % pair_cycle) // 2
@@ -202,6 +219,9 @@ def build_top_response_template_slots(
                 template_id=template_id,
                 template_sign=template_sign,
                 eta_safe=eta_safe,
+                y_arr=y_arr,
+                direction_meta=direction_meta,
+                response_class_means=response_class_means,
                 eps=eps,
             )
             direction_norm = float(comp["direction_norm"])

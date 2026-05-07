@@ -4,10 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
-import numpy as np
-
-from core.pia_operator import pia_operator_metadata
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_DATASETS = [
@@ -275,12 +271,16 @@ def csta_policy_for_method(method: str) -> str:
 
 
 def clean_metric_value(value):
+    import numpy as np
+
     if isinstance(value, (np.integer, np.floating)):
         return value.item()
     return value
 
 
 def extract_csta_extra_metrics(result_row: Dict[str, object], method: str) -> Dict[str, object]:
+    from core.pia_operator import pia_operator_metadata
+
     extra = pia_operator_metadata(csta_policy_for_method(method))
     for field in CSTA_RESULT_PASSTHROUGH_FIELDS:
         if field in result_row:

@@ -67,18 +67,29 @@ Selected datasets from `final20_main_comparison_v1`:
 
 ---
 
-## 5. Ablation — Direction Source (Pilot7)
+## 5. Direction Specificity / Control Ablation (Pilot7)
 
-**Source**: `csta_neurips_ablation_v1/`
+**Source**: `csta_direction_specificity_stress_v1/resnet1d_s123/`
 
-Direction bank variants (all with uniform_topk selection, eta_safe=0.75):
+These rows separate three different notions that were previously easy to conflate:
+full covariance-state random directions, random sampling inside the TELM2/PIA bank,
+and UniformTop5 sampling from high-response TELM2/PIA templates.
 
-| Direction Source | Mean F1 (Pilot7) |
-|-----------------|-------------------|
-| TELM2 (zpia) | 0.6652 (best) |
-| PCA | — |
-| Random Orthogonal | — |
-| Random | — |
+| Method / Control | Mean F1 (Pilot7) | Interpretation |
+|------------------|------------------|----------------|
+| wDBA | 0.6679 | strongest DTW external reference |
+| **CSTA-U5 / TELM2 UniformTop5** | **0.6652** | canonical CSTA/PIA Pilot7 policy |
+| DBA | 0.6633 | strong DTW external reference |
+| PIA bank-random | 0.6535 | random template sampling inside TELM2 dictionary |
+| CSTA Top1 | 0.6486 | greedy highest-response template |
+| Full Random Cov-State | 0.6481 | full covariance-state random direction control |
+| PCA Cov-State | 0.6470 | train-only PCA direction control |
+
+Conclusion: TELM2 bank-random is above full random covariance on mean, but
+UniformTop5 is substantially stronger. This supports the view that TELM2
+provides a useful candidate space and high-response neighborhood sampling is
+important; it does not support an overclaim that CSTA clearly beats wDBA on
+Pilot7.
 
 ---
 
@@ -92,6 +103,12 @@ Direction bank variants (all with uniform_topk selection, eta_safe=0.75):
 | top1 | 0.6505 |
 
 Conclusion: uniform-topK > top1. Diversity in high-response neighborhood matters.
+
+Note: `csta_sampling_v1` is a historical sampling-policy sweep. The formal
+canonical Pilot7 CSTA-U5 row is the eta-safe-aligned result above
+(`csta_direction_specificity_stress_v1` / etafix protocol, mean F1 `0.6652`).
+Use `0.6630` only when discussing the historical sampling sweep, not as the
+canonical Pilot7 headline.
 
 ---
 
@@ -160,3 +177,6 @@ Full Final20 cross-backbone table pending.
 | `csta_pia_final20/` | **0.75** | ✅ CANONICAL |
 
 All paper tables MUST use eta_safe=0.75 results.
+
+The public CLI and external runner defaults now align with the canonical
+`eta_safe=0.75` setting to reduce accidental config drift.

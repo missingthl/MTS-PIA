@@ -84,7 +84,7 @@ def main():
     )
     parser.add_argument("--template-source", type=str, choices=["zpia", "pca", "random_orth"], default="zpia")
     parser.add_argument("--group-size", type=int, default=5)
-    parser.add_argument("--eta-safe", type=float, default=0.5)
+    parser.add_argument("--eta-safe", type=float, default=0.75)
     parser.add_argument("--audit-method-label", type=str, default="")
     args = parser.parse_args()
 

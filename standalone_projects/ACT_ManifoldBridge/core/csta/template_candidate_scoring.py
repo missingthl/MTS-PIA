@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from .diagnostics import normalize_unit_interval
-from .template_policies import FV_SAFE_RATIO_TARGET, FV_TOP_K
+from .template_policies import (
+    FV_SAFE_RATIO_TARGET,
+    FV_TOP_K,
+    response_vector_for_anchor,
+    template_responses_for_anchor,
+)
 
 
 def build_template_candidate_components(
@@ -18,6 +23,9 @@ def build_template_candidate_components(
     template_id: int,
     template_sign: float,
     eta_safe,
+    y_arr: Optional[np.ndarray] = None,
+    direction_meta: Optional[Dict[str, object]] = None,
+    response_class_means: Optional[Dict[int, np.ndarray]] = None,
     eps: float = 1e-12,
 ) -> Dict[str, object]:
     direction = np.asarray(zpia_bank[int(template_id)], dtype=np.float64)
@@ -34,7 +42,14 @@ def build_template_candidate_components(
         safe_radius = float(eta_safe) * d_min
         safe_radius_ratio = float(abs(gamma_used) * direction_norm / (safe_radius + eps)) if safe_radius > 0 else 0.0
     W_i = (float(template_sign) * gamma_used * direction).astype(np.float32)
-    response_abs = float(abs(np.dot(np.asarray(X_train_z[idx], dtype=np.float64), direction)))
+    z_response = response_vector_for_anchor(
+        idx=idx,
+        X_train_z=X_train_z,
+        y_arr=y_arr,
+        direction_meta=direction_meta,
+        response_class_means=response_class_means,
+    )
+    response_abs = float(abs(np.dot(z_response, direction)))
     z_delta_norm = float(np.linalg.norm(W_i))
     zero_gamma = bool(abs(gamma_used) <= eps)
     zero_direction = bool(direction_norm <= eps)
@@ -78,11 +93,21 @@ def select_fv_candidate(
     seed: int,
     template_ids_used: List[int],
     eta_safe,
+    y_arr: Optional[np.ndarray] = None,
+    direction_meta: Optional[Dict[str, object]] = None,
+    response_class_means: Optional[Dict[int, np.ndarray]] = None,
     fv_top_k: int = FV_TOP_K,
     fv_rho: float = FV_SAFE_RATIO_TARGET,
     eps: float = 1e-12,
 ) -> Dict[str, object]:
-    responses = np.abs(np.asarray(X_train_z[idx], dtype=np.float64) @ zpia_bank.T)
+    responses = template_responses_for_anchor(
+        idx=idx,
+        X_train_z=X_train_z,
+        zpia_bank=zpia_bank,
+        y_arr=y_arr,
+        direction_meta=direction_meta,
+        response_class_means=response_class_means,
+    )
     top_indices = np.lexsort((np.arange(zpia_bank.shape[0]), -responses))[: min(fv_top_k, zpia_bank.shape[0])]
     pool: List[Dict[str, object]] = []
     for rank, template_id in enumerate(top_indices):
@@ -96,6 +121,9 @@ def select_fv_candidate(
                 template_id=int(template_id),
                 template_sign=sign_val,
                 eta_safe=eta_safe,
+                y_arr=y_arr,
+                direction_meta=direction_meta,
+                response_class_means=response_class_means,
                 eps=eps,
             )
             cand["template_rank"] = int(rank)

@@ -41,6 +41,7 @@ def _build_zpia_template_pool_aug_out(
         candidate_rows=None,
         top1_only=top1_only,
         eta_safe=eta_safe,
+        direction_meta=zpia_meta,
     )
     direction_meta = {
         "bank_source": algo_label,

@@ -516,6 +516,7 @@ def _build_rc4_multiz_fused_aug_out(
         candidate_rows=list(aug_out_lraes.get("audit_rows", [])),
         top1_only=False,
         eta_safe=eta_safe,
+        direction_meta=zpia_meta,
     )
     if len(aug_out_lraes["tid_aug"]) != len(slots["tid_aug"]):
         raise ValueError("rc4_multiz_fused requires aligned LRAES and zPIA slot counts.")
