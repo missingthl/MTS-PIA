@@ -13,8 +13,10 @@ The original release comparison was scoped to three internal method families:
   zPIA/TELM2 template direction with MBA core concat training.
 
 The current research tree also contains external baselines, CSTA sampling arms,
-protocol summaries, and multi-backbone adapters.  The main maps are:
+E1 table builders, protocol summaries, and multi-backbone adapters.  The main
+workflow map is:
 
+- `docs/WORKFLOW.md`: canonical operational workflow and readiness checks.
 - `docs/DIRECTORY_GUIDE.md`: shortest map for where code lives.
 - `docs/PROJECT_STRUCTURE.md`: project layout and result hygiene.
 - `docs/EXTERNAL_BASELINES.md`: where every external augmentation arm lives.
@@ -22,7 +24,17 @@ protocol summaries, and multi-backbone adapters.  The main maps are:
 
 ## Quick Start
 
-Run the current SOTA (`zpia_top1_pool`) on one dataset:
+Before formal matrix work, run the read-only workflow readiness check:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/scripts/check_workflow_readiness.py
+```
+
+It verifies canonical entrypoints, locked roots, Final20 roots, and E1 coverage
+artifacts.
+
+Run canonical CoSTA-U5 (`zpia_top1_pool` with `topk_uniform_top5`) on one
+dataset:
 
 ```bash
 conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py \
@@ -38,25 +50,32 @@ conda run -n pia python standalone_projects/ACT_ManifoldBridge/run_act_pilot.py 
   --val-ratio 0.2 \
   --k-dir 10 \
   --pia-gamma 0.1 \
+  --eta-safe 0.75 \
   --multiplier 10 \
+  --template-selection topk_uniform_top5 \
   --out-root standalone_projects/ACT_ManifoldBridge/results/local_run
 ```
 
-Run the release comparison matrix:
+Run the E1/external-baseline matrix through the unified runner:
 
 ```bash
-conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/run_mba_vs_rc4_matrix.py \
-  --out-root standalone_projects/ACT_ManifoldBridge/results/local_matrix \
-  --actual-arms mba_core_lraes,mba_core_rc4_fused_concat,mba_core_zpia_top1_pool \
-  --gpus 0 \
-  --seeds 1,2,3
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/run_external_baselines_phase1.py \
+  --datasets natops \
+  --seeds 1 \
+  --arms no_aug,raw_mixup,csta_topk_uniform_top5 \
+  --epochs 1 \
+  --batch-size 64 \
+  --patience 1 \
+  --multiplier 1 \
+  --out-root /tmp/e1_runner_smoke \
+  --device cuda \
+  --fail-fast
 ```
 
-Then summarize:
+Build auditable E1 atoms and tables from existing run outputs:
 
 ```bash
-conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/summarize_mba_vs_rc4_matrix.py \
-  --root standalone_projects/ACT_ManifoldBridge/results/local_matrix
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/build_e1_main_artifacts.py
 ```
 
 List external baselines and their code locations:
@@ -98,13 +117,12 @@ mba_core_zpia_top1_pool      mean F1 0.7314
 - `utils/external_baseline_methods/`: actual external baseline implementations:
   raw-domain, DTW, guided-warping, JobDA, TimeVAE-style, SMOTE, and
   covariance-state controls.
-- `utils/external_baselines.py`: compatibility facade for historical imports.
 - `utils/external_baseline_manifest.py`: searchable method catalog.
-- `scripts/run_mba_vs_rc4_matrix.py`: queue runner for release comparison arms.
 - `scripts/run_external_baselines_phase1.py`: historical-name runner for
   Phase 1/2/3 external baseline and CSTA sampling matrices.
 - `scripts/list_external_baselines.py`: prints the baseline catalog.
-- `scripts/summarize_mba_vs_rc4_matrix.py`: summary table generator.
+- `archive/release_legacy/scripts/`: pre-U5 MBA/RC4 release-era scripts kept
+  for provenance only.
 - `results/release_summary/`: compact result tables only; large experiment logs
   are intentionally not part of the release tree.
 

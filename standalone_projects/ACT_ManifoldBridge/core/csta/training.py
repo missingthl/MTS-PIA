@@ -4,9 +4,9 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from core.csta.aug_dataset import ManifoldAugDataset
+from core.csta.aug_training_utils import TauScheduler
 from utils.evaluators import (
-    ManifoldAugDataset,
-    TauScheduler,
     build_model,
     fit_eval_minirocket,
     fit_eval_moderntcn,
@@ -110,4 +110,3 @@ def fit_host_model_weighted_aug_ce(
             X_tr, y_tr, X_aug, y_aug, X_val_raw, y_val, X_test_raw, y_test, **kwargs
         )
     raise ValueError("Weighted aug-CE training supports resnet1d, patchtst, and timesnet only.")
-

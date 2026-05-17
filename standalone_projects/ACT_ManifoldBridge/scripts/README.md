@@ -4,14 +4,37 @@ This directory contains the runnable experiment and summary entrypoints for the
 ACT/CSTA project.  The historical names are kept for compatibility, but the
 current script roles are broader than the original release-only tree.
 
+For the full operational map, start with:
+
+```text
+docs/WORKFLOW.md
+```
+
+## Workflow Readiness
+
+- `check_workflow_readiness.py`: read-only preflight check for canonical
+  entrypoints, locked Phase1/Phase2 roots, Final20 roots, and E1 coverage
+  artifacts.
+
+Run:
+
+```bash
+python standalone_projects/ACT_ManifoldBridge/scripts/check_workflow_readiness.py
+```
+
 ## Canonical Single Run
 
 - `../run_act_pilot.py`: single CSTA/PIA/MBA experiment entrypoint.
 
-## Internal MBA/CSTA Release Matrix
+## Archived MBA/CSTA Release Matrix
 
-- `run_mba_vs_rc4_matrix.py`: queue runner for internal comparison arms.
-- `summarize_mba_vs_rc4_matrix.py`: summary table generator for that matrix.
+The pre-U5 MBA/RC4 release-era runner has moved to:
+
+```text
+archive/release_legacy/scripts/
+```
+
+It is kept for provenance only and is not part of the current workflow.
 
 ## External Baseline Matrix
 
@@ -19,7 +42,9 @@ current script roles are broader than the original release-only tree.
   the historical name, this now dispatches Phase 1, Phase 2, Phase 3, and CSTA
   sampling arms.
 - `list_external_baselines.py`: prints the external baseline catalog from
-  `utils/external_baseline_manifest.py`.
+  `utils/external_baseline_manifest.py`.  By default it shows only active E1
+  methods, active controls, and the SPG-CFM future branch; pass
+  `--include-archived` to show frozen probes.
 
 Useful lookup:
 
@@ -27,13 +52,31 @@ Useful lookup:
 conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/list_external_baselines.py
 ```
 
+Archived/probe lookup:
+
+```bash
+conda run -n pia python standalone_projects/ACT_ManifoldBridge/scripts/list_external_baselines.py --include-archived
+```
+
 ## Protocol And Diagnostics
 
+- `build_e1_main_artifacts.py`: builds the E1 atomic run table, method registry,
+  dataset registry, cost audit, artifact audit, main table, and data audit doc.
 - `build_csta_protocol_summary.py`: unified external/CSTA protocol summaries.
 - `build_step3_diagnostic_report.py`: Step3 gamma/eta diagnostic report.
 - `final_audit_report.py`: compact audit reports used during CSTA sampling.
 - `audit_safe_step.py`, `audit_step3_results.py`, `generate_advantage_map.py`:
   targeted diagnostic helpers.
+
+Post-U5 exploratory mechanism report builders and launchers have moved to:
+
+```text
+archive/mechanism_probes/scripts/
+```
+
+That archive includes AG-PIA, CS-Flow, latent residual, task-guided latent,
+LC latent, SPG, ECL/RN-ECL, SPG-CFM, AO, selector-ablation, and direction
+specificity probes.
 
 ## Shell Launchers
 

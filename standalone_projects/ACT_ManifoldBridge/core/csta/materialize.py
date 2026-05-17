@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -31,6 +32,8 @@ def materialize_z_aug_out(
     aug_trials: List[Dict[str, object]] = []
     bridge_metrics: List[Dict[str, object]] = []
     out_rows: List[Dict[str, object]] = []
+    
+    t0 = time.perf_counter()
     for i in range(len(z_aug)):
         src = tid_to_rec[tid_aug[i]]
         sigma_aug = logvec_to_spd(z_aug[i], mean_log)
@@ -62,6 +65,8 @@ def materialize_z_aug_out(
             }
         )
         out_rows.append(row)
+    t1 = time.perf_counter()
+    bridge_realization_sec = t1 - t0
 
     X_aug_raw = np.stack([trial["x"] for trial in aug_trials]) if aug_trials else None
     y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
@@ -74,6 +79,7 @@ def materialize_z_aug_out(
     z_delta_norms = [float(row.get("zpia_delta_norm", row.get("z_displacement_norm", 0.0))) for row in out_rows]
     post_bridge_flags = [float(row.get("post_bridge_reject_flag", 0.0)) for row in out_rows]
     bridge_fail_count = int(sum(1 for row in out_rows if row.get("post_bridge_reject_reason", "") == "rejected_bridge_fail"))
+    bridge_success_rate = float(np.mean([1.0 if row.get("bridge_success", False) else 0.0 for row in out_rows])) if out_rows else 0.0
 
     out = {
         "effective_k": int(effective_k),
@@ -87,6 +93,7 @@ def materialize_z_aug_out(
         "avg_bridge": avg_bridge,
         "audit_rows": out_rows,
         "direction_bank_meta": direction_bank_meta,
+        "bridge_realization_sec": bridge_realization_sec,
         "safe_radius_ratio_mean": float(np.mean(safe_ratios)) if safe_ratios else 0.0,
         "safe_clip_rate": float(np.mean(clip_flags)) if clip_flags else 0.0,
         "manifold_margin_mean": float(np.mean(margins)) if margins else 0.0,
@@ -100,6 +107,7 @@ def materialize_z_aug_out(
         "post_bridge_reject_count": int(sum(post_bridge_flags)),
         "reject_reason_bridge_fail": int(bridge_fail_count),
         "reject_reason_transport_error": 0,
+        "bridge_success_rate": bridge_success_rate,
         "eta_safe": eta_safe,
         "candidate_total_count": int(len(z_aug)),
         "aug_total_count": int(len(z_aug)),
@@ -108,4 +116,3 @@ def materialize_z_aug_out(
     if extra_meta:
         out.update(extra_meta)
     return out
-

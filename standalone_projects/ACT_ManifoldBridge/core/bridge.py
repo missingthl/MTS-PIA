@@ -11,6 +11,7 @@ def symmetrize(mat: torch.Tensor) -> torch.Tensor:
 
 
 def _spd_eigh(mat: torch.Tensor, eps: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Supports batched input (..., N, N)."""
     mat = symmetrize(mat)
     n = int(mat.shape[-1])
     eye = torch.eye(n, device=mat.device, dtype=mat.dtype)
@@ -61,6 +62,23 @@ def logvec_to_spd(vec: np.ndarray, mean_log: np.ndarray) -> np.ndarray:
     log_centered = unvec_utri_sym(vec, int(mean_log.shape[0]))
     log_cov = (log_centered + mean_log)
     return spd_expm(torch.from_numpy(log_cov).double()).cpu().numpy().astype(np.float32)
+
+
+def batched_unvec_utri_sym(v: torch.Tensor, dim: int) -> torch.Tensor:
+    """Batch version of unvec_utri_sym: (B, K) -> (B, dim, dim)."""
+    B = v.shape[0]
+    out = torch.zeros((B, dim, dim), device=v.device, dtype=v.dtype)
+    idx = torch.triu_indices(dim, dim, device=v.device)
+    out[:, idx[0], idx[1]] = v
+    out[:, idx[1], idx[0]] = v
+    return out
+
+
+def batched_logvec_to_spd(vec_batch: torch.Tensor, mean_log: torch.Tensor) -> torch.Tensor:
+    """Batch version: (B, K) -> (B, C, C)."""
+    log_centered = batched_unvec_utri_sym(vec_batch, int(mean_log.shape[0]))
+    log_cov = log_centered + mean_log[None, :, :]
+    return spd_expm(log_cov)
 
 
 def covariance_from_signal(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
@@ -193,3 +211,36 @@ def bridge_single(
     }
     
     return x_aug.to(dtype=torch.float32), meta
+
+
+def bridge_batch(
+    x_orig: torch.Tensor,
+    sigma_orig: torch.Tensor,
+    sigma_aug: torch.Tensor,
+    *,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """
+    Batched whitening-coloring bridge (Batch, Channels, Time).
+    Highly optimized for GPU.
+
+    x_orig: (B, C, T)
+    sigma_orig: (B, C, C)
+    sigma_aug: (B, C, C)
+    """
+    # Ensure double precision for stability during eigh
+    x_orig = x_orig.to(dtype=torch.float64)
+    sigma_orig = sigma_orig.to(dtype=torch.float64)
+    sigma_aug = sigma_aug.to(dtype=torch.float64)
+
+    mu_orig = x_orig.mean(dim=-1, keepdim=True)
+    
+    # 1. Batched Whitening
+    W_whiten = spd_invsqrtm(sigma_orig, eps=eps)
+    x_white = W_whiten @ (x_orig - mu_orig)
+    
+    # 2. Batched Coloring
+    W_color = spd_sqrtm(sigma_aug, eps=eps)
+    x_aug = (W_color @ x_white) + mu_orig
+    
+    return x_aug.to(dtype=torch.float32)

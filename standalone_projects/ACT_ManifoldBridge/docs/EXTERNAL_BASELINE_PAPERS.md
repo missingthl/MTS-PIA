@@ -19,6 +19,7 @@ release commits.  This tracked index records the source mapping.
 | `raw_smote_flatten_balanced` | `smote_chawla2002.pdf` | https://arxiv.org/pdf/1106.1813.pdf | Class-balancing baseline, not budget-matched CSTA augmentation. |
 | `raw_mixup` | `mixup_zhang2017.pdf` | https://arxiv.org/pdf/1710.09412.pdf | Soft-label mixup baseline. |
 | `timevae_classwise_optional` | `timevae_desai2021.pdf` | https://arxiv.org/pdf/2111.08095.pdf | PyTorch-style classwise adapter; not the official Keras pipeline. |
+| `timegan_classwise` | pending | https://papers.nips.cc/paper/8789-time-series-generative-adversarial-networks | PyTorch TimeGAN-style classwise adapter; not official TensorFlow author-code parity. |
 | `diffusionts_classwise` | `diffusionts_iclr2024.pdf` | https://proceedings.iclr.cc/paper_files/paper/2024/file/b5b66077d016c037576cc56a82f97f66-Paper-Conference.pdf | Wrapper around Diffusion-TS-style classwise generator. |
 | `timevqvae_classwise` | `timevqvae_aistats2023.pdf` | https://arxiv.org/pdf/2303.04743.pdf | Wrapper hook for TimeVQVAE-style generation. |
 | `raw_aug_jitter`, `raw_aug_scaling`, `raw_aug_timewarp`, `raw_aug_magnitude_warping`, `raw_aug_window_warping`, `raw_aug_window_slicing` | `time_series_aug_survey_ijcai2021.pdf` | https://www.ijcai.org/proceedings/2021/0631.pdf | General survey source for common raw-domain time-series augmentation transforms. |

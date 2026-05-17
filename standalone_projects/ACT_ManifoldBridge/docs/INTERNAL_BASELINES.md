@@ -29,20 +29,20 @@ current CSTA/PIA names:
 ```
 
 Release-era names remain in historical result tables and in
-`scripts/run_mba_vs_rc4_matrix.py`.  Current papers and new result tables should
-prefer the `csta_*` names where possible.
+`archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py`.  Current papers and
+new result tables should prefer the `csta_*` names where possible.
 
 ## Main Internal Baselines
 
 | Internal arm | Code path | Runner | Status |
 | --- | --- | --- | --- |
 | `baseline_ce` | `core/csta/training.py`, `utils/backbone_trainers.py` | implicit no-augmentation branch in ACT runs | Baseline classifier without augmentation. |
-| `mba_core_lraes` | `core/pia.py`, `core/csta/direction_banks.py`, `core/csta/act_builder.py` | `scripts/run_mba_vs_rc4_matrix.py` | Legacy MBA/LRAES internal baseline. |
-| `rc4_osf` | `core/csta/rc4_osf_builders.py`, `core/csta/pipelines.py` | `scripts/run_mba_vs_rc4_matrix.py` | Legacy RC4 online structure feedback reference. |
-| `mba_core_rc4_fused_concat` | `core/csta/rc4_osf_builders.py`, `core/csta/pipelines.py` | `scripts/run_mba_vs_rc4_matrix.py` | Legacy RC4 fused concat baseline. |
-| `mba_core_zpia_top1_pool` | `core/pia.py`, `core/csta/template_pool_builder.py`, `core/csta/template_slots.py` | `scripts/run_mba_vs_rc4_matrix.py` | Release-era name for the older top1 PIA/CSTA candidate. |
-| `mba_core_zpia_multidir_pool` | `core/pia.py`, `core/csta/template_pool_builder.py`, `core/csta/template_slots.py` | `scripts/run_mba_vs_rc4_matrix.py` | Release-era multi-direction PIA pool variant. |
-| `mba_core_rc4_multiz_fused_concat` | `core/csta/rc4_osf_builders.py`, `core/csta/pipelines.py` | `scripts/run_mba_vs_rc4_matrix.py` | Legacy RC4 + multi-z fused variant. |
+| `mba_core_lraes` | `core/pia.py`, `core/csta/direction_banks.py`, `core/csta/act_builder.py` | `archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py` | Legacy MBA/LRAES internal baseline. |
+| `rc4_osf` | `core/csta/rc4_osf_builders.py`, `core/csta/pipelines.py` | `archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py` | Legacy RC4 online structure feedback reference. |
+| `mba_core_rc4_fused_concat` | `core/csta/rc4_osf_builders.py`, `core/csta/pipelines.py` | `archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py` | Legacy RC4 fused concat baseline. |
+| `mba_core_zpia_top1_pool` | `core/pia.py`, `core/csta/template_pool_builder.py`, `core/csta/template_slots.py` | `archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py` | Release-era name for the older top1 PIA/CSTA candidate. |
+| `mba_core_zpia_multidir_pool` | `core/pia.py`, `core/csta/template_pool_builder.py`, `core/csta/template_slots.py` | `archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py` | Release-era multi-direction PIA pool variant. |
+| `mba_core_rc4_multiz_fused_concat` | `core/csta/rc4_osf_builders.py`, `core/csta/pipelines.py` | `archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py` | Legacy RC4 + multi-z fused variant. |
 | `csta_top1_current` | `core/csta/template_policies.py`, `core/csta/template_slots.py` | `scripts/run_external_baselines_phase1.py` | Current top1 CSTA/PIA ablation, routed through external runner for fair summaries. |
 | `csta_topk_uniform_top5` | `core/csta/template_policies.py`, `core/csta/template_slots.py` | `scripts/run_external_baselines_phase1.py`, `scripts/run_csta_pia_final20.sh` | Current canonical CSTA/PIA policy. |
 | `csta_template_random_within_bank` | `core/csta/template_policies.py`, `core/csta/template_slots.py` | `scripts/run_external_baselines_phase1.py` | Direction-specificity control: random TELM2 template from the PIA bank. |
@@ -55,7 +55,7 @@ prefer the `csta_*` names where possible.
 Historical release matrix:
 
 ```text
-scripts/run_mba_vs_rc4_matrix.py
+archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py
   arm spec
     ↓
 run_act_pilot.py

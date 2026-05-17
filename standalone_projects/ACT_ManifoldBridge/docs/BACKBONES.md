@@ -25,6 +25,38 @@ core/moderntcn.py
 `minirocket` is the exception: it is a sklearn/sktime-style feature pipeline
 routed through evaluator utilities rather than a `core/minirocket.py` model file.
 
+## Ownership Boundary
+
+`ACT_ManifoldBridge/core/resnet1d.py` is the ResNet1D host used by ACT/CSTA
+experiments.  The repository root also contains `models/resnet1d.py`, but that
+file is **not** the active ACT host import path.
+
+The two files are not treated as automatically synchronized copies:
+
+```text
+models/resnet1d.py
+  Root-level model definition used outside the ACT scope.
+
+standalone_projects/ACT_ManifoldBridge/core/resnet1d.py
+  ACT/CSTA host adapter.  It exposes `encode()` and `classify()` helpers used
+  by ACT-side training strategies such as Manifold Mixup.
+```
+
+If a bug fix or architecture change should affect ACT experiments, apply it
+explicitly to `ACT_ManifoldBridge/core/resnet1d.py` and rerun the relevant
+ACT smoke/regression checks.  Do not assume root-level `models/` changes
+propagate into ACT.
+
+Conversely, do not replace ACT's ResNet1D with the root-level version without
+checking the ACT-only interfaces:
+
+```text
+ResNet1DClassifier.encode(x)
+ResNet1DClassifier.classify(features)
+```
+
+Those interfaces are currently required by ACT's project-native training paths.
+
 Training/evaluation dispatch is split by experiment owner:
 
 ```text
@@ -36,6 +68,14 @@ utils/backbone_trainers.py
 
 utils/evaluators.py
   Low-level fit/evaluate implementations and shared training loops.
+
+core/csta/aug_dataset.py
+  On-the-fly manifold augmentation dataset used by CSTA weighted-augmentation
+  training.  It owns the bridge-backed `ManifoldAugDataset` implementation.
+
+core/csta/aug_training_utils.py
+  CSTA augmentation-training helpers such as `TauScheduler` and focal margin
+  weighting.  `utils/evaluators.py` keeps compatibility imports only.
 ```
 
 ## Supported Backbones
@@ -101,6 +141,30 @@ MPTSNet pilot helper:
 scripts/run_pilot7_mptsnet.sh
   ↓
 run_act_pilot.py --model mptsnet
+```
+
+## U5 Robustness Matrix
+
+The current auditable backbone-result entrypoint is:
+
+```text
+docs/BACKBONE_U5_MATRIX.md
+results/backbone_u5_matrix_v1/backbone_u5_summary.csv
+```
+
+Regenerate the matrix from existing result files with:
+
+```bash
+python scripts/build_backbone_u5_matrix.py
+```
+
+Important interpretation:
+
+```text
+ResNet1D is canonical Final20 evidence.
+ModernTCN is rebuilt Final20 robustness evidence.
+MiniRocket / PatchTST / TimesNet use best-available recovery aggregation.
+MPTSNet is currently Pilot7/probe-tier, not Final20 paper evidence.
 ```
 
 ## Naming Guidance

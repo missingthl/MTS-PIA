@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 
-from core.csta.pipelines import (
-    _run_act_pipeline,
-    _run_act_rc4_multiz_fused_pipeline,
-    _run_act_zpia_template_pool_pipeline,
-)
+from core.csta.pipeline_registry import run_pipeline_for_algo
 from core.csta.result_rows import (
     build_failure_result_row,
     build_success_result_row,
@@ -45,9 +42,11 @@ def run_experiment(dataset_name, args):
         print(f"Seed {seed}...")
         try:
             train_trials, test_trials, val_trials = make_trial_split(all_trials, seed=seed, val_ratio=args.val_ratio)
+            t_state0 = time.perf_counter()
             train_recs, mean_log = _build_trial_records(train_trials)
             test_recs, _ = _build_trial_records(test_trials)
             val_recs, _ = _build_trial_records(val_trials)
+            cov_state_compute_sec = time.perf_counter() - t_state0
 
             X_train_raw = np.stack([record.x_raw for record in train_recs])
             y_train = np.asarray([record.y for record in train_recs], dtype=np.int64)
@@ -60,101 +59,25 @@ def run_experiment(dataset_name, args):
                 y_val = np.asarray([record.y for record in val_recs], dtype=np.int64)
 
             X_train_z = np.stack([record.z for record in train_recs])
-            if args.algo == "zpia_top1_pool":
-                pipeline_out = _run_act_zpia_template_pool_pipeline(
-                    args=args,
-                    seed=seed,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                    algo_label="zpia_top1_pool",
-                    top1_only=True,
-                )
-            elif args.algo == "zpia_multidir_pool":
-                pipeline_out = _run_act_zpia_template_pool_pipeline(
-                    args=args,
-                    seed=seed,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                    algo_label="zpia_multidir_pool",
-                    top1_only=False,
-                )
-            elif args.algo == "rc4_multiz_fused":
-                pipeline_out = _run_act_rc4_multiz_fused_pipeline(
-                    args=args,
-                    seed=seed,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                )
-            elif args.algo == "pia":
-                pipeline_out = _run_act_pipeline(
-                    args=args,
-                    seed=seed,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                )
-            else:
-                # Default to base ACT pipeline for lraes/zpia
-                pipeline_out = _run_act_pipeline(
-                    args=args,
-                    seed=seed,
-                    X_train_raw=X_train_raw,
-                    y_train=y_train,
-                    X_val_raw=X_val_raw,
-                    y_val=y_val,
-                    X_test_raw=X_test_raw,
-                    y_test=y_test,
-                    X_train_z=X_train_z,
-                    train_recs=train_recs,
-                    mean_log=mean_log,
-                    epochs=epochs,
-                    lr=lr,
-                    batch_size=batch_size,
-                    patience=patience,
-                )
+            common_pipeline_kwargs = {
+                "args": args,
+                "seed": seed,
+                "X_train_raw": X_train_raw,
+                "y_train": y_train,
+                "X_val_raw": X_val_raw,
+                "y_val": y_val,
+                "X_test_raw": X_test_raw,
+                "y_test": y_test,
+                "X_train_z": X_train_z,
+                "train_recs": train_recs,
+                "mean_log": mean_log,
+                "epochs": epochs,
+                "lr": lr,
+                "batch_size": batch_size,
+                "patience": patience,
+            }
+            pipeline_out = run_pipeline_for_algo(args, common_pipeline_kwargs)
+            pipeline_out.setdefault("cov_state_compute_sec", float(cov_state_compute_sec))
             summary = build_success_result_row(
                 dataset_name=dataset_name,
                 seed=seed,

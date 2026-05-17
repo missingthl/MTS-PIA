@@ -15,8 +15,17 @@ protocol summaries and audit outputs
 For a shorter "where do I look first?" map, see:
 
 ```text
+docs/WORKFLOW.md
+docs/ACT_ENGINEERING_SCOPE.md
 docs/DIRECTORY_GUIDE.md
 ```
+
+`docs/WORKFLOW.md` is the preferred operational entrypoint.  It names the
+canonical run layers, the readiness check, and which artifacts support E1,
+Final20, backbone robustness, and mechanism-only claims.
+
+This project-structure document is scoped to `ACT_ManifoldBridge` only.  It
+does not classify adjacent standalone projects or root-level scripts/results.
 
 ## Layout
 
@@ -126,9 +135,13 @@ core/csta/materialize.py
   z-space candidate materialization through the whitening-coloring bridge and
   bridge/candidate metric aggregation.
 
-core/csta/augment_builders.py
-  Compatibility re-export shim for historical imports.  New implementation
-  logic should live in the mechanism-specific builder modules below.
+core/csta/aug_dataset.py
+  On-the-fly CSTA manifold augmentation dataset.  This owns bridge-backed
+  lazy augmentation materialization for weighted augmentation training.
+
+core/csta/aug_training_utils.py
+  CSTA augmentation-training helpers such as tau scheduling and focal margin
+  weighting.
 
 core/csta/act_builder.py
   Base ACT/LRAES/zPIA realized augmentation and feedback margin scoring.
@@ -141,7 +154,10 @@ core/csta/rc4_osf_builders.py
 
 core/csta/pipelines.py
   High-level training pipeline orchestration for ACT/CSTA, zPIA template-pool,
-  RC4 fused, multi-z fused, and feedback variants.
+  RC4 fused, multi-z fused, and feedback variants.  Operator-style generation
+  engines share a common ResNet1D concat-augmentation training helper here, so
+  new engine branches should only provide their `build_*_aug_out` call and
+  method label.
 
 core/csta/experiment.py
   Dataset/seed loop, train/val/test split preparation, pipeline dispatch,
@@ -151,6 +167,15 @@ core/csta/experiment.py
 core/csta/result_rows.py
   Centralized success/failure row construction, direction-bank metadata merge,
   CSTA diagnostic merge, and candidate-audit summary write/merge.
+
+core/csta/result_schema.py
+  Shared diagnostic/result field lists for CSTA generation-engine families.
+  Pipelines, result-row construction, and runner passthrough should use this
+  schema instead of duplicating field lists.
+
+core/csta/schema_audit.py
+  Lightweight checks for duplicate result fields and runner passthrough
+  coverage.  Use it before trusting a newly added generation-engine field.
 
 core/csta/cli.py
   Argument parser, argument validation, dataset selection, and final CSV writing
@@ -164,6 +189,10 @@ core/csta/direction_banks.py
 
 core/csta/training.py
   Thin backbone-training dispatch wrappers used by `run_act_pilot.py`.
+
+core/csta/pipeline_registry.py
+  Static ACT/CSTA pipeline dispatch table.  This keeps generation-engine
+  routing out of `experiment.py` without introducing dynamic plugins.
 
 run_act_pilot.py
   Thin public entrypoint that preserves environment-thread defaults and calls
@@ -185,6 +214,9 @@ core/mptsnet.py
 core/moderntcn.py
   Backbone implementations.
 
+These are ACT/CSTA host adapters, not guaranteed mirrors of root-level
+`models/`.  See `docs/BACKBONES.md` for ownership and synchronization rules.
+
 Backbone files are currently kept at the top level of `core/` for compatibility
 with existing imports.  If more backbones are added, move them under a dedicated
 `core/backbones/` package and keep thin compatibility shims for:
@@ -203,10 +235,6 @@ utils/evaluators.py
 utils/backbone_trainers.py
   Unified hard/soft/jobDA/manifold-mixup backbone dispatch.
 
-utils/external_baselines.py
-  Compatibility facade that re-exports external augmentation methods from
-  `utils/external_baseline_methods/`.
-
 utils/external_baseline_methods/
   Method-specific external baseline implementations: raw transforms, Mixup,
   DBA/wDBA, SPAWNER-style, RGW/DGW, JobDA-cleanroom, TimeVAE-style generators,
@@ -220,12 +248,23 @@ utils/external_runner_registry.py
   External-runner method registry, phase arm groups, CSTA passthrough fields,
   method metadata, CSTA policy mapping, and locked-result-root guard.
 
+utils/csta_method_commands.py
+  CSTA-internal arm to `run_act_pilot.py` command builder.  This keeps
+  generation-engine CLI arguments out of the external matrix runner.
+
 utils/external_baseline_manifest.py
   Searchable catalog that maps every external/CSTA sampling arm to its
   implementation file, runner name, method family, source space, and caveats.
 
 scripts/run_external_baselines_phase1.py
-  Current general external-baseline runner despite the historical name.
+  Current general external-baseline runner despite the historical name.  It now
+  keeps dataset/seed orchestration, method-family execution helpers, incremental
+  summary writes, and failure-row handling separated so CSTA arms, external
+  augmentation arms, JobDA, and manifold-mixup can be audited independently.
+
+scripts/audit_csta_schema.py
+  CLI wrapper for the CSTA schema audit.  Run with `--fail-on-warning` during
+  engineering refactors that touch result fields or passthrough metrics.
 
 scripts/list_external_baselines.py
   Prints the external baseline catalog as a table or CSV.
@@ -254,6 +293,10 @@ docs/EXTERNAL_BASELINE_PAPERS.md
 docs/DIRECTORY_GUIDE.md
   Short directory map that explains the CSTA flow, external-baseline flow, and
   why `external/` is a vendor-code directory rather than the method matrix.
+
+docs/MECHANISM_EXPLORATION_STATUS.md
+  Status map for canonical U5, CSTA controls, and exploratory generation
+  engines.  Use it before treating a registered method as paper-facing.
 ```
 
 ## Result Policy

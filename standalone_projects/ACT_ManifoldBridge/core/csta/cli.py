@@ -28,6 +28,28 @@ def main():
             "rc4_multiz_fused",
             "ao_fisher",
             "ao_contrastive",
+            "ag_target_direct",
+            "ag_pia_single",
+            "ag_pia_multihead5",
+            "cs_flow_target_direct",
+            "cs_flow_single_step",
+            "latent_residual_direct",
+            "latent_residual_flow",
+            "task_guided_residual_direct",
+            "task_guided_latent_residual_flow",
+            "lc_residual_direct",
+            "lc_latent_residual_flow",
+            "spg_pia_zhead",
+            "spg_pia_zhead_deterministic",
+            "ecl_spg_pia_zhead",
+            "ecl_spg_pia_zhead_deterministic",
+            "rn_ecl_spg_pia_zhead",
+            "rn_ecl_spg_pia_zhead_deterministic",
+            "gi_spg_pia_zhead",
+            "spg_cfm_one_step",
+            "spg_cfm_k3",
+            "spg_cfm_film_one_step",
+            "spg_cfm_align_one_step",
         ],
         default="lraes",
     )
@@ -85,6 +107,60 @@ def main():
     parser.add_argument("--template-source", type=str, choices=["zpia", "pca", "random_orth"], default="zpia")
     parser.add_argument("--group-size", type=int, default=5)
     parser.add_argument("--eta-safe", type=float, default=0.75)
+    parser.add_argument("--ag-k-pos", type=int, default=5)
+    parser.add_argument("--ag-k-neg", type=int, default=5)
+    parser.add_argument("--ag-lambda-tangent", type=float, default=0.5)
+    parser.add_argument("--ag-lambda-inter", type=float, default=0.25)
+    parser.add_argument("--ag-hidden-dim", type=int, default=0)
+    parser.add_argument("--ag-ridge", type=float, default=1e-3)
+    parser.add_argument("--ag-activation", type=str, choices=["tanh", "sigmoid", "none"], default="tanh")
+    parser.add_argument("--cs-flow-epochs", type=int, default=50)
+    parser.add_argument("--cs-flow-batch-size", type=int, default=128)
+    parser.add_argument("--cs-flow-lr", type=float, default=1e-3)
+    parser.add_argument("--cs-flow-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--cs-flow-k-same", type=int, default=5)
+    parser.add_argument("--cs-flow-hidden-layers", type=int, default=2)
+    parser.add_argument("--cs-flow-hidden-width", type=int, default=0)
+    parser.add_argument("--cs-flow-class-embedding-dim", type=int, default=0)
+    parser.add_argument("--cs-flow-t-gen", type=float, default=0.0)
+    parser.add_argument("--latent-flow-epochs", type=int, default=50)
+    parser.add_argument("--latent-flow-batch-size", type=int, default=128)
+    parser.add_argument("--latent-flow-lr", type=float, default=1e-3)
+    parser.add_argument("--latent-flow-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--latent-hidden-layers", type=int, default=2)
+    parser.add_argument("--latent-hidden-width", type=int, default=0)
+    parser.add_argument("--latent-class-embedding-dim", type=int, default=0)
+    parser.add_argument("--latent-lambda-cos", type=float, default=0.5)
+    parser.add_argument("--latent-rbf-tau-floor", type=float, default=1e-12)
+    parser.add_argument("--task-guidance-beta", type=float, default=1.0)
+    parser.add_argument("--task-guidance-margin-min", type=float, default=0.0)
+    parser.add_argument("--task-guidance-lambda-margin", type=float, default=1.0)
+    parser.add_argument("--task-guidance-warmup-epochs", type=int, default=10)
+    parser.add_argument("--task-guidance-max-candidates", type=int, default=0)
+    parser.add_argument("--lc-beta", type=float, default=1.0)
+    parser.add_argument("--lc-margin-floor", type=float, default=0.0)
+    parser.add_argument("--lc-gamma-eps", type=float, default=1e-12)
+    parser.add_argument("--lc-warmup-epochs", type=int, default=10)
+    parser.add_argument("--lc-max-candidates", type=int, default=0)
+    parser.add_argument("--spg-zhead-epochs", type=int, default=50)
+    parser.add_argument("--spg-zhead-hidden-dim", type=int, default=0)
+    parser.add_argument("--spg-zhead-lr", type=float, default=1e-3)
+    parser.add_argument("--spg-zhead-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--spg-zhead-batch-size", type=int, default=128)
+    parser.add_argument("--spg-projection-ridge", type=float, default=1e-6)
+    parser.add_argument("--spg-noise-sigma", type=float, default=0.1)
+    parser.add_argument("--gi-spg-hidden-dim", type=int, default=0)
+    parser.add_argument("--gi-spg-ridge", type=float, default=1e-3)
+    parser.add_argument("--gi-spg-activation", type=str, choices=["tanh", "sigmoid", "none"], default="tanh")
+    parser.add_argument("--spg-cfm-flow-epochs", type=int, default=50)
+    parser.add_argument("--spg-cfm-flow-batch-size", type=int, default=128)
+    parser.add_argument("--spg-cfm-flow-lr", type=float, default=1e-3)
+    parser.add_argument("--spg-cfm-flow-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--spg-cfm-hidden-layers", type=int, default=2)
+    parser.add_argument("--spg-cfm-hidden-width", type=int, default=0)
+    parser.add_argument("--spg-cfm-class-embedding-dim", type=int, default=0)
+    parser.add_argument("--spg-cfm-lambda-cos", type=float, default=0.5)
+    parser.add_argument("--spg-cfm-lambda-align", type=float, default=0.05)
     parser.add_argument("--audit-method-label", type=str, default="")
     args = parser.parse_args()
 

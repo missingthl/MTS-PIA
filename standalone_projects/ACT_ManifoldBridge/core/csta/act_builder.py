@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+import time
 import numpy as np
 import pandas as pd
 import torch
 
 from core.bridge import bridge_single, logvec_to_spd
 from core.curriculum import active_direction_probs, build_curriculum_aug_candidates
-from utils.evaluators import ManifoldAugDataset
+from core.csta.aug_dataset import ManifoldAugDataset
 
 from .direction_banks import build_direction_bank_for_args as _build_direction_bank_for_args
 from .state import TrialRecord
@@ -122,6 +123,8 @@ def _build_act_realized_augmentations(
     bridge_metrics: List[Dict[str, object]] = []
     audit_rows: List[Dict[str, object]] = []
     candidate_rows = list(aug_meta.get("candidate_rows", []))
+    
+    t0_bridge = time.perf_counter()
     for i in range(len(z_aug)):
         src = tid_to_rec[tid_aug[i]]
         sigma_aug = logvec_to_spd(z_aug[i], mean_log)
@@ -154,6 +157,8 @@ def _build_act_realized_augmentations(
             }
         )
         audit_rows.append(audit)
+    t1_bridge = time.perf_counter()
+    bridge_realization_sec = t1_bridge - t0_bridge
 
     X_aug_raw = np.stack([trial["x"] for trial in aug_trials]) if aug_trials else None
     y_aug_np = np.asarray([trial["y"] for trial in aug_trials], dtype=np.int64) if aug_trials else None
@@ -199,5 +204,6 @@ def _build_act_realized_augmentations(
         "eta_safe": eta_safe,
         "candidate_total_count": int(len(z_aug)),
         "aug_total_count": int(len(z_aug)),
+        "bridge_realization_sec": bridge_realization_sec,
         "aug_dataset": aug_dataset_out,
     }

@@ -1,8 +1,7 @@
-from __future__ import annotations
-
+import time
 from typing import Callable, Dict
 
-from utils.external_baselines import (
+from utils.external_baseline_methods import (
     ExternalAugResult,
     dba_sameclass,
     dgw_sameclass,
@@ -21,10 +20,56 @@ from utils.external_baselines import (
     rgw_sameclass,
     spawner_sameclass_style,
     timevae_classwise_optional,
+    timegan_classwise,
     timevqvae_classwise,
     wdba_sameclass,
 )
 from utils.external_runner_registry import parse_csv
+
+
+RAW_SAMPLE_METHODS = {
+    "raw_aug_jitter",
+    "raw_aug_scaling",
+    "raw_aug_timewarp",
+    "raw_aug_magnitude_warping",
+    "raw_aug_window_slicing",
+    "raw_aug_window_warping",
+    "raw_mixup",
+    "raw_smote_flatten_balanced",
+    "random_cov_state",
+    "pca_cov_state",
+    "spawner_sameclass_style",
+    "jobda_cleanroom",
+}
+
+DTW_ALIGNMENT_METHODS = {
+    "dba_sameclass",
+    "wdba_sameclass",
+    "rgw_sameclass",
+    "dgw_sameclass",
+}
+
+GENERATOR_METHODS = {
+    "timevae_classwise_optional",
+    "timegan_classwise",
+    "diffusionts_classwise",
+    "timevqvae_classwise",
+}
+
+
+def _sum_present_seconds(meta: dict, keys: tuple[str, ...]) -> float:
+    total = 0.0
+    found = False
+    for key in keys:
+        value = meta.get(key)
+        if value is None:
+            continue
+        try:
+            total += float(value)
+            found = True
+        except (TypeError, ValueError):
+            continue
+    return total if found else float("nan")
 
 
 def build_external_aug(method: str, X_train, y_train, args, seed: int, n_classes: int) -> ExternalAugResult:
@@ -132,6 +177,19 @@ def build_external_aug(method: str, X_train, y_train, args, seed: int, n_classes
             min_class_size=args.timevae_min_class_size,
             device=args.device,
         ),
+        "timegan_classwise": lambda: timegan_classwise(
+            X_train,
+            y_train,
+            multiplier=args.multiplier,
+            seed=seed,
+            epochs=args.timegan_epochs,
+            batch_size=args.timegan_batch_size,
+            lr=args.timegan_lr,
+            hidden_dim=args.timegan_hidden_dim,
+            latent_dim=args.timegan_latent_dim,
+            min_class_size=args.timegan_min_class_size,
+            device=args.device,
+        ),
         "diffusionts_classwise": lambda: diffusionts_classwise(
             X_train,
             y_train,
@@ -170,4 +228,34 @@ def build_external_aug(method: str, X_train, y_train, args, seed: int, n_classes
     }
     if method not in builders:
         raise ValueError(f"No external augmenter registered for method={method}")
-    return builders[method]()
+    t0 = time.perf_counter()
+    res = builders[method]()
+    elapsed = time.perf_counter() - t0
+
+    # E1 cost attribution: keep total aug cost available for all methods, and
+    # populate the method-family-specific bucket expected by the audit tables.
+    meta = res.meta
+    if method in RAW_SAMPLE_METHODS:
+        meta.setdefault("sample_gen_sec", float(elapsed))
+    elif method in DTW_ALIGNMENT_METHODS:
+        meta.setdefault("dtw_alignment_sec", float(elapsed))
+    elif method in GENERATOR_METHODS:
+        # Generative adapters should ideally report fit/sample split internally.
+        # If an adapter cannot, keep a conservative generator-fit attribution.
+        if "generator_fit_sec" not in meta and "sample_gen_sec" not in meta:
+            meta.setdefault("generator_fit_sec", float(elapsed))
+
+    if "aug_cost_sec" not in meta:
+        split_total = _sum_present_seconds(
+            meta,
+            (
+                "generator_fit_sec",
+                "sample_gen_sec",
+                "dtw_alignment_sec",
+                "cov_state_compute_sec",
+                "bridge_realization_sec",
+            ),
+        )
+        meta["aug_cost_sec"] = float(elapsed) if split_total != split_total else float(split_total)
+
+    return res

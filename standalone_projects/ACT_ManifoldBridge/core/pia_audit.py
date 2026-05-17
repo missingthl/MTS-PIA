@@ -21,6 +21,7 @@ P0_CANDIDATE_AUDIT_COLUMNS = [
     "activation_tau",
     "safe_generator",
     "bridge_realizer",
+    "direction_source",
     "candidate_uid",
     "anchor_index",
     "tid",
@@ -77,6 +78,68 @@ P0_CANDIDATE_AUDIT_COLUMNS = [
     "post_bridge_reject_reason",
     "candidate_status",
     "reject_reason",
+    "ag_head_id",
+    "ag_target_norm",
+    "ag_pred_norm",
+    "ag_pred_target_cosine",
+    "ag_tangent_available",
+    "ag_pos_neighbor_count",
+    "ag_neg_neighbor_count",
+    "ag_pos_dist",
+    "ag_neg_centroid_dist",
+    "ag_fallback_flag",
+    "ag_fallback_reason",
+    "cs_flow_t",
+    "cs_flow_target_index",
+    "cs_flow_target_class",
+    "cs_flow_target_dist",
+    "cs_flow_velocity_norm",
+    "cs_flow_pred_target_cosine",
+    "cs_flow_fallback_flag",
+    "cs_flow_fallback_reason",
+    "latent_s",
+    "latent_eps_norm",
+    "latent_target_index",
+    "latent_target_class",
+    "latent_target_dist",
+    "latent_target_sampling_prob",
+    "latent_target_sampling_prob_geo",
+    "latent_residual_norm",
+    "latent_pred_velocity_norm",
+    "latent_pred_target_cosine",
+    "latent_fallback_flag",
+    "latent_fallback_reason",
+    "task_utility",
+    "task_margin",
+    "task_guidance_fallback_flag",
+    "task_guidance_fallback_reason",
+    "lc_utility",
+    "lc_margin",
+    "lc_margin_target",
+    "lc_fallback_flag",
+    "lc_fallback_reason",
+    "spg_grad_norm",
+    "spg_projected_grad_norm",
+    "spg_projection_energy",
+    "spg_cfm_t",
+    "spg_cfm_steps",
+    "spg_cfm_eps_norm",
+    "spg_cfm_pred_velocity_norm",
+    "spg_cfm_r_hat_norm",
+    "spg_cfm_alignment_to_spg",
+    "spg_condition_norm",
+    "ecl_projection_energy",
+    "ecl_alpha",
+    "ecl_alignment_to_projected_gradient",
+    "ecl_support_noise_norm",
+    "ecl_fallback_flag",
+    "ecl_fallback_reason",
+    "rn_ecl_projection_energy",
+    "rn_ecl_alpha",
+    "rn_ecl_alignment_to_projected_gradient",
+    "rn_ecl_support_noise_norm",
+    "rn_ecl_fallback_flag",
+    "rn_ecl_fallback_reason",
 ]
 
 
@@ -103,10 +166,131 @@ def normalize_candidate_audit_rows(
     activation_policy: str,
     eta_safe: Optional[float],
 ) -> pd.DataFrame:
-    operator_meta = pia_operator_metadata(activation_policy)
     out: List[Dict[str, object]] = []
     for fallback_slot, row_in in enumerate(rows):
         row = dict(row_in)
+        operator_meta = pia_operator_metadata(activation_policy)
+        if str(row.get("direction_source", "")) == "ag_pia_operator":
+            operator_meta = {
+                "operator_name": "AG-PIA",
+                "dictionary_estimator": "augmentation_field_generalized_inverse",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_operator",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "cs_flow_operator":
+            operator_meta = {
+                "operator_name": "CS-Flow",
+                "dictionary_estimator": "one_step_flow_matching",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_flow",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "latent_residual_flow_operator":
+            operator_meta = {
+                "operator_name": "Latent Residual Flow",
+                "dictionary_estimator": "latent_residual_distribution",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_latent_residual",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "task_guided_latent_residual_operator":
+            operator_meta = {
+                "operator_name": "Task-Guided Latent Residual Flow",
+                "dictionary_estimator": "task_reweighted_latent_residual_distribution",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_task_guided_latent_residual",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "label_consistent_latent_residual_operator":
+            operator_meta = {
+                "operator_name": "Label-Consistent Latent Residual Flow",
+                "dictionary_estimator": "label_consistent_boundary_reweighted_residual_distribution",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_label_consistent_latent_residual",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "support_projected_gradient_operator":
+            operator_meta = {
+                "operator_name": "SPG-PIA",
+                "dictionary_estimator": "telm2_support_projection",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_support_projected_gradient",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "energy_calibrated_langevin_spg_operator":
+            operator_meta = {
+                "operator_name": "ECL-SPG-PIA",
+                "dictionary_estimator": "telm2_support_projection",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_energy_calibrated_langevin_support_projected_gradient",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "rank_normalized_ecl_spg_operator":
+            operator_meta = {
+                "operator_name": "RN-ECL-SPG-PIA",
+                "dictionary_estimator": "telm2_support_projection",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_rank_normalized_ecl_support_projected_gradient",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "spg_conditioned_cfm_operator":
+            operator_meta = {
+                "operator_name": "SPG-CFM",
+                "dictionary_estimator": "spg_conditioned_flow_matching",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_cfm",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "spg_conditioned_cfm_film_operator":
+            operator_meta = {
+                "operator_name": "SPG-CFM-FiLM",
+                "dictionary_estimator": "spg_conditioned_flow_matching_film",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_cfm_film",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
+        if str(row.get("direction_source", "")) == "spg_conditioned_cfm_align_operator":
+            operator_meta = {
+                "operator_name": "SPG-CFM-Align",
+                "dictionary_estimator": "spg_conditioned_flow_matching_align",
+                "activation_policy": str(row.get("selector_name", activation_policy)),
+                "activation_scope": "anchor_conditioned_cfm_align",
+                "activation_topk": np.nan,
+                "activation_tau": np.nan,
+                "safe_generator": "local_margin_safe_step",
+                "bridge_realizer": "whitening_coloring",
+            }
         tid = row.get("tid", "")
         candidate_order = row.get("candidate_order", fallback_slot)
         slot_index = row.get("slot_index", fallback_slot)
@@ -140,6 +324,7 @@ def normalize_candidate_audit_rows(
                 "seed": int(seed),
                 "method": str(method),
                 **operator_meta,
+                "direction_source": str(row.get("direction_source", "")),
                 "candidate_uid": make_candidate_uid(
                     dataset=str(dataset),
                     seed=int(seed),
@@ -203,6 +388,72 @@ def normalize_candidate_audit_rows(
                 "post_bridge_reject_reason": str(row.get("post_bridge_reject_reason", "")),
                 "candidate_status": candidate_status,
                 "reject_reason": reject_reason,
+                "ag_head_id": _to_int(row.get("ag_head_id", -1)),
+                "ag_target_norm": _to_float(row.get("ag_target_norm", np.nan)),
+                "ag_pred_norm": _to_float(row.get("ag_pred_norm", np.nan)),
+                "ag_pred_target_cosine": _to_float(row.get("ag_pred_target_cosine", np.nan)),
+                "ag_tangent_available": bool(row.get("ag_tangent_available", False)),
+                "ag_pos_neighbor_count": _to_int(row.get("ag_pos_neighbor_count", -1)),
+                "ag_neg_neighbor_count": _to_int(row.get("ag_neg_neighbor_count", -1)),
+                "ag_pos_dist": _to_float(row.get("ag_pos_dist", np.nan)),
+                "ag_neg_centroid_dist": _to_float(row.get("ag_neg_centroid_dist", np.nan)),
+                "ag_fallback_flag": bool(row.get("ag_fallback_flag", False)),
+                "ag_fallback_reason": str(row.get("ag_fallback_reason", "")),
+                "cs_flow_t": _to_float(row.get("cs_flow_t", np.nan)),
+                "cs_flow_target_index": _to_int(row.get("cs_flow_target_index", -1)),
+                "cs_flow_target_class": _to_int(row.get("cs_flow_target_class", -1)),
+                "cs_flow_target_dist": _to_float(row.get("cs_flow_target_dist", np.nan)),
+                "cs_flow_velocity_norm": _to_float(row.get("cs_flow_velocity_norm", np.nan)),
+                "cs_flow_pred_target_cosine": _to_float(row.get("cs_flow_pred_target_cosine", np.nan)),
+                "cs_flow_fallback_flag": bool(row.get("cs_flow_fallback_flag", False)),
+                "cs_flow_fallback_reason": str(row.get("cs_flow_fallback_reason", "")),
+                "latent_s": _to_float(row.get("latent_s", np.nan)),
+                "latent_eps_norm": _to_float(row.get("latent_eps_norm", np.nan)),
+                "latent_target_index": _to_int(row.get("latent_target_index", -1)),
+                "latent_target_class": _to_int(row.get("latent_target_class", -1)),
+                "latent_target_dist": _to_float(row.get("latent_target_dist", np.nan)),
+                "latent_target_sampling_prob": _to_float(row.get("latent_target_sampling_prob", np.nan)),
+                "latent_target_sampling_prob_geo": _to_float(row.get("latent_target_sampling_prob_geo", np.nan)),
+                "latent_residual_norm": _to_float(row.get("latent_residual_norm", np.nan)),
+                "latent_pred_velocity_norm": _to_float(row.get("latent_pred_velocity_norm", np.nan)),
+                "latent_pred_target_cosine": _to_float(row.get("latent_pred_target_cosine", np.nan)),
+                "latent_fallback_flag": bool(row.get("latent_fallback_flag", False)),
+                "latent_fallback_reason": str(row.get("latent_fallback_reason", "")),
+                "task_utility": _to_float(row.get("task_utility", np.nan)),
+                "task_margin": _to_float(row.get("task_margin", np.nan)),
+                "task_guidance_fallback_flag": bool(row.get("task_guidance_fallback_flag", False)),
+                "task_guidance_fallback_reason": str(row.get("task_guidance_fallback_reason", "")),
+                "lc_utility": _to_float(row.get("lc_utility", np.nan)),
+                "lc_margin": _to_float(row.get("lc_margin", np.nan)),
+                "lc_margin_target": _to_float(row.get("lc_margin_target", np.nan)),
+                "lc_fallback_flag": bool(row.get("lc_fallback_flag", False)),
+                "lc_fallback_reason": str(row.get("lc_fallback_reason", "")),
+                "spg_grad_norm": _to_float(row.get("spg_grad_norm", np.nan)),
+                "spg_projected_grad_norm": _to_float(row.get("spg_projected_grad_norm", np.nan)),
+                "spg_projection_energy": _to_float(row.get("spg_projection_energy", np.nan)),
+                "spg_cfm_t": _to_float(row.get("spg_cfm_t", np.nan)),
+                "spg_cfm_steps": _to_int(row.get("spg_cfm_steps", -1)),
+                "spg_cfm_eps_norm": _to_float(row.get("spg_cfm_eps_norm", np.nan)),
+                "spg_cfm_pred_velocity_norm": _to_float(row.get("spg_cfm_pred_velocity_norm", np.nan)),
+                "spg_cfm_r_hat_norm": _to_float(row.get("spg_cfm_r_hat_norm", np.nan)),
+                "spg_cfm_alignment_to_spg": _to_float(row.get("spg_cfm_alignment_to_spg", np.nan)),
+                "spg_condition_norm": _to_float(row.get("spg_condition_norm", np.nan)),
+                "ecl_projection_energy": _to_float(row.get("ecl_projection_energy", np.nan)),
+                "ecl_alpha": _to_float(row.get("ecl_alpha", np.nan)),
+                "ecl_alignment_to_projected_gradient": _to_float(
+                    row.get("ecl_alignment_to_projected_gradient", np.nan)
+                ),
+                "ecl_support_noise_norm": _to_float(row.get("ecl_support_noise_norm", np.nan)),
+                "ecl_fallback_flag": bool(row.get("ecl_fallback_flag", False)),
+                "ecl_fallback_reason": str(row.get("ecl_fallback_reason", "")),
+                "rn_ecl_projection_energy": _to_float(row.get("rn_ecl_projection_energy", np.nan)),
+                "rn_ecl_alpha": _to_float(row.get("rn_ecl_alpha", np.nan)),
+                "rn_ecl_alignment_to_projected_gradient": _to_float(
+                    row.get("rn_ecl_alignment_to_projected_gradient", np.nan)
+                ),
+                "rn_ecl_support_noise_norm": _to_float(row.get("rn_ecl_support_noise_norm", np.nan)),
+                "rn_ecl_fallback_flag": bool(row.get("rn_ecl_fallback_flag", False)),
+                "rn_ecl_fallback_reason": str(row.get("rn_ecl_fallback_reason", "")),
             }
         )
     df = pd.DataFrame(out)
@@ -252,6 +503,40 @@ def summarize_candidate_audit(df: pd.DataFrame) -> Dict[str, object]:
         "fidelity_score": "fidelity_score_mean_audit",
         "variety_score": "variety_score_mean_audit",
         "fv_score": "fv_score_mean_audit",
+        "ag_target_norm": "ag_target_norm_mean_audit",
+        "ag_pred_norm": "ag_pred_norm_mean_audit",
+        "ag_pred_target_cosine": "ag_pred_target_cosine_mean_audit",
+        "ag_pos_dist": "ag_pos_dist_mean_audit",
+        "ag_neg_centroid_dist": "ag_neg_centroid_dist_mean_audit",
+        "cs_flow_target_dist": "cs_flow_target_dist_mean_audit",
+        "cs_flow_velocity_norm": "cs_flow_velocity_norm_mean_audit",
+        "cs_flow_pred_target_cosine": "cs_flow_pred_target_cosine_mean_audit",
+        "latent_target_dist": "latent_target_dist_mean_audit",
+        "latent_target_sampling_prob": "latent_target_sampling_prob_mean_audit",
+        "latent_target_sampling_prob_geo": "latent_target_sampling_prob_geo_mean_audit",
+        "latent_residual_norm": "latent_residual_norm_mean_audit",
+        "latent_pred_velocity_norm": "latent_pred_velocity_norm_mean_audit",
+        "latent_pred_target_cosine": "latent_pred_target_cosine_mean_audit",
+        "task_utility": "task_utility_mean_audit",
+        "task_margin": "task_margin_mean_audit",
+        "task_guidance_fallback_flag": "task_guidance_fallback_rate_audit",
+        "lc_utility": "lc_utility_mean_audit",
+        "lc_margin": "lc_margin_mean_audit",
+        "lc_margin_target": "lc_margin_target_mean_audit",
+        "lc_fallback_flag": "lc_fallback_rate_audit",
+        "spg_grad_norm": "spg_grad_norm_mean_audit",
+        "spg_projected_grad_norm": "spg_projected_grad_norm_mean_audit",
+        "spg_projection_energy": "spg_projection_energy_mean_audit",
+        "ecl_projection_energy": "ecl_projection_energy_mean_audit",
+        "ecl_alpha": "ecl_alpha_mean_audit",
+        "ecl_alignment_to_projected_gradient": "ecl_alignment_to_projected_gradient_mean_audit",
+        "ecl_support_noise_norm": "ecl_support_noise_norm_mean_audit",
+        "ecl_fallback_flag": "ecl_fallback_rate_audit",
+        "rn_ecl_projection_energy": "rn_ecl_projection_energy_mean_audit",
+        "rn_ecl_alpha": "rn_ecl_alpha_mean_audit",
+        "rn_ecl_alignment_to_projected_gradient": "rn_ecl_alignment_to_projected_gradient_mean_audit",
+        "rn_ecl_support_noise_norm": "rn_ecl_support_noise_norm_mean_audit",
+        "rn_ecl_fallback_flag": "rn_ecl_fallback_rate_audit",
     }
     for col, key in numeric_aggs.items():
         if col in df:
@@ -265,6 +550,14 @@ def summarize_candidate_audit(df: pd.DataFrame) -> Dict[str, object]:
             probs = counts.astype(np.float64) / max(float(counts.sum()), 1.0)
             out["template_usage_entropy_audit"] = float(-np.sum(probs * np.log(probs + 1e-12)))
             out["top_template_concentration_audit"] = float(probs.max())
+    if "ag_tangent_available" in df:
+        out["ag_tangent_available_rate_audit"] = float(df["ag_tangent_available"].astype(float).mean())
+    if "ag_fallback_flag" in df:
+        out["ag_fallback_rate_audit"] = float(df["ag_fallback_flag"].astype(float).mean())
+    if "cs_flow_fallback_flag" in df:
+        out["cs_flow_fallback_rate_audit"] = float(df["cs_flow_fallback_flag"].astype(float).mean())
+    if "latent_fallback_flag" in df:
+        out["latent_fallback_rate_audit"] = float(df["latent_fallback_flag"].astype(float).mean())
     physics = validate_candidate_audit_physics(df)
     out.update(physics)
     for col in [

@@ -136,12 +136,26 @@ Archived as negative result. Not part of main method.
 
 ---
 
-## 9. Cross-Backbone Robustness (Pilot7)
+## 9. Cross-Backbone Robustness
 
-**Source**: `backbone_robustness_moderntcn_v1/` (ModernTCN), `pilot_patchtst_v1/` (PatchTST)
+**Governance entry**: `docs/BACKBONE_U5_MATRIX.md`
 
-CSTA-U5 maintains gains across ModernTCN and PatchTST backbones.
-Full Final20 cross-backbone table pending.
+**Generated artifacts**: `backbone_u5_matrix_v1/`
+
+| Backbone | Scope | Evidence Tier | Mean Delta vs No Aug | W/T/L | Paper Role |
+|----------|-------|---------------|-----------------------|-------|------------|
+| ResNet1D | Final20 | canonical | +0.0405 | 39/7/14 | Main method host |
+| ModernTCN | Final20 | rebuilt_final20 | +0.0696 | 46/2/12 | Robustness evidence |
+| MiniRocket | Final20 | best_available_recovery | +0.0089 | 25/14/18 | Model-agnostic robustness evidence |
+| PatchTST | Final20 | best_available_recovery | +0.0243 | 39/5/15 | Transformer robustness evidence |
+| TimesNet | Final20 | best_available_recovery | +0.0906 | 41/1/13 | Transformer robustness evidence |
+| MPTSNet | Pilot7 | pilot_only_u5 | +0.0563 | 16/0/5 | Pilot/probe only |
+
+Guardrail: backbone results are robustness evidence, not external augmentation
+baselines.  MiniRocket, PatchTST, and TimesNet rows should keep their
+recovery/deduplication caveat unless a clean consolidated root is created.
+`full_scale_resnet1d_v1/` remains non-canonical despite having similar numbers;
+the canonical ResNet1D U5 row is `csta_pia_final20/resnet1d_s123/`.
 
 ---
 

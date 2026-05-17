@@ -3,6 +3,18 @@
 This guide is the quick mental model for the ACT/CSTA repository.  It exists
 because several directory names are historical and can otherwise be misleading.
 
+## Audit Scope
+
+This guide treats `standalone_projects/ACT_ManifoldBridge/` as the whole
+engineering scope.  Adjacent standalone projects and root-level scripts/results
+are out of scope for ACT maintainability decisions.
+
+See:
+
+```text
+docs/ACT_ENGINEERING_SCOPE.md
+```
+
 ## Top-Level Meaning
 
 ```text
@@ -22,6 +34,9 @@ utils/
 
 utils/external_baseline_methods/
   The actual project-native external baseline implementations.
+  Paper-facing group facades live under:
+  `temporal_vicinal/`, `deep_generative/`, `alignment_structure/`, and
+  `internal_controls/`.
 
 external/
   Vendored third-party repositories only.  This is not the external comparison
@@ -39,6 +54,27 @@ references/
 
 docs/
   Human-readable method, protocol, baseline, and engineering structure notes.
+```
+
+## Result Governance Entrypoints
+
+Before reading scattered result roots directly, start from:
+
+```text
+results/CANONICAL_RESULTS.md
+  Paper-facing primary result guardrails.
+
+docs/BACKBONE_U5_MATRIX.md
+  Auditable U5 backbone robustness matrix.
+
+docs/EXPERIMENT_MATRIX_INDEX.md
+  Global index of per_seed_external.csv roots and their evidence tier.
+
+docs/MECHANISM_EXPLORATION_STATUS.md
+  Status map for U5, controls, and exploratory generation engines.
+
+results/experiment_matrix_index_v1/experiment_matrix_index_report.md
+  Generated overview of existing experiment roots.
 ```
 
 ## External Baseline Flow
@@ -76,7 +112,7 @@ Historical release-era arms such as `mba_core_lraes`,
 `mba_core_rc4_fused_concat`, and `mba_core_zpia_top1_pool` are defined by:
 
 ```text
-scripts/run_mba_vs_rc4_matrix.py
+archive/release_legacy/scripts/run_mba_vs_rc4_matrix.py
   release-era internal arm specs
     ↓
 run_act_pilot.py
@@ -91,6 +127,9 @@ internal methods:
 ```text
 scripts/run_external_baselines_phase1.py
   fair matrix runner for external + CSTA arms
+    ↓
+utils/csta_method_commands.py
+  CSTA arm -> `run_act_pilot.py` command mapping
     ↓
 run_act_pilot.py
     ↓
@@ -117,6 +156,11 @@ core/timesnet.py
 core/mptsnet.py
 core/moderntcn.py
 ```
+
+Important: ACT backbone files are project-native host adapters, not guaranteed
+mirrors of root-level `models/`.  In particular, ACT's `core/resnet1d.py`
+exposes ACT-side `encode()` / `classify()` helpers.  See `docs/BACKBONES.md`
+before synchronizing or replacing backbone files.
 
 Training dispatch is split by experiment owner:
 
@@ -156,6 +200,9 @@ core/csta/cli.py
     ↓
 core/csta/experiment.py
   dataset/seed loop and pipeline dispatch
+    ↓
+core/csta/pipeline_registry.py
+  static algo -> pipeline handler routing
     ↓
 core/csta/pipelines.py
   CSTA/PIA pipeline orchestration

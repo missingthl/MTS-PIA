@@ -18,7 +18,7 @@ def diffusionts_classwise(
     """Classwise Diffusion-TS generator with classifier guidance."""
     from utils.diffusionts_wrapper import fit_sample_diffusionts
 
-    X_aug, y_aug = fit_sample_diffusionts(
+    X_aug, y_aug, timing_meta = fit_sample_diffusionts(
         X_train_ct=X_train,
         y_train=y_train,
         multiplier=multiplier,
@@ -26,7 +26,14 @@ def diffusionts_classwise(
         device=device,
         max_epochs=max_epochs,
         batch_size=batch_size,
+        return_meta=True,
     )
+    meta = {
+        "diffusionts_max_epochs": float(max_epochs),
+        "target_aug_ratio": float(multiplier),
+        "actual_aug_ratio": float(X_aug.shape[0]) / max(float(len(X_train)), 1.0),
+    }
+    meta.update({key: float(value) for key, value in timing_meta.items()})
 
     return ExternalAugResult(
         X_aug=X_aug,
@@ -37,9 +44,5 @@ def diffusionts_classwise(
         library_name="Diffusion-TS",
         budget_matched=True,
         selection_rule="classwise_diffusionts_classifier_guidance",
-        meta={
-            "diffusionts_max_epochs": float(max_epochs),
-            "target_aug_ratio": float(multiplier),
-            "actual_aug_ratio": float(X_aug.shape[0]) / max(float(len(X_train)), 1.0),
-        },
+        meta=meta,
     )

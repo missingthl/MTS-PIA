@@ -37,13 +37,17 @@ Phase 2, Phase 3, and CSTA sampling arms.
 ## Code Map
 
 ```text
-utils/external_baselines.py
-  Compatibility facade for historical imports.
-
 utils/external_baseline_methods/
   Method-specific offline augmentation implementations:
   raw transforms, Mixup generation, DBA/wDBA, SPAWNER-style, RGW/DGW,
   JobDA-cleanroom, TimeVAE-style, SMOTE, random/PCA covariance-state controls.
+
+utils/external_baseline_methods/temporal_vicinal/
+utils/external_baseline_methods/deep_generative/
+utils/external_baseline_methods/alignment_structure/
+utils/external_baseline_methods/internal_controls/
+  Paper-facing group facades for the main comparison table and mechanism
+  controls.  See `docs/EXTERNAL_BASELINE_GROUPS.md`.
 
 utils/external_aug_dispatch.py
   Method-to-augmenter dispatch used by the matrix runner.

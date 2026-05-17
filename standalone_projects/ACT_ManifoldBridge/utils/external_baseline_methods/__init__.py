@@ -18,6 +18,7 @@ from utils.external_baseline_methods.rgw import rgw_sameclass
 from utils.external_baseline_methods.smote import raw_smote_flatten_balanced
 from utils.external_baseline_methods.spawner import spawner_sameclass_style
 from utils.external_baseline_methods.timevae import timevae_classwise_optional
+from utils.external_baseline_methods.timegan import timegan_classwise
 from utils.external_baseline_methods.timevqvae import timevqvae_classwise
 from utils.external_baseline_methods.wdba import wdba_sameclass
 
@@ -41,6 +42,7 @@ __all__ = [
     "spawner_sameclass_style",
     "time_series_warping_cleanroom",
     "timevae_classwise_optional",
+    "timegan_classwise",
     "timevqvae_classwise",
     "wdba_sameclass",
 ]

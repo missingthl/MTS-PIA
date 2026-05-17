@@ -15,15 +15,23 @@ class ModernTCNClassifier(nn.Module):
             patch_size = 2
             patch_stride = 1
             num_blocks = [1, 1]
-            large_size = [13, 11]
-            small_size = [5, 5]
+            large_size = [7, 5] # reduced
+            small_size = [3, 3]
             dims = [64, 128]
             dw_dims = [64, 128]
-        elif seq_len < 96:
+        elif seq_len < 64:
             patch_size = 4
             patch_stride = 2
             num_blocks = [1, 1, 1]
-            large_size = [17, 15, 13]
+            large_size = [13, 11, 7] # reduced
+            small_size = [5, 5, 5]
+            dims = [64, 64, 128]
+            dw_dims = [64, 64, 128]
+        elif seq_len < 160: # Case for handwriting (152)
+            patch_size = 8
+            patch_stride = 4
+            num_blocks = [1, 1, 1] # reduce stages to 3 instead of 4
+            large_size = [31, 15, 7]
             small_size = [5, 5, 5]
             dims = [64, 64, 128]
             dw_dims = [64, 64, 128]
@@ -67,10 +75,5 @@ class ModernTCNClassifier(nn.Module):
         
     def forward(self, x):
         # x is [B, C, L]
-        # ModernTCN expects [B, L, C] inside forward (it will permute internally if needed, 
-        # wait! Let's check: core/moderntcn.py line 508 does x = x.permute(0, 2, 1) assuming input is [B, L, C]!)
-        # If our framework passes [B, C, L], and ModernTCN permutes it to [B, C, L] internally assuming it was [B, L, C]...
-        # Wait! If input is [B, C, L], we should permute it to [B, L, C] so ModernTCN permutes it BACK to [B, C, L].
-        # Let's permute just in case.
-        x = x.permute(0, 2, 1) # to [B, L, C]
+        # ModernTCN expects [B, C, L] where M=C (variables) and L=L (time)
         return self.model(x, None, None, None)
