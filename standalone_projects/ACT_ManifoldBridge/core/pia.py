@@ -659,9 +659,7 @@ def build_ao_pia_direction_bank(
     )
 
     # --- Normalize directions ---
-    # We must ensure we return exactly k_dir directions, even if z_dim < k_dir
-    # by padding with random unit directions if needed.
-    bank = np.zeros((k_dir, z_dim), dtype=np.float64)
+    bank = np.zeros((k_actual, z_dim), dtype=np.float64)
     for i in range(k_actual):
         v = eigvecs[:, i].copy()
         nrm = float(np.linalg.norm(v))
@@ -672,15 +670,6 @@ def build_ao_pia_direction_bank(
             v[i % z_dim] = 1.0
         bank[i] = _canonicalize_axis(v)
 
-    # Pad if k_dir > k_actual
-    pad_count = k_dir - k_actual
-    if pad_count > 0:
-        rng = np.random.default_rng(int(seed) + 999)
-        for i in range(pad_count):
-            v = rng.standard_normal(z_dim)
-            v /= (np.linalg.norm(v) + eps)
-            bank[k_actual + i] = _canonicalize_axis(v)
-
     row_norms = np.linalg.norm(bank, axis=1)
 
     # --- Meta ---
@@ -688,7 +677,7 @@ def build_ao_pia_direction_bank(
     eig_finite = eigvals[np.isfinite(eigvals)]
     meta: Dict[str, object] = {
         "bank_source": mode,
-        "k_dir": k_dir,
+        "k_dir": k_actual,
         "z_dim": z_dim,
         "n_train": int(Z.shape[0]),
         "rho_scale": float(rho_scale),
@@ -707,12 +696,7 @@ def build_ao_pia_direction_bank(
         "eig_max": float(np.max(eig_finite)) if eig_finite.size > 0 else np.nan,
         "eig_fallback": bool(eig_fallback),
         "eig_fallback_reason": eig_fallback_reason,
-        "eig_direction_count": k_actual,
-        "direction_pad_count": int(pad_count),
-        "direction_pad_mode": "seeded_random_unit" if pad_count > 0 else "none",
         "response_centering": "class_residual",
-        "positive_pair_mode": "same_class_knn",
-        "negative_pair_mode": "class_balanced_per_other_class_knn" if mode == "ao_contrastive" else "none",
         "direction_norm_mean": float(np.mean(row_norms)),
         "direction_norm_min": float(np.min(row_norms)),
         "direction_norm_max": float(np.max(row_norms)),

@@ -67,18 +67,29 @@ Selected datasets from `final20_main_comparison_v1`:
 
 ---
 
-## 5. Ablation — Direction Source (Pilot7)
+## 5. Direction Specificity / Control Ablation (Pilot7)
 
-**Source**: `csta_neurips_ablation_v1/`
+**Source**: `csta_direction_specificity_stress_v1/resnet1d_s123/`
 
-Direction bank variants (all with uniform_topk selection, eta_safe=0.75):
+These rows separate three different notions that were previously easy to conflate:
+full covariance-state random directions, random sampling inside the TELM2/PIA bank,
+and UniformTop5 sampling from high-response TELM2/PIA templates.
 
-| Direction Source | Mean F1 (Pilot7) |
-|-----------------|-------------------|
-| TELM2 (zpia) | 0.6652 (best) |
-| PCA | — |
-| Random Orthogonal | — |
-| Random | — |
+| Method / Control | Mean F1 (Pilot7) | Interpretation |
+|------------------|------------------|----------------|
+| wDBA | 0.6679 | strongest DTW external reference |
+| **CSTA-U5 / TELM2 UniformTop5** | **0.6652** | canonical CSTA/PIA Pilot7 policy |
+| DBA | 0.6633 | strong DTW external reference |
+| PIA bank-random | 0.6535 | random template sampling inside TELM2 dictionary |
+| CSTA Top1 | 0.6486 | greedy highest-response template |
+| Full Random Cov-State | 0.6481 | full covariance-state random direction control |
+| PCA Cov-State | 0.6470 | train-only PCA direction control |
+
+Conclusion: TELM2 bank-random is above full random covariance on mean, but
+UniformTop5 is substantially stronger. This supports the view that TELM2
+provides a useful candidate space and high-response neighborhood sampling is
+important; it does not support an overclaim that CSTA clearly beats wDBA on
+Pilot7.
 
 ---
 
@@ -92,6 +103,12 @@ Direction bank variants (all with uniform_topk selection, eta_safe=0.75):
 | top1 | 0.6505 |
 
 Conclusion: uniform-topK > top1. Diversity in high-response neighborhood matters.
+
+Note: `csta_sampling_v1` is a historical sampling-policy sweep. The formal
+canonical Pilot7 CSTA-U5 row is the eta-safe-aligned result above
+(`csta_direction_specificity_stress_v1` / etafix protocol, mean F1 `0.6652`).
+Use `0.6630` only when discussing the historical sampling sweep, not as the
+canonical Pilot7 headline.
 
 ---
 
@@ -119,12 +136,26 @@ Archived as negative result. Not part of main method.
 
 ---
 
-## 9. Cross-Backbone Robustness (Pilot7)
+## 9. Cross-Backbone Robustness
 
-**Source**: `backbone_robustness_moderntcn_v1/` (ModernTCN), `pilot_patchtst_v1/` (PatchTST)
+**Governance entry**: `docs/BACKBONE_U5_MATRIX.md`
 
-CSTA-U5 maintains gains across ModernTCN and PatchTST backbones.
-Full Final20 cross-backbone table pending.
+**Generated artifacts**: `backbone_u5_matrix_v1/`
+
+| Backbone | Scope | Evidence Tier | Mean Delta vs No Aug | W/T/L | Paper Role |
+|----------|-------|---------------|-----------------------|-------|------------|
+| ResNet1D | Final20 | canonical | +0.0405 | 39/7/14 | Main method host |
+| ModernTCN | Final20 | rebuilt_final20 | +0.0696 | 46/2/12 | Robustness evidence |
+| MiniRocket | Final20 | best_available_recovery | +0.0089 | 25/14/18 | Model-agnostic robustness evidence |
+| PatchTST | Final20 | best_available_recovery | +0.0243 | 39/5/15 | Transformer robustness evidence |
+| TimesNet | Final20 | best_available_recovery | +0.0906 | 41/1/13 | Transformer robustness evidence |
+| MPTSNet | Pilot7 | pilot_only_u5 | +0.0563 | 16/0/5 | Pilot/probe only |
+
+Guardrail: backbone results are robustness evidence, not external augmentation
+baselines.  MiniRocket, PatchTST, and TimesNet rows should keep their
+recovery/deduplication caveat unless a clean consolidated root is created.
+`full_scale_resnet1d_v1/` remains non-canonical despite having similar numbers;
+the canonical ResNet1D U5 row is `csta_pia_final20/resnet1d_s123/`.
 
 ---
 
@@ -160,3 +191,6 @@ Full Final20 cross-backbone table pending.
 | `csta_pia_final20/` | **0.75** | ✅ CANONICAL |
 
 All paper tables MUST use eta_safe=0.75 results.
+
+The public CLI and external runner defaults now align with the canonical
+`eta_safe=0.75` setting to reduce accidental config drift.

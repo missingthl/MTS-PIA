@@ -79,6 +79,13 @@ def normalize_activation_policy(policy: str) -> Dict[str, object]:
             "activation_topk": 5,
             "activation_tau": np.nan,
         }
+    if name in {"random", "random_within_bank", "csta_bank_random"}:
+        return {
+            "activation_policy": "random_within_bank",
+            "activation_scope": "single_anchor",
+            "activation_topk": np.nan,
+            "activation_tau": np.nan,
+        }
     if name == "group_top":
         return {
             "activation_policy": "group_top",

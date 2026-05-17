@@ -34,6 +34,20 @@ AEON_FIXED_SPLIT_SPECS: Dict[str, AeonFixedSplitSpec] = {
     "ering": AeonFixedSplitSpec("ering", "ERing", 1.0),
     "motorimagery": AeonFixedSplitSpec("motorimagery", "MotorImagery", 1.0),
     "ethanolconcentration": AeonFixedSplitSpec("ethanolconcentration", "EthanolConcentration", 1.0),
+    # UEA30 additions staged under data/UEA30_aeon/.  These keep the downloaded
+    # aeon archive separate from the older hand-maintained data/<Dataset> tree.
+    "charactertrajectories": AeonFixedSplitSpec("charactertrajectories", "CharacterTrajectories", 1.0),
+    "duckduckgeese": AeonFixedSplitSpec("duckduckgeese", "DuckDuckGeese", 1.0),
+    "eigenworms": AeonFixedSplitSpec("eigenworms", "EigenWorms", 1.0),
+    "facedetection": AeonFixedSplitSpec("facedetection", "FaceDetection", 1.0),
+    "insectwingbeat": AeonFixedSplitSpec("insectwingbeat", "InsectWingbeat", 1.0),
+    "lsst": AeonFixedSplitSpec("lsst", "LSST", 1.0),
+    "pems-sf": AeonFixedSplitSpec("pems-sf", "PEMS-SF", 1.0),
+    "pemssf": AeonFixedSplitSpec("pemssf", "PEMS-SF", 1.0),
+    "phonemespectra": AeonFixedSplitSpec("phonemespectra", "PhonemeSpectra", 1.0),
+    "selfregulationscp1": AeonFixedSplitSpec("selfregulationscp1", "SelfRegulationSCP1", 1.0),
+    "spokenarabicdigits": AeonFixedSplitSpec("spokenarabicdigits", "SpokenArabicDigits", 1.0),
+    "standwalkjump": AeonFixedSplitSpec("standwalkjump", "StandWalkJump", 1.0),
 }
 
 def _resolve_dataset_root(dataset_name: str) -> Path:
@@ -48,7 +62,7 @@ def _resolve_dataset_root(dataset_name: str) -> Path:
     }
     candidates = [dataset_name] + aliases.get(dataset_name.lower(), [])
     
-    for base in [local_data, main_data]:
+    for base in [local_data, local_data / "UEA30_aeon", main_data, main_data / "UEA30_aeon"]:
         for cand in candidates:
             # Try direct name
             p = base / cand

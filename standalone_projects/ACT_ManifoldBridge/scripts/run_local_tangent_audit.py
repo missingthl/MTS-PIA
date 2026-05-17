@@ -20,7 +20,7 @@ from core.local_tangent_audit import (  # noqa: E402
     summarize_candidate_audit,
 )
 from core.pia import build_pca_direction_bank, build_zpia_direction_bank  # noqa: E402
-from run_act_pilot import _build_trial_records  # noqa: E402
+from core.csta.state import build_trial_records  # noqa: E402
 from utils.datasets import load_trials_for_dataset, make_trial_split  # noqa: E402
 
 
@@ -50,7 +50,7 @@ def _parse_tangent_dim(value: str) -> int | str:
 def _load_train_states(dataset: str, seed: int, *, val_ratio: float):
     all_trials = load_trials_for_dataset(dataset)
     train_trials, _test_trials, _val_trials = make_trial_split(all_trials, seed=seed, val_ratio=val_ratio)
-    train_records, _mean_log = _build_trial_records(train_trials)
+    train_records, _mean_log = build_trial_records(train_trials)
     if not train_records:
         raise RuntimeError(f"No train records loaded for {dataset} seed={seed}")
     Z = np.stack([r.z for r in train_records], axis=0).astype(np.float64)

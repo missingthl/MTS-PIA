@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import torch
 import numpy as np
 from pathlib import Path
@@ -38,12 +39,30 @@ class DiffusionTSNumpyDataset(Dataset):
     def shift_period(self, period):
         self.period = period
 
-def fit_sample_diffusionts(X_train_ct, y_train, multiplier, seed, device="cpu", max_epochs=1000, batch_size=128):
+def fit_sample_diffusionts(
+    X_train_ct,
+    y_train,
+    multiplier,
+    seed,
+    device="cpu",
+    max_epochs=1000,
+    batch_size=128,
+    return_meta=False,
+):
     """
     Wrapper for Diffusion-TS class-conditional generation.
     X_train_ct: (N, C, T)
     """
+    meta = {
+        "diffusionts_preprocess_sec": 0.0,
+        "generator_fit_sec": 0.0,
+        "diffusionts_classifier_guidance_fit_sec": 0.0,
+        "sample_gen_sec": 0.0,
+        "aug_cost_sec": 0.0,
+    }
+
     # 1. Preprocessing: Reshape and Scale
+    t_pre0 = time.perf_counter()
     N, C, T = X_train_ct.shape
     X_train_tc = np.transpose(X_train_ct, (0, 2, 1)) # (N, T, C)
     
@@ -136,14 +155,19 @@ def fit_sample_diffusionts(X_train_ct, y_train, multiplier, seed, device="cpu", 
     classifier = Classifier(**config['classifier']['params']).to(device_obj)
     
     trainer = Trainer(config=config, args=args, model=model, dataloader=dl_info)
+    meta["diffusionts_preprocess_sec"] = time.perf_counter() - t_pre0
     
     # 4. Train
     try:
         print(f"Training Diffusion-TS for {max_epochs} epochs...")
+        t_fit0 = time.perf_counter()
         trainer.train()
+        meta["generator_fit_sec"] = time.perf_counter() - t_fit0
         
         print(f"Training Classifier Guidance for {max_epochs} epochs...")
+        t_cls0 = time.perf_counter()
         trainer.train_classfier(classifier)
+        meta["diffusionts_classifier_guidance_fit_sec"] = time.perf_counter() - t_cls0
     except Exception as e:
         print(f"Diffusion-TS training failed: {e}")
         import traceback
@@ -153,6 +177,7 @@ def fit_sample_diffusionts(X_train_ct, y_train, multiplier, seed, device="cpu", 
     # 5. Sample
     try:
         print(f"Sampling augmented data (multiplier={multiplier})...")
+        t_sample0 = time.perf_counter()
         X_aug_list = []
         y_aug_list = []
         
@@ -190,12 +215,27 @@ def fit_sample_diffusionts(X_train_ct, y_train, multiplier, seed, device="cpu", 
             y_aug_list.append(np.full(num_to_sample, cls))
             
         if not X_aug_list:
-            return np.empty((0, C, T)), np.empty((0,))
+            meta["sample_gen_sec"] = time.perf_counter() - t_sample0
+            meta["aug_cost_sec"] = (
+                float(meta["diffusionts_preprocess_sec"])
+                + float(meta["generator_fit_sec"])
+                + float(meta["diffusionts_classifier_guidance_fit_sec"])
+                + float(meta["sample_gen_sec"])
+            )
+            empty = (np.empty((0, C, T)), np.empty((0,)))
+            return (*empty, meta) if return_meta else empty
             
         X_aug = np.concatenate(X_aug_list, axis=0)
         y_aug = np.concatenate(y_aug_list, axis=0)
+        meta["sample_gen_sec"] = time.perf_counter() - t_sample0
+        meta["aug_cost_sec"] = (
+            float(meta["diffusionts_preprocess_sec"])
+            + float(meta["generator_fit_sec"])
+            + float(meta["diffusionts_classifier_guidance_fit_sec"])
+            + float(meta["sample_gen_sec"])
+        )
         
-        return X_aug, y_aug
+        return (X_aug, y_aug, meta) if return_meta else (X_aug, y_aug)
     except Exception as e:
         print(f"Diffusion-TS sampling failed: {e}")
         import traceback

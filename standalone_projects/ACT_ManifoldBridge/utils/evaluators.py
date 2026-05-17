@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import itertools
-import math
-import os
 import random
 import copy
+import time
 from typing import Any, Callable, Dict, List, Tuple, Optional
 
 import numpy as np
@@ -14,124 +13,20 @@ import torch.nn.functional as F
 import torch.optim as optim
 from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader, Dataset, TensorDataset
-from aeon.classification.convolution_based import MultiRocketHydraClassifier
+from aeon.classification.convolution_based import MiniRocketClassifier
 
 # Local imports
 from core.resnet1d import ResNet1DClassifier
 from core.patchtst import PatchTST
 from core.timesnet import TimesNet
 from core.mptsnet import MPTSNetClassifier, infer_periods_from_train
+from core.csta.aug_dataset import ManifoldAugDataset
+from core.csta.aug_training_utils import TauScheduler, ManifoldAugDataLoader, focal_margin_weight as _focal_margin_weight
 
 
 # ---------------------------------------------------------------------------
-# V2 Components: On-the-fly Dataset, Temperature Scheduler, Focal Weighting
+# V2 Components: kept as compatibility imports from core.csta.*
 # ---------------------------------------------------------------------------
-
-class ManifoldAugDataset(Dataset):
-    """
-    On-the-fly augmentation dataset for ACT ManifoldBridge V2.
-
-    Memory layout: stores only lightweight (x_raw, sigma_orig, z_cand) tuples.
-    The full bridge computation (logvec_to_spd + bridge_single) is deferred
-    to __getitem__, eliminating the need to pre-materialise X_aug_raw in memory.
-
-    This directly resolves the 'cold-start OOM' and low augmentation throughput
-    issues present in the static-array pipeline.
-    """
-
-    def __init__(
-        self,
-        anchor_x_raws: List[np.ndarray],
-        anchor_sigma_origs: List[np.ndarray],
-        z_cands: np.ndarray,
-        y_cands: np.ndarray,
-        mean_log: np.ndarray,
-    ) -> None:
-        assert len(anchor_x_raws) == len(anchor_sigma_origs) == len(z_cands) == len(y_cands), (
-            "ManifoldAugDataset: all input lists must have equal length"
-        )
-        self._x_raws = anchor_x_raws
-        self._sigma_origs = anchor_sigma_origs
-        self._z_cands = np.asarray(z_cands, dtype=np.float32)
-        self._y_cands = np.asarray(y_cands, dtype=np.int64)
-        self._mean_log = np.asarray(mean_log, dtype=np.float64)
-
-    def __len__(self) -> int:
-        return int(self._z_cands.shape[0])
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Lazy import to avoid circular dependency at module load time
-        from core.bridge import bridge_single, logvec_to_spd  # noqa: PLC0415
-        sigma_aug = logvec_to_spd(self._z_cands[idx], self._mean_log)
-        x_aug, _ = bridge_single(
-            torch.from_numpy(self._x_raws[idx]),
-            torch.from_numpy(self._sigma_origs[idx]),
-            torch.from_numpy(sigma_aug),
-        )
-        return x_aug.float(), torch.tensor(int(self._y_cands[idx]), dtype=torch.long)
-
-
-class TauScheduler:
-    """
-    Cosine-annealing temperature scheduler for augmentation soft-gating.
-
-    - Exploration phase  [0, warmup_epochs):        tau = tau_max  (high temp, permissive)
-    - Annealing phase    [warmup_epochs, total]:    cosine decay tau_max -> tau_min
-
-    Usage::
-
-        sched = TauScheduler(total_epochs=30, tau_max=2.0, tau_min=0.1, warmup_ratio=0.3)
-        for epoch in range(30):
-            tau = sched.get_tau(epoch)   # use per epoch
-    """
-
-    def __init__(
-        self,
-        total_epochs: int,
-        tau_max: float = 2.0,
-        tau_min: float = 0.1,
-        warmup_ratio: float = 0.3,
-    ) -> None:
-        self.total_epochs = max(1, int(total_epochs))
-        self.tau_max = float(tau_max)
-        self.tau_min = float(tau_min)
-        self.warmup_epochs = int(self.total_epochs * max(0.0, min(1.0, float(warmup_ratio))))
-
-    def get_tau(self, epoch: int) -> float:
-        if int(epoch) < self.warmup_epochs:
-            return self.tau_max
-        anneal_epochs = max(1, self.total_epochs - self.warmup_epochs)
-        progress = min(1.0, float(epoch - self.warmup_epochs) / float(anneal_epochs))
-        cosine_val = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return float(self.tau_min + (self.tau_max - self.tau_min) * cosine_val)
-
-
-def _focal_margin_weight(
-    margin: torch.Tensor,
-    tau: float,
-    low_clip: float = -5.0,
-    high_clip: float = 5.0,
-    easy_floor: float = 0.1,
-) -> torch.Tensor:
-    """
-    U-shape (Focal Margin) weighting for augmented samples.
-
-    Assigns:
-    - Weight ≈ 1.0  for samples near the decision boundary  (margin ≈ 0)
-    - Weight ≈ easy_floor  for trivially-easy samples       (margin >> 0)
-    - Weight ≈ 0.0  for clearly-wrong/noise samples         (margin << 0)
-
-    This drives the model to expand its decision boundary instead of
-    over-protecting already-mastered regions.
-    """
-    tau_val = max(float(tau), 1e-6)
-    m = margin.clamp(float(low_clip), float(high_clip))
-    # Rising portion: weight grows from 0 as margin increases from low_clip
-    hard_weight = torch.sigmoid((m - float(low_clip) / 2.0) / tau_val)
-    # Falling portion: penalise samples that are too easy (margin >> 0)
-    easy_penalty = torch.sigmoid((m - float(high_clip) / 2.0) / tau_val)
-    w = hard_weight * (1.0 - (1.0 - float(easy_floor)) * easy_penalty)
-    return w.clamp(0.0, 1.0).detach()
 
 class EarlyStopping:
     def __init__(self, patience=10, min_delta=0, mode='min'):
@@ -162,11 +57,32 @@ class EarlyStopping:
             self.counter = 0
 
 def build_model(n_kernels: int = 10000, random_state: int = 42, n_jobs: int = 1):
-    return MultiRocketHydraClassifier(
+    return MiniRocketClassifier(
         n_kernels=n_kernels,
         random_state=random_state,
         n_jobs=n_jobs
     )
+
+def _ensure_minirocket_compatible(X: np.ndarray) -> np.ndarray:
+    """Ensure X has fixed length and T >= 9."""
+    if isinstance(X, list):
+        # Handle variable length list of arrays
+        max_t = max(max([x.shape[-1] for x in X]), 9)
+        n_samples = len(X)
+        n_channels = X[0].shape[0]
+        X_padded = np.zeros((n_samples, n_channels, max_t), dtype=np.float32)
+        for i, x in enumerate(X):
+            X_padded[i, :, :x.shape[-1]] = x
+        return X_padded
+    
+    # Check if 3D array has enough timepoints
+    if X.ndim == 3:
+        n_samples, n_channels, n_timepoints = X.shape
+        if n_timepoints < 9:
+            X_padded = np.zeros((n_samples, n_channels, 9), dtype=X.dtype)
+            X_padded[:, :, :n_timepoints] = X
+            return X_padded
+    return X
 
 def fit_eval_minirocket(
     model,
@@ -175,6 +91,20 @@ def fit_eval_minirocket(
     X_test: np.ndarray,
     y_test: np.ndarray,
 ) -> Dict[str, float]:
+    # Robust Padding
+    X_train = _ensure_minirocket_compatible(X_train)
+    X_test = _ensure_minirocket_compatible(X_test)
+    
+    # Ensure train and test have same length
+    if X_train.shape[-1] != X_test.shape[-1]:
+        max_t = max(X_train.shape[-1], X_test.shape[-1])
+        def pad_to(X, target_t):
+            res = np.zeros((X.shape[0], X.shape[1], target_t), dtype=X.dtype)
+            res[:, :, :X.shape[-1]] = X
+            return res
+        X_train = pad_to(X_train, max_t)
+        X_test = pad_to(X_test, max_t)
+
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
     return {
@@ -186,6 +116,17 @@ def fit_eval_minirocket(
 def _get_dev(device_str):
     use_cuda = torch.cuda.is_available() and str(device_str).startswith("cuda")
     return torch.device(device_str if use_cuda else "cpu")
+
+
+def _reset_peak_memory(dev: torch.device) -> None:
+    if dev.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(dev)
+
+
+def _peak_memory_mb(dev: torch.device) -> float:
+    if dev.type != "cuda":
+        return 0.0
+    return float(torch.cuda.max_memory_allocated(dev) / (1024 * 1024))
 
 
 def _set_training_seed(seed: Optional[int]) -> None:
@@ -345,6 +286,9 @@ def fit_eval_pytorch_model(
     best_val_loss = float('inf')
     stop_epoch = epochs
     
+    t0 = time.perf_counter()
+    _reset_peak_memory(dev)
+
     for epoch in range(epochs):
         model.train()
         train_loss = 0
@@ -379,12 +323,18 @@ def fit_eval_pytorch_model(
         
     _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
     
+    # E1 Audit: Finalize metrics
+    elapsed = time.perf_counter() - t0
+    peak_mem = _peak_memory_mb(dev)
+
     res = {
         "accuracy": t_acc,
         "macro_f1": t_f1,
         "best_val_f1": best_val_f1,
         "best_val_loss": best_val_loss,
         "stop_epoch": stop_epoch,
+        "downstream_train_sec": elapsed,
+        "peak_gpu_mem_mb": peak_mem,
     }
     if return_model_obj:
         res["model_obj"] = model  # Return for theory probing
@@ -436,6 +386,9 @@ def fit_eval_pytorch_model_jobda_joint_labels(
     best_val_loss = float('inf')
     stop_epoch = int(epochs)
 
+    t0 = time.perf_counter()
+    _reset_peak_memory(dev)
+
     for epoch in range(int(epochs)):
         model.train()
         for bx, by_joint in train_loader:
@@ -483,6 +436,8 @@ def fit_eval_pytorch_model_jobda_joint_labels(
         "best_val_f1": best_val_f1,
         "best_val_loss": best_val_loss,
         "stop_epoch": stop_epoch,
+        "downstream_train_sec": time.perf_counter() - t0,
+        "peak_gpu_mem_mb": _peak_memory_mb(dev),
     }
     if return_model_obj:
         res["model_obj"] = model
@@ -574,6 +529,9 @@ def fit_eval_pytorch_model_soft_labels(
     best_val_loss = float('inf')
     stop_epoch = epochs
 
+    t0 = time.perf_counter()
+    _reset_peak_memory(dev)
+
     for epoch in range(epochs):
         model.train()
         for bx, by_soft in train_loader:
@@ -610,6 +568,8 @@ def fit_eval_pytorch_model_soft_labels(
         "best_val_f1": best_val_f1,
         "best_val_loss": best_val_loss,
         "stop_epoch": stop_epoch,
+        "downstream_train_sec": time.perf_counter() - t0,
+        "peak_gpu_mem_mb": _peak_memory_mb(dev),
     }
     if return_model_obj:
         res["model_obj"] = model
@@ -663,6 +623,9 @@ def fit_eval_pytorch_model_manifold_mixup(
     stop_epoch = epochs
     rng = np.random.default_rng(None if loader_seed is None else int(loader_seed))
 
+    t0 = time.perf_counter()
+    _reset_peak_memory(dev)
+
     for epoch in range(int(epochs)):
         model.train()
         for bx, by in train_loader:
@@ -708,6 +671,8 @@ def fit_eval_pytorch_model_manifold_mixup(
         "best_val_loss": best_val_loss,
         "stop_epoch": stop_epoch,
         "manifold_mixup_alpha": float(mixup_alpha),
+        "downstream_train_sec": time.perf_counter() - t0,
+        "peak_gpu_mem_mb": _peak_memory_mb(dev),
     }
     if return_model_obj:
         res["model_obj"] = model
@@ -920,6 +885,7 @@ def fit_eval_pytorch_model_weighted_aug_ce(
         aug_loader: Optional[DataLoader] = DataLoader(
             aug_dataset, batch_size=batch_size, shuffle=True, generator=_aug_gen
         )
+        aug_loader = ManifoldAugDataLoader(aug_loader, dev, aug_dataset._mean_log)
         _use_onthefly = True
     elif X_aug is not None and y_aug is not None and len(y_aug) > 0:
         aug_loader = _make_tensor_loader(
@@ -958,6 +924,9 @@ def fit_eval_pytorch_model_weighted_aug_ce(
     lambda_aug = float(aug_loss_weight)
     current_tau = max(1e-6, float(feedback_margin_temperature))  # updated per epoch below
 
+    t0 = time.perf_counter()
+    _reset_peak_memory(dev)
+
     for epoch in range(epochs):
         model.train()
 
@@ -975,7 +944,9 @@ def fit_eval_pytorch_model_weighted_aug_ce(
             # ── Anchor-Shield: Balanced Batch Sampling (Sprint 5) ────────────────
             # Orig loader drives the epoch. Aug loader cycles infinitely to fill the batch.
             aug_iter = itertools.cycle(aug_loader)
-            for bx, by in orig_loader:
+            for step_idx, (bx, by) in enumerate(orig_loader):
+                if int(steps_per_epoch) > 0 and step_idx >= int(steps_per_epoch):
+                    break
                 bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
                 
                 try:
@@ -1019,7 +990,9 @@ def fit_eval_pytorch_model_weighted_aug_ce(
                 optimizer.step()
         else:
             # Fallback for pure baseline/legacy if no aug loader exists
-            for bx, by in orig_loader:
+            for step_idx, (bx, by) in enumerate(orig_loader):
+                if int(steps_per_epoch) > 0 and step_idx >= int(steps_per_epoch):
+                    break
                 bx, by = bx.to(dev, non_blocking=True), by.to(dev, non_blocking=True)
                 optimizer.zero_grad()
                 logits = model(bx)
@@ -1051,6 +1024,11 @@ def fit_eval_pytorch_model_weighted_aug_ce(
         model.load_state_dict(early_stopping.best_model_state)
 
     _, t_acc, t_f1 = _evaluate(model, test_loader, dev, criterion)
+    
+    # E1 Audit: Finalize metrics
+    elapsed = time.perf_counter() - t0
+    peak_mem = _peak_memory_mb(dev)
+
     weights_np = np.asarray(weight_values, dtype=np.float64)
     return {
         "accuracy": t_acc,
@@ -1058,6 +1036,8 @@ def fit_eval_pytorch_model_weighted_aug_ce(
         "best_val_f1": best_val_f1,
         "best_val_loss": best_val_loss,
         "stop_epoch": stop_epoch,
+        "downstream_train_sec": elapsed,
+        "peak_gpu_mem_mb": peak_mem,
         "feedback_weight_mean": float(np.mean(weights_np)) if weights_np.size else 0.0,
         "feedback_weight_std": float(np.std(weights_np)) if weights_np.size else 0.0,
         "last_orig_ce_loss": float(last_orig_ce_loss),
@@ -1183,6 +1163,7 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
         aug_loaders["lraes"] = DataLoader(
             aug_dataset_lraes, batch_size=batch_size, shuffle=True, generator=_gen_l
         )
+        aug_loaders["lraes"] = ManifoldAugDataLoader(aug_loaders["lraes"], dev, aug_dataset_lraes._mean_log)
         _use_onthefly_lraes = True
     elif X_aug_lraes is not None and y_aug_lraes is not None and len(y_aug_lraes) > 0:
         aug_loaders["lraes"] = _make_tensor_loader(
@@ -1199,6 +1180,7 @@ def fit_eval_pytorch_model_adaptive_aug_ce(
         aug_loaders["zpia"] = DataLoader(
             aug_dataset_zpia, batch_size=batch_size, shuffle=True, generator=_gen_z
         )
+        aug_loaders["zpia"] = ManifoldAugDataLoader(aug_loaders["zpia"], dev, aug_dataset_zpia._mean_log)
         _use_onthefly_zpia = True
     elif X_aug_zpia is not None and y_aug_zpia is not None and len(y_aug_zpia) > 0:
         aug_loaders["zpia"] = _make_tensor_loader(

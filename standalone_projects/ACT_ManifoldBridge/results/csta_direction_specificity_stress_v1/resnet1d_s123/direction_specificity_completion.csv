@@ -1,0 +1,6 @@
+method,expected_rows,n_rows,n_success,n_failed,n_datasets,n_seeds
+csta_topk_uniform_top5,21,21,21,0,7,3
+csta_top1_current,21,21,21,0,7,3
+csta_template_random_within_bank,21,21,21,0,7,3
+random_cov_state,21,21,21,0,7,3
+pca_cov_state,21,21,21,0,7,3

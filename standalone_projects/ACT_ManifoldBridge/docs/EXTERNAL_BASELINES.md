@@ -1,8 +1,8 @@
 # External Baseline Index
 
 This page is the map for the external augmentation and training-strategy arms in
-`ACT_ManifoldBridge`.  The implementation is intentionally centralized so
-external comparisons do not leak into `run_act_pilot.py`.
+`ACT_ManifoldBridge`.  Implementations are split by method so external
+comparisons do not leak into `run_act_pilot.py`.
 
 ## Quick Lookup
 
@@ -28,7 +28,7 @@ utils/external_baseline_manifest.py
 The runner registry is:
 
 ```text
-scripts/run_external_baselines_phase1.py
+utils/external_runner_registry.py
 ```
 
 The historical runner name still says `phase1`, but it now dispatches Phase 1,
@@ -37,10 +37,24 @@ Phase 2, Phase 3, and CSTA sampling arms.
 ## Code Map
 
 ```text
-utils/external_baselines.py
-  Offline augmentation implementations:
+utils/external_baseline_methods/
+  Method-specific offline augmentation implementations:
   raw transforms, Mixup generation, DBA/wDBA, SPAWNER-style, RGW/DGW,
   JobDA-cleanroom, TimeVAE-style, SMOTE, random/PCA covariance-state controls.
+
+utils/external_baseline_methods/temporal_vicinal/
+utils/external_baseline_methods/deep_generative/
+utils/external_baseline_methods/alignment_structure/
+utils/external_baseline_methods/internal_controls/
+  Paper-facing group facades for the main comparison table and mechanism
+  controls.  See `docs/EXTERNAL_BASELINE_GROUPS.md`.
+
+utils/external_aug_dispatch.py
+  Method-to-augmenter dispatch used by the matrix runner.
+
+utils/external_runner_registry.py
+  Method metadata, phase arm groups, CSTA passthrough fields, and locked-root
+  protection.
 
 utils/backbone_trainers.py
   Multi-backbone dispatch for hard-label, soft-label, JobDA, and manifold-mixup
@@ -50,7 +64,7 @@ utils/evaluators.py
   Actual model training/evaluation loops.
 
 scripts/run_external_baselines_phase1.py
-  Matrix runner and method metadata registry.
+  Matrix runner.  The historical filename is kept for CLI compatibility.
 
 scripts/list_external_baselines.py
   Human-readable catalog printer.
